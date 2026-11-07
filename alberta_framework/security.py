@@ -19,6 +19,7 @@ from fractions import Fraction
 from types import MappingProxyType
 from typing import Any, SupportsIndex, cast
 
+import jax
 import numpy as np
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
@@ -38,6 +39,10 @@ _JSON_MAX_NODES: int = 4096
 _JSON_MAX_STRING_LENGTH: int = 65_536
 _JSON_MAX_INTEGER_BITS: int = 64
 _ORACLE_EXPERIENCE_SCHEMA = "alberta.security_gym.oracle_experience.v1"
+
+_CONFUSION_MATRIX_LABELS: frozenset[str] = frozenset(
+    {"true_positive", "false_positive", "true_negative", "false_negative"}
+)
 
 _ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 _ACTUAL_FLOAT_TYPES = frozenset(
@@ -348,11 +353,24 @@ class SecurityFeatureSchema:
 
     def validate_observation(self, observation: Sequence[float]) -> None:
         """Raise ``ValueError`` if an observation does not match this schema."""
-        if len(observation) != self.feature_dim:
+        actual_type: type[object] = type(observation)
+        values: list[object]
+        if actual_type is list or actual_type is tuple:
+            values = list(observation)
+        elif actual_type is np.ndarray or issubclass(actual_type, jax.Array):
+            array = np.asarray(observation)
+            if array.ndim != 1:
+                raise ValueError("observation must be one-dimensional")
+            values = array.tolist()
+        else:
+            raise ValueError("observation must be an exact list, tuple, or array")
+        if len(values) != self.feature_dim:
             raise ValueError(
-                f"observation length {len(observation)} does not match "
+                f"observation length {len(values)} does not match "
                 f"schema feature_dim {self.feature_dim}"
             )
+        for index, value in enumerate(values):
+            _require_finite_real(f"observation[{index}]", value)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable schema mapping."""
@@ -535,6 +553,14 @@ class SecurityOracleExperience:
             )
             if type(label) is not str or label != expected_label:
                 raise ValueError("security oracle outcome label does not match action metadata")
+        label = outcome.get("label")
+        if type(label) is str and label in _CONFUSION_MATRIX_LABELS:
+            possible_labels = {
+                _security_outcome_label(action=self.action, is_malicious=True),
+                _security_outcome_label(action=self.action, is_malicious=False),
+            }
+            if label not in possible_labels:
+                raise ValueError("security oracle outcome label is impossible for action")
         object.__setattr__(self, "state", state)
         object.__setattr__(self, "reward", reward)
         object.__setattr__(self, "outcome", _freeze_json_mapping(outcome))

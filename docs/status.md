@@ -340,6 +340,38 @@ automatic proof of ASI's broader application target.
 
 ## Active development campaigns
 
+### Reference-life hillclimb
+
+The [original 144-life scorecard](../outputs/reference_life_scorecard_development/run2-2026-10-09/README.md)
+remains `valid_baseline_failure`. The following probes guide a separately planned development retry.
+
+| Lane | Retained result | Comparison to carry forward |
+|---|---|---|
+| RiverSwim controls | Discounted SARSA with Q₀ = 10 reached mean normalized return 0.8910. Differential SARSA with initial average reward 1.0 reached 0.8888. Each cleared its own gate over 20,000 events and 12 seeds. | Run both on the same seeds and normalizers. The retained results use different seed sets. |
+| SwitchingTwoState Prototype | Step 0.20 beat step 0.10 by +0.0926 normalized return on all 12 reused development seeds over 4,000 events. | Compare the steps on fresh development seeds and keep the strongest qualifying SARSA control in the next scorecard. |
+
+See the retained [discounted SARSA calibration](../outputs/reference_life_control_calibration/riverswim-q0-full-2026-11-01/RESULTS.md),
+[differential SARSA calibration](../outputs/reference_life_control_calibration/riverswim-diffsarsa-rbar0-2026-11-01/RESULTS.md),
+and [SwitchingTwoState step probe](../outputs/reference_life_control_calibration/switching-prototype-step020-2026-11-02/RESULTS.md).
+In a [fresh local RiverSwim smoke](../outputs/hillclimb_local/2026-11-07/reference/riverswim-summary.json),
+both optimistic controls reached the high-reward end on all three matched
+seeds over 5,000 events. They beat their defaults by mean raw reward of
++1,493.03 (discounted) and +2,972.79 (differential). The direct comparison
+split 1–2 across seeds, with mean difference +10.95 for discounted SARSA.
+Keep both controls for the full matched calibration. The smoke used raw
+rewards and omitted random and oracle normalizers.
+
+A [fresh local SwitchingTwoState comparison](../outputs/hillclimb_local/2026-11-07/reference/switching-summary.json)
+used three matched seeds over 4,000 events. Step 0.20 led step 0.10 by
+147.33 mean raw reward, the scorecard step 0.05 by 523.67, and differential
+SARSA by 322.67. It won all three seed pairs against each comparator. The
+three Prototype steps used 217 bytes of persistent numeric state versus
+108 bytes for differential SARSA. Random and oracle normalizers were outside
+the local comparison.
+
+The follow-up runs are permanently nonpromoting and the whole-life candidate
+selection remains open.
+
 ### IPMNIST development screening and development confirmation
 
 IPMNIST is the current measured optimization/plasticity subsystem campaign,

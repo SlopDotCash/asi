@@ -423,10 +423,13 @@ class OptionValueDurationLearner:
             dtype=jnp.float32,
         )
         heads = jnp.einsum("ohf,f->oh", state.weights, observation)
-        inputs_valid = self._state_values_valid(state) & jnp.all(
-            jnp.isfinite(observation)
+        # Finite weights and observations can still overflow the dot product.
+        heads_valid = (
+            self._state_values_valid(state)
+            & jnp.all(jnp.isfinite(observation))
+            & jnp.all(jnp.isfinite(heads))
         )
-        return jnp.where(inputs_valid, heads, jnp.zeros_like(heads))
+        return jnp.where(heads_valid, heads, jnp.zeros_like(heads))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def predict(
@@ -442,10 +445,13 @@ class OptionValueDurationLearner:
             durations,
             jnp.asarray(self._config.duration_floor, dtype=jnp.float32),
         )
+        reward_rates = reward_values / safe_durations
+        # Finite heads can still overflow the division by the duration floor.
+        rates_valid = jnp.all(jnp.isfinite(reward_rates))
         return OptionValueDurationPrediction(
-            reward_values=reward_values,
-            durations=durations,
-            reward_rates=reward_values / safe_durations,
+            reward_values=jnp.where(rates_valid, reward_values, jnp.zeros_like(reward_values)),
+            durations=jnp.where(rates_valid, durations, jnp.zeros_like(durations)),
+            reward_rates=jnp.where(rates_valid, reward_rates, jnp.zeros_like(reward_rates)),
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -687,7 +693,13 @@ def run_option_value_duration_from_arrays(
     # Traced calls defer execution to their caller.
     if not isinstance(td_errors, jax.core.Tracer):
         td_errors.block_until_ready()
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + (time.time() - start))
+    elapsed = time.time() - start
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return OptionValueDurationArrayResult(
         state=final_state,
         predictions=predictions,

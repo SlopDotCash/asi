@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import warnings
 from types import MappingProxyType
@@ -482,6 +483,50 @@ def test_latent_world_model_scan_loop_and_config_roundtrip() -> None:
     chex.assert_tree_all_finite(result.prediction_errors)
 
 
+def test_latent_world_model_scan_preserves_initialized_host_clocks() -> None:
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=4,
+            hidden_sizes=(8,),
+        )
+    )
+    initial = model.init(jr.key(17))
+    initial = dataclasses.replace(
+        initial,
+        learner_state=dataclasses.replace(
+            initial.learner_state,
+            birth_timestamp=1700000000.125,
+            uptime_s=12.5,
+        ),
+    )
+    observations = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+    next_observations = observations[::-1]
+    actions = jnp.array([0, 1], dtype=jnp.int32)
+    rewards = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    discounts = jnp.array([0.99, 0.0], dtype=jnp.float32)
+    result = run_latent_world_model_learning_loop(
+        model, initial, observations, actions, rewards, next_observations, discounts
+    )
+    continued = run_latent_world_model_learning_loop(
+        model,
+        result.state,
+        observations,
+        actions,
+        rewards,
+        next_observations,
+        discounts,
+    )
+
+    for returned in (result.state, continued.state):
+        assert type(returned.learner_state.birth_timestamp) is float
+        assert returned.learner_state.birth_timestamp == 1700000000.125
+        assert type(returned.learner_state.uptime_s) is float
+        assert returned.learner_state.uptime_s == 12.5
+    assert int(continued.state.step_count) == 4
+
+
 def test_latent_action_interactions_do_not_form_zero_times_inf() -> None:
     """Inf latent times a silent action one-hot is 0*inf = NaN in the product."""
     model = LatentWorldModel(
@@ -633,6 +678,43 @@ def test_trainable_encoder_learning_smoke_loss_decreases() -> None:
     early_loss = float(jnp.mean(result.prediction_errors[:quarter]))
     late_loss = float(jnp.mean(result.prediction_errors[-quarter:]))
     assert late_loss < early_loss
+
+
+@pytest.mark.unit
+def test_trainable_encoder_keeps_finite_wide_gradient_norm() -> None:
+    config = LatentWorldModelConfig(
+        observation_dim=8,
+        n_actions=2,
+        latent_dim=2,
+        hidden_sizes=(),
+        sparsity=0.0,
+        encoder_learning=True,
+        min_latent_std=0.0,
+        encoder_collapse_gate_threshold=1.0,
+    )
+    model = LatentWorldModel(config)
+    state = model.init(jr.key(0)).replace(
+        encoder_matrix=jnp.zeros((8, 2), dtype=jnp.float32),
+        encoder_bias=jnp.zeros((2,), dtype=jnp.float32),
+    )
+    observation = jnp.full((8,), 1.0e20, dtype=jnp.float32)
+    next_observation = jnp.zeros((8,), dtype=jnp.float32)
+
+    result = model.update(
+        state,
+        observation,
+        jnp.asarray(1, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(0.99, dtype=jnp.float32),
+        next_observation,
+    )
+
+    assert bool(result.update_applied)
+    assert bool(result.encoder_update_applied)
+    assert bool(jnp.isfinite(result.encoder_gradient_norm))
+    assert float(result.encoder_gradient_norm) > 0.0
+    assert bool(jnp.all(jnp.isfinite(result.state.encoder_matrix)))
+    assert bool(jnp.any(result.state.encoder_matrix != state.encoder_matrix))
 
 
 @pytest.mark.unit

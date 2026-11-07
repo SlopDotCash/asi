@@ -64,6 +64,8 @@ def _concrete_numeric_array(
             raise ValueError(f"{name} must be {ndim}-dimensional")
         if jnp.issubdtype(value.dtype, jnp.bool_):
             raise ValueError(f"{name} must not be boolean")
+        if jnp.issubdtype(value.dtype, jnp.complexfloating):
+            raise ValueError(f"{name} must be real-valued")
         return None
     try:
         array = np.asarray(value)
@@ -102,6 +104,8 @@ def _require_leading_length(
     if isinstance(value, (jax.core.Tracer, jax.Array)):
         if value.ndim != ndim:
             raise ValueError(f"{name} must be {ndim}-dimensional")
+        if jnp.issubdtype(value.dtype, jnp.complexfloating):
+            raise ValueError(f"{name} must be real-valued")
         length = int(value.shape[0])
     else:
         array = _concrete_numeric_array(name, value, ndim=ndim)

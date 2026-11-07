@@ -14,6 +14,8 @@ from alberta_framework.core import ActorCriticAgent as CoreActorCriticAgent
 from alberta_framework.core.actor_critic import (
     ActorCriticAgent,
     ActorCriticConfig,
+    ContinuousActorCriticAgent,
+    ContinuousActorCriticConfig,
     _require_discrete_state_resources,
     run_actor_critic_from_arrays,
 )
@@ -658,6 +660,32 @@ def test_actor_critic_start_rejects_policy_overflow_from_finite_inputs() -> None
         agent.start(state, observation)
 
 
+def test_actor_critic_select_action_rejects_policy_overflow_from_finite_inputs() -> None:
+    """A finite observation must not draw an arbitrary action from NaN probabilities."""
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+    state = agent.init(1, jr.key(0)).replace(
+        actor_weights=jnp.asarray([[2.0], [-2.0]], dtype=jnp.float32)
+    )
+    observation = jnp.asarray([np.finfo(np.float32).max], dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="action selection"):
+        agent.select_action(state, observation)
+
+
+def test_actor_critic_select_action_keeps_traced_and_finite_draws() -> None:
+    """The eager gate must leave ordinary and jitted action draws unchanged."""
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+    state = agent.init(1, jr.key(0))
+    observation = jnp.asarray([1.0], dtype=jnp.float32)
+
+    eager = agent.select_action(state, observation)
+    traced = jax.jit(agent.select_action)(state, observation)
+
+    assert int(eager[0]) == int(traced[0])
+    assert np.array_equal(jr.key_data(eager[1]), jr.key_data(traced[1]))
+    assert np.array_equal(np.asarray(eager[2]), np.asarray(traced[2]))
+
+
 def test_actor_critic_start_nonfinite_observation_would_wedge_updates() -> None:
     """Document the wedge the start gate prevents (traced inputs, pre-fix).
 
@@ -684,3 +712,53 @@ def test_actor_critic_start_nonfinite_observation_would_wedge_updates() -> None:
     # ``last_observation`` (the old start behavior) wedged permanently.
     assert not applied[1]
     assert applied[0] and applied[2]
+
+
+def test_actor_critic_rejected_update_preserves_last_action() -> None:
+    """A rejected update must report the prior last_action rather than hardcoding action 0.
+
+    When an update fails validation (e.g. nonfinite reward or observation), the
+    state is rolled back to the incoming state atomically and retains
+    ``state.last_action``. The returned result.action must also report
+    ``state.last_action`` so external callers and scans record the actual action
+    maintained by the agent rather than desynchronizing with action 0.
+    """
+    agent = ActorCriticAgent(
+        ActorCriticConfig(n_actions=3, actor_step_size=0.1, critic_step_size=0.1)
+    )
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_action=jnp.asarray(2, dtype=jnp.int32)
+    )
+
+    result = agent.update(
+        state,
+        reward=jnp.array(jnp.inf, dtype=jnp.float32),
+        observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        discount=0.9,
+    )
+
+    assert not bool(result.update_applied)
+    assert int(result.state.last_action) == 2
+    assert int(result.action) == 2
+
+
+def test_continuous_actor_critic_rejected_update_preserves_last_action() -> None:
+    """Continuous actor-critic must report prior last_action when an update is rejected."""
+    agent = ContinuousActorCriticAgent(
+        ContinuousActorCriticConfig(action_dim=2, actor_step_size=0.1, critic_step_size=0.1)
+    )
+    prior_action = jnp.array([1.5, -2.0], dtype=jnp.float32)
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_action=prior_action
+    )
+
+    result = agent.update(
+        state,
+        reward=jnp.array(jnp.inf, dtype=jnp.float32),
+        observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        discount=0.9,
+    )
+
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_close(result.state.last_action, prior_action)
+    chex.assert_trees_all_close(result.action, prior_action)

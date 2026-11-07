@@ -1,0 +1,24 @@
+seed 134 +0.007607
+seed 135 +0.007609
+seed 136 +0.007950
+seed 137 +0.007496
+seed 138 +0.007821
+seed 139 +0.007828
+seed 140 +0.007539
+seed 141 +0.007377
+seed 142 +0.007630
+seed 143 +0.007675
+seed 144 +0.007554
+seed 145 +0.007549
+seed 146 +0.007602
+seed 147 +0.007892
+seed 148 +0.007765
+seed 149 +0.007513
+seed 150 +0.007822
+seed 151 +0.007937
+seed 152 +0.007618
+seed 153 +0.007511
+rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0 vs rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000_wd0
+blocks (50 tasks, mean over 20 valid seeds): +0.014213 / +0.006742 / +0.005351 / +0.004353
+mean +0.007665 SE 0.000037 CI95 [+0.007588, +0.007741] improved 20/20 diverged 0/20
+BARS: mean>=+0.002 True, >=14/20 True, CI_lo>0 True; no diverged seed True -> PASS

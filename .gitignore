@@ -33,3 +33,5 @@ outputs/forager/matched_current_qualification_2c3b214c_v1/sources/alberta/*
 !outputs/forager/matched_current_qualification_2c3b214c_v1/sources/alberta/snapshot-descriptor.json
 !outputs/forager/matched_current_qualification_2c3b214c_v1/sources/alberta/source.tar
 outputs/**/logs/
+# launcher stop sentinel for in-run memguard; never committed
+outputs/**/MEMGUARD_STOP

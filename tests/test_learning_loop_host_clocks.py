@@ -1,0 +1,157 @@
+"""Learning-loop scans must keep exact host lifecycle clocks.
+
+``birth_timestamp`` and ``uptime_s`` are host-only Python floats. A
+``jax.lax.scan`` carries them through the traced update and narrows them to
+float32, which cannot represent ``1700000000.125`` or an uptime of
+``2**24 + 0.25``. Each loop restores the incoming Python values and adds
+that scan's elapsed time to the original uptime.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import jax.numpy as jnp
+import jax.random as jr
+
+from alberta_framework import (
+    EMANormalizer,
+    LinearLearner,
+    MLPLearner,
+    NormalizerTrackingConfig,
+    RandomWalkStream,
+    StepSizeTrackingConfig,
+    TDLinearLearner,
+    TDTimeStep,
+    TrueOnlineTDLearner,
+    run_learning_loop,
+    run_mlp_learning_loop,
+    run_td_learning_loop,
+    run_true_online_td_loop,
+)
+
+_BIRTH = 1700000000.125
+_UPTIME = float(2**24) + 0.25
+
+
+class _SimpleTDStream:
+    """Deterministic TD stream small enough for a clock round-trip."""
+
+    def __init__(self, feature_dim: int = 3) -> None:
+        self.feature_dim = feature_dim
+
+    def init(self, key: Any) -> dict[str, Any]:
+        return {"key": key}
+
+    def step(self, state: dict[str, Any], idx: Any) -> tuple[TDTimeStep, dict[str, Any]]:
+        del idx
+        key, obs_key, next_key, reward_key = jr.split(state["key"], 4)
+        timestep = TDTimeStep(
+            observation=jr.normal(obs_key, (self.feature_dim,), dtype=jnp.float32),
+            reward=jr.normal(reward_key, (), dtype=jnp.float32),
+            next_observation=jr.normal(next_key, (self.feature_dim,), dtype=jnp.float32),
+            gamma=jnp.asarray(0.9, dtype=jnp.float32),
+        )
+        return timestep, {"key": key}
+
+
+def _assert_exact_clocks(final_state: Any, *, steps: int) -> None:
+    assert type(final_state.birth_timestamp) is float
+    assert final_state.birth_timestamp == _BIRTH
+    assert type(final_state.uptime_s) is float
+    assert final_state.uptime_s > _UPTIME
+    assert int(final_state.step_count) == steps
+
+
+def test_linear_learning_loop_preserves_host_clocks() -> None:
+    learner = LinearLearner()
+    state = learner.init(3).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    final, _metrics = run_learning_loop(
+        learner,
+        RandomWalkStream(feature_dim=3),
+        num_steps=4,
+        key=jr.key(0),
+        learner_state=state,
+    )
+    _assert_exact_clocks(final, steps=4)
+
+
+def test_linear_learning_loop_tracking_preserves_host_clocks() -> None:
+    learner = LinearLearner()
+    state = learner.init(3).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    final, _metrics, _history = run_learning_loop(
+        learner,
+        RandomWalkStream(feature_dim=3),
+        num_steps=4,
+        key=jr.key(1),
+        learner_state=state,
+        step_size_tracking=StepSizeTrackingConfig(interval=2),
+    )
+    _assert_exact_clocks(final, steps=4)
+
+
+def test_mlp_learning_loop_preserves_host_clocks() -> None:
+    learner = MLPLearner(hidden_sizes=(4,), sparsity=0.0, use_layer_norm=False)
+    state = learner.init(3, jr.key(2)).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    final, _metrics = run_mlp_learning_loop(
+        learner,
+        RandomWalkStream(feature_dim=3),
+        num_steps=4,
+        key=jr.key(3),
+        learner_state=state,
+    )
+    _assert_exact_clocks(final, steps=4)
+
+
+def test_mlp_learning_loop_tracking_preserves_host_clocks() -> None:
+    learner = MLPLearner(
+        hidden_sizes=(4,),
+        sparsity=0.0,
+        use_layer_norm=False,
+        normalizer=EMANormalizer(),
+    )
+    state = learner.init(3, jr.key(4)).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    final, _metrics, _history = run_mlp_learning_loop(
+        learner,
+        RandomWalkStream(feature_dim=3),
+        num_steps=4,
+        key=jr.key(5),
+        learner_state=state,
+        normalizer_tracking=NormalizerTrackingConfig(interval=2),
+    )
+    _assert_exact_clocks(final, steps=4)
+
+
+def test_td_learning_loop_preserves_host_clocks() -> None:
+    learner = TDLinearLearner()
+    state = learner.init(3).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    final, _metrics = run_td_learning_loop(
+        learner,
+        _SimpleTDStream(),
+        num_steps=4,
+        key=jr.key(6),
+        learner_state=state,
+    )
+    _assert_exact_clocks(final, steps=4)
+
+
+def test_true_online_td_loop_preserves_host_clocks() -> None:
+    learner = TrueOnlineTDLearner()
+    state = learner.init(3).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    final, _metrics = run_true_online_td_loop(
+        learner,
+        _SimpleTDStream(),
+        num_steps=4,
+        key=jr.key(7),
+        learner_state=state,
+    )
+    _assert_exact_clocks(final, steps=4)
+
+
+def test_float32_narrowing_drops_the_planted_clocks() -> None:
+    """Document the representation the scan would keep without a restore."""
+    narrowed_birth = float(jnp.asarray(_BIRTH, dtype=jnp.float32))
+    narrowed_uptime = float(jnp.asarray(_UPTIME, dtype=jnp.float32))
+    assert narrowed_birth != _BIRTH
+    assert narrowed_uptime != _UPTIME
+    assert narrowed_uptime < _UPTIME

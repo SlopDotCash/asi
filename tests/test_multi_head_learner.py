@@ -1879,3 +1879,16 @@ def test_multi_head_loop_finishes_device_work_before_stopping_uptime_clock(
     assert scan_outputs
     assert int(result.state.step_count) == 1024
     assert bool(jnp.all(result.updates_applied))
+
+
+def test_multi_head_loop_preserves_exact_birth_timestamp() -> None:
+    """lax.scan must not narrow the host-only birth_timestamp to float32."""
+    learner = MultiHeadMLPLearner(n_heads=2, hidden_sizes=(16,), sparsity=0.0)
+    state = learner.init(feature_dim=5, key=jr.key(0))
+    birth = 1762345678.123456
+    state = state.replace(birth_timestamp=birth, uptime_s=3.25)
+    observations = jr.normal(jr.key(42), (20, 5), dtype=jnp.float32)
+    targets = jr.normal(jr.key(99), (20, 2), dtype=jnp.float32)
+    result = run_multi_head_learning_loop(learner, state, observations, targets)
+    assert result.state.birth_timestamp == birth
+    assert type(result.state.birth_timestamp) is float

@@ -113,6 +113,45 @@ def test_fixed_step_control_is_exact_sgd_with_mechanism_off():
 
 
 @pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_lifetime_step_counter_saturates_without_stalling_learning(compiled, enabled):
+    """A long-lived control must keep updating after int32 telemetry saturates."""
+    weights = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    gradient = jnp.array([0.1, 0.2], dtype=jnp.float32)
+    config = IntentionalTDConfig(
+        eta=0.1,
+        gamma=0.9,
+        lamda=0.8,
+        enabled=enabled,
+    )
+    maximum = jnp.iinfo(jnp.int32).max
+    state = init_intentional_td(weights).replace(
+        trace=jnp.array([0.2, -0.1], dtype=jnp.float32),
+        squared_gradient=jnp.array([0.3, 0.4], dtype=jnp.float32),
+        sigma=jnp.array(0.5, dtype=jnp.float32),
+        clip_squared_error=jnp.array(0.25, dtype=jnp.float32),
+        step=jnp.array(maximum, dtype=jnp.int32),
+    )
+
+    def update(w, s, g, error):
+        return intentional_td_update(w, s, g, error, config)
+
+    apply_update = jax.jit(update) if compiled else update
+    changed, next_state = apply_update(
+        weights,
+        state,
+        gradient,
+        jnp.array(0.4, dtype=jnp.float32),
+    )
+
+    assert int(next_state.step) == maximum
+    assert bool(jnp.all(jnp.isfinite(changed)))
+    assert bool(jnp.all(changed != weights))
+    assert bool(jnp.isfinite(next_state.sigma))
+    assert float(next_state.sigma) < 1.0
+
+
+@pytest.mark.parametrize("compiled", [False, True])
 @pytest.mark.parametrize("adaptive", [False, True])
 @pytest.mark.parametrize("error", [-10.0, 10.0])
 def test_binding_clip_limits_prediction_change(compiled, adaptive, error):

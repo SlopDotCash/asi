@@ -582,6 +582,104 @@ class TestSARSAUpdate:
         pred_changed = not jnp.allclose(old_pred_weights, new_pred_weights)
         assert pred_changed, "Prediction demon head should have been updated"
 
+    def test_terminated_prediction_demon_traces_are_cleared(self):
+        """A terminal transition clears prediction-demon traces like control traces.
+
+        Control heads are zeroed at ``terminated=1`` in ``SARSAAgent.update``,
+        but prediction heads kept their decayed traces, so the next
+        episode's first update credited the dead episode's trace.
+        """
+        pred_demons = [
+            GVFSpec(
+                name="pred_0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.9,
+                cumulant_index=0,
+            ),
+        ]
+        agent = _make_agent(
+            n_actions=2,
+            prediction_demons=pred_demons,
+            hidden_sizes=(),
+            lamda=0.9,
+        )
+        state = agent.init(feature_dim=4, key=jr.key(42))
+        obs = jnp.ones(4, dtype=jnp.float32)
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(0, dtype=jnp.int32),
+            last_observation=obs,
+        )
+
+        def update(state, terminated):
+            return agent.update(
+                state,
+                reward=jnp.array(1.0),
+                observation=jnp.full(4, 0.5, dtype=jnp.float32),
+                terminated=jnp.array(terminated, dtype=jnp.float32),
+                next_action=jnp.array(0, dtype=jnp.int32),
+                prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+            ).state
+
+        # A non-terminal update builds a nonzero prediction trace.
+        state = update(state, 0.0)
+        pred_w_trace, pred_b_trace = state.learner_state.head_traces[2]
+        assert float(jnp.max(jnp.abs(pred_w_trace))) > 0.0
+
+        # The terminal update credits that trace, then clears it.
+        state = update(state, 1.0)
+        for head in state.learner_state.head_traces:
+            chex.assert_trees_all_close(head[0], jnp.zeros_like(head[0]))
+            chex.assert_trees_all_close(head[1], jnp.zeros_like(head[1]))
+
+    def test_terminated_prediction_demons_do_not_bootstrap(self):
+        """At a terminal transition, a prediction demon learns the cumulant.
+
+        The target must not depend on the next observation: in continuing
+        mode the terminal next observation is already the next episode's
+        reset observation, so bootstrapping it would leak one episode's
+        values into the previous episode's prediction.
+        """
+        pred_demons = [
+            GVFSpec(
+                name="pred_0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.0,
+                cumulant_index=0,
+            ),
+        ]
+        agent = _make_agent(
+            n_actions=2, prediction_demons=pred_demons, hidden_sizes=()
+        )
+        state = agent.init(feature_dim=4, key=jr.key(42))
+        obs = jnp.ones(4, dtype=jnp.float32)
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(0, dtype=jnp.int32),
+            last_observation=obs,
+        )
+
+        next_a = jnp.ones(4, dtype=jnp.float32) * 0.5
+        next_b = jnp.ones(4, dtype=jnp.float32) * -2.0
+        pred_next_a = agent.horde.predict(state.learner_state, next_a)[2]
+        pred_next_b = agent.horde.predict(state.learner_state, next_b)[2]
+        assert not jnp.allclose(pred_next_a, pred_next_b)
+
+        def terminal_weights(next_obs):
+            result = agent.update(
+                state,
+                reward=jnp.array(1.0),
+                observation=next_obs,
+                terminated=jnp.array(1.0),
+                next_action=jnp.array(0, dtype=jnp.int32),
+                prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+            )
+            return result.state.learner_state.head_params.weights[2]
+
+        chex.assert_trees_all_close(
+            terminal_weights(next_a), terminal_weights(next_b)
+        )
+
     def test_td_error_uses_last_observation_prediction(self):
         """Returned TD error is target - Q(s_t, a_t), not Q(s_{t+1}, a_t)."""
         agent = _make_agent(n_actions=2, hidden_sizes=(), gamma=0.0, epsilon_start=0.0)
@@ -947,6 +1045,89 @@ class TestSARSAConfigSerialization:
 class TestSARSAScan:
     """Tests for run_sarsa_from_arrays scan loop."""
 
+    @pytest.mark.parametrize("final_state_only", [False, True])
+    def test_finishes_device_work_before_stopping_uptime_clock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        final_state_only: bool,
+    ) -> None:
+        """Reported uptime must cover scan execution, not only its dispatch."""
+        import time
+        from types import SimpleNamespace
+
+        import alberta_framework.core.sarsa as module
+
+        agent = _make_agent(n_actions=2, hidden_sizes=(4,))
+        observations = jnp.ones((4, 3), dtype=jnp.float32)
+        rewards = jnp.zeros((4,), dtype=jnp.float32)
+        terminated = jnp.zeros((4,), dtype=jnp.float32)
+        state = agent.init(feature_dim=3, key=jr.key(271))
+        action, key = agent.select_action(state, observations[0])
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=action,
+            last_observation=observations[0],
+            rng_key=key,
+        )
+
+        blocked: list[object] = []
+        real_scan = jax.lax.scan
+        real_time = time.time
+        scan_finished = False
+
+        def recording_scan(*args: object, **kwargs: object) -> object:
+            nonlocal scan_finished
+            result = real_scan(*args, **kwargs)
+            scan_finished = True
+            return result
+
+        def recording_block(value: object) -> object:
+            assert scan_finished
+            blocked.append(value)
+            return value
+
+        def clock() -> float:
+            if scan_finished:
+                assert blocked
+            return real_time()
+
+        monkeypatch.setattr(jax.lax, "scan", recording_scan)
+        monkeypatch.setattr(jax, "block_until_ready", recording_block)
+        monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+
+        if final_state_only:
+            result = run_sarsa_from_arrays_final_state(
+                agent,
+                state,
+                observations,
+                rewards,
+                terminated,
+                observations,
+            )
+            assert len(blocked) == 1
+            blocked_state = blocked[0]
+            assert isinstance(blocked_state, SARSAState)
+            assert blocked_state.step_count == result.step_count
+        else:
+            result = run_sarsa_from_arrays(
+                agent,
+                state,
+                observations,
+                rewards,
+                terminated,
+                observations,
+            )
+            assert len(blocked) == 1
+            (
+                blocked_state,
+                blocked_q_values,
+                blocked_td_errors,
+                blocked_actions,
+            ) = blocked[0]  # type: ignore[misc]
+            assert blocked_state.step_count == result.state.step_count
+            assert blocked_q_values is result.q_values
+            assert blocked_td_errors is result.td_errors
+            assert blocked_actions is result.actions
+
     @pytest.mark.parametrize(
         "runner",
         [run_sarsa_from_arrays, run_sarsa_from_arrays_final_state],
@@ -977,6 +1158,27 @@ class TestSARSAScan:
                 observations,
                 rewards,
                 terminated,
+                next_observations,
+            )
+
+    @pytest.mark.parametrize(
+        "runner",
+        [run_sarsa_from_arrays, run_sarsa_from_arrays_final_state],
+    )
+    def test_scan_rejects_unprimed_state(self, runner) -> None:
+        """An unprimed state would refuse every row without learning or raising."""
+        agent = _make_agent(n_actions=2, hidden_sizes=(), epsilon_start=0.0)
+        state = agent.init(feature_dim=2, key=jr.key(7))
+        observations = jnp.asarray([[0.0, 0.0], [1.0, 0.0]], dtype=jnp.float32)
+        next_observations = jnp.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="must be primed"):
+            runner(
+                agent,
+                state,
+                observations,
+                jnp.ones((2,), dtype=jnp.float32),
+                jnp.zeros((2,), dtype=jnp.float32),
                 next_observations,
             )
 
@@ -2162,3 +2364,52 @@ def test_sarsa_select_action_rejects_nonfinite_without_consuming_rng() -> None:
     )
     assert int(action) == -1
     chex.assert_trees_all_equal(key, state.rng_key)
+
+
+class _RecordingCorridor:
+    """Corridor that records every dispatched action and can emit a NaN sensor row."""
+
+    def __init__(self, *, nan_reset: bool = False, nan_step: bool = False) -> None:
+        self.actions: list[int] = []
+        self._nan_reset = nan_reset
+        self._nan_step = nan_step
+
+    def reset(self):
+        fill = np.nan if self._nan_reset else 1.0
+        return np.full((2,), fill, dtype=np.float32), {}
+
+    def step(self, action: int):
+        self.actions.append(action)
+        fill = np.nan if self._nan_step else 1.0
+        return np.full((2,), fill, dtype=np.float32), 1.0, False, False, {}
+
+
+@pytest.mark.parametrize("runner_name", ["run_sarsa_episode", "run_sarsa_continuing"])
+def test_env_runner_refuses_to_dispatch_rejected_first_action(runner_name: str) -> None:
+    import alberta_framework
+
+    runner = getattr(alberta_framework, runner_name)
+    agent = _make_agent(n_actions=2, hidden_sizes=())
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    env = _RecordingCorridor(nan_reset=True)
+
+    with pytest.raises(ValueError, match="dispatch"):
+        runner(agent, state, env, 3)
+
+    assert env.actions == []
+
+
+@pytest.mark.parametrize("runner_name", ["run_sarsa_episode", "run_sarsa_continuing"])
+def test_env_runner_refuses_to_dispatch_rejected_next_action(runner_name: str) -> None:
+    import alberta_framework
+
+    runner = getattr(alberta_framework, runner_name)
+    agent = _make_agent(n_actions=2, hidden_sizes=())
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    env = _RecordingCorridor(nan_step=True)
+
+    with pytest.raises(ValueError, match="dispatch"):
+        runner(agent, state, env, 3)
+
+    assert len(env.actions) == 1
+    assert env.actions[0] >= 0

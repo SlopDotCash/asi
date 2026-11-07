@@ -1648,6 +1648,27 @@ class TestCompositionalFeatureLearner:
         assert clocks.uptime_s > uptime
         chex.assert_tree_all_finite(result.metrics)
 
+    def test_loop_scan_preserves_initialized_host_clocks(self) -> None:
+        learner = CompositionalFeatureLearner(
+            n_features=4,
+            n_tasks=1,
+            candidate_count=0,
+            replacement_interval=100_000,
+            min_feature_age=100_000,
+        )
+        stream = CompositionalStream(feature_dim=2, n_tasks=1)
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        birth = 1700000000.125
+        uptime = 2**24 + 0.25
+        state = state.replace(birth_timestamp=birth, uptime_s=uptime)
+        result = run_compositional_loop(learner, stream, 2, jr.key(1), learner_state=state)
+        clocks = result.state
+        assert type(clocks.birth_timestamp) is float
+        assert clocks.birth_timestamp == birth
+        assert type(clocks.uptime_s) is float
+        assert clocks.uptime_s > uptime
+        chex.assert_tree_all_finite(result.metrics)
+
 
 class TestImprintConsolidation:
     """_initial_candidate_output_weights delegates to the module-level imprint."""
@@ -1820,3 +1841,36 @@ def test_finite_candidate_selector_retains_finite_center(losses, compiled) -> No
     probabilities = selector.probabilities(result.state)
     assert bool(jnp.all(jnp.isfinite(probabilities)))
     np.testing.assert_allclose(float(probabilities.sum()), 1.0, rtol=1e-6)
+
+
+@pytest.mark.parametrize("width", [2, 4])
+def test_compositional_boundaries_fail_closed_on_wrong_observation_width(width: int) -> None:
+    """The raw-feature prefix pins the width that ``run_compositional_arrays`` enforces."""
+    learner = CompositionalFeatureLearner(n_features=5, n_tasks=2)
+    state = learner.init(3, jr.key(0))
+    observation = jnp.ones(width, dtype=jnp.float32)
+    targets = jnp.ones(2, dtype=jnp.float32)
+
+    result = learner.update(state, observation, targets)
+
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state.output_weights, state.output_weights)
+    chex.assert_trees_all_equal(result.state.output_bias, state.output_bias)
+    chex.assert_trees_all_equal(result.state.theta, state.theta)
+    chex.assert_trees_all_equal(result.state.step_count, state.step_count)
+    chex.assert_trees_all_equal(result.predictions, jnp.zeros(2, dtype=jnp.float32))
+    assert bool(jnp.all(jnp.isnan(learner.constructed_features(state, observation))))
+    assert bool(jnp.all(jnp.isnan(learner.augmented_observation(state, observation)[width:])))
+    assert bool(jnp.all(jnp.isnan(learner.predict(state, observation))))
+
+
+def test_compositional_exact_observation_width_still_updates() -> None:
+    learner = CompositionalFeatureLearner(n_features=5, n_tasks=2)
+    state = learner.init(3, jr.key(0))
+    observation = jnp.ones(3, dtype=jnp.float32)
+    targets = jnp.ones(2, dtype=jnp.float32)
+
+    result = learner.update(state, observation, targets)
+
+    assert bool(result.update_applied)
+    assert bool(jnp.all(jnp.isfinite(learner.predict(result.state, observation))))

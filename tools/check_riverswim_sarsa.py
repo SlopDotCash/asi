@@ -3,7 +3,9 @@
 This is an additional, nonpromoting consistency check for the trace records
 proposed in ASI PRs #3220 and #3225. It does not replace their validators.
 It conditions on the recorded actions and initial Q values, with zero initial
-biases/traces. It verifies neither initialization provenance nor policy/RNG.
+biases/traces. A numeric ``initial_q_value`` (optimistic tabular start) must
+equal every initial Q value. It verifies neither initialization provenance nor
+policy/RNG.
 The last bootstrap action is missing from these schemas: both possibilities
 are checked and the compatible actions are reported, never silently inferred.
 """
@@ -51,6 +53,9 @@ CONFIG_FIELDS = {
     "step_size",
     "use_layer_norm",
 }
+# Control configs serialize ``initial_q_value`` since #3308. Records written
+# before it omit the field; both manifests are accepted, nothing else.
+CONFIG_FIELD_SETS = (frozenset(CONFIG_FIELDS), frozenset(CONFIG_FIELDS | {"initial_q_value"}))
 type FloatArray = NDArray[np.float32]
 
 
@@ -166,10 +171,8 @@ def check_record(record: dict[str, Any]) -> dict[str, Any]:
     for flag in ("scientific_promotion_allowed", "reference_dev_population_allowed"):
         _require(record.get(flag) is False, f"{flag} must be false")
     config, env = record.get("config"), record.get("environment")
-    # initial_q_value was added to to_config() by PR #3308; older records omit it.
     _require(
-        type(config) is dict
-        and set(config) in (CONFIG_FIELDS, CONFIG_FIELDS | {"initial_q_value"}),
+        type(config) is dict and frozenset(config) in CONFIG_FIELD_SETS,
         "unsupported config fields",
     )
     _require(type(env) is dict, "environment must be an object")
@@ -199,9 +202,6 @@ def check_record(record: dict[str, Any]) -> dict[str, Any]:
     for name in ("epsilon_start", "epsilon_end", "leaky_relu_slope"):
         _number(config[name], f"config {name}", lower=0, upper=1)
     _number(config["sparsity"], "config sparsity", lower=0, upper=0)
-    if config.get("initial_q_value") is not None:
-        upper = float(np.finfo(np.float32).max)
-        _number(config["initial_q_value"], "config initial_q_value", lower=0, upper=upper)
     alpha = np.float32(_number(config["step_size"], "config step_size", lower=0, upper=1))
     gamma = np.float32(_number(config["gamma"], "config gamma", lower=0, upper=1))
     lamda = np.float32(_number(config["lamda"], "config lamda", lower=0, upper=1))
@@ -229,6 +229,13 @@ def check_record(record: dict[str, Any]) -> dict[str, Any]:
     by_index = {s["accepted_events"]: s for s in snapshots}
     initial = _array(snapshots[0].get("q_by_state_action"), (n_states, 2), "initial Q")
     _require(bool((np.abs(initial) <= 1e6).all()), "initial Q exceeds supported range")
+    declared_initial_q = config.get("initial_q_value")
+    if declared_initial_q is not None:
+        declared = _number(declared_initial_q, "config initial_q_value", lower=0, upper=1e6)
+        _require(
+            bool(np.all(initial == float(np.float32(declared)))),
+            "initial Q differs from config initial_q_value",
+        )
     weights = initial.T.astype(np.float32).copy()
     biases = np.zeros(2, dtype=np.float32)
     traces = np.zeros_like(weights)

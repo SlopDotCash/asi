@@ -166,6 +166,58 @@ def test_behavior_model_rejects_wrong_shaped_observations(
             getattr(model, entrypoint)(state, observation, action)
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    (
+        "predict_logits",
+        "predict_probabilities",
+        "action_probability",
+        "action_log_likelihood",
+        "input_loss_gradient",
+        "update",
+        "sample_action",
+        "importance_ratio",
+    ),
+)
+def test_behavior_model_rejects_complex_observations(entrypoint: str) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observation = jnp.array([1.0 + 5.0j, 0.0], dtype=jnp.complex64)
+    action = jnp.array(1, dtype=jnp.int32)
+
+    with pytest.raises(ValueError, match="observation must be real"):
+        if entrypoint in {"predict_logits", "predict_probabilities", "sample_action"}:
+            getattr(model, entrypoint)(state, observation)
+        elif entrypoint == "importance_ratio":
+            model.importance_ratio(
+                state,
+                observation,
+                action,
+                jnp.full((3,), 1.0 / 3.0, dtype=jnp.float32),
+            )
+        else:
+            getattr(model, entrypoint)(state, observation, action)
+
+
+def test_run_behavior_model_from_arrays_rejects_complex_observations() -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observations = jnp.full((2, 2), 1.0 + 5.0j, dtype=jnp.complex64)
+    actions = jnp.zeros((2,), dtype=jnp.int32)
+
+    with pytest.raises(ValueError, match="observation must be real"):
+        run_behavior_model_from_arrays(model, state, observations, actions)
+
+
+def test_integer_observations_still_predict() -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+
+    logits = model.predict_logits(state, jnp.ones((2,), dtype=jnp.int32))
+
+    chex.assert_shape(logits, (3,))
+
+
 def test_infinite_observation_does_not_poison_weights() -> None:
     """Inf obs makes softmax NaN and logit_error * x = 0*inf on a silent feature."""
     model = BehaviorModel(BehaviorModelConfig(n_actions=2, step_size=0.1))
@@ -725,6 +777,68 @@ def test_importance_ratio_and_epsilon_greedy_helpers() -> None:
         jnp.array([0.1, 0.9], dtype=jnp.float32),
     )
     assert float(ratio) == 1.25
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [
+        (np.array([2.0, -1.0], dtype=np.float32), "non-negative"),
+        (np.array([0.1, 0.1], dtype=np.float32), "sum to one"),
+        (np.array([np.nan, 1.0], dtype=np.float32), "finite"),
+        (np.array([np.inf, 0.0], dtype=np.float32), "finite"),
+        (np.array([1e300, 0.0], dtype=np.float64), "finite"),
+        (np.array([1.0], dtype=np.float32), "2 actions"),
+        (np.array(1.0, dtype=np.float32), "2 actions"),
+        (np.array([0.5 + 1.0j, 0.5 - 1.0j], dtype=np.complex64), "real floating"),
+        (np.array([1, 0], dtype=np.int32), "real floating"),
+    ],
+    ids=[
+        "negative",
+        "not-normalized",
+        "nan",
+        "inf",
+        "float32-overflow",
+        "too-few-actions",
+        "scalar",
+        "complex",
+        "integer",
+    ],
+)
+def test_importance_ratio_rejects_invalid_target_distribution(
+    target: np.ndarray, message: str
+) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+
+    with pytest.raises(ValueError, match=message):
+        model.importance_ratio(
+            state,
+            jnp.ones(2, dtype=jnp.float32),
+            jnp.array(0, dtype=jnp.int32),
+            target,
+        )
+
+
+def test_clipped_importance_ratios_rejects_one_invalid_batch_row() -> None:
+    target = jnp.array([[0.5, 0.5], [0.5, 0.2]], dtype=jnp.float32)
+    behavior = jnp.full((2, 2), 0.5, dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="sum to one"):
+        clipped_importance_ratios(target, behavior, jnp.array([0, 1], dtype=jnp.int32))
+
+
+def test_importance_ratio_keeps_rounded_softmax_and_traced_targets() -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=64, ratio_clip=1000.0))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observation = jnp.ones(2, dtype=jnp.float32)
+    action = jnp.array(3, dtype=jnp.int32)
+    target = jax.nn.softmax(jnp.linspace(-5.0, 5.0, 64, dtype=jnp.float32))
+
+    eager = model.importance_ratio(state, observation, action, target)
+    traced = jax.jit(model.importance_ratio)(state, observation, action, target)
+
+    assert float(eager) == pytest.approx(float(target[3]) * 64.0, rel=1e-5)
+    assert float(traced) == float(eager)
 
 
 def test_behavior_model_config_rejects_booleans_and_non_integers() -> None:
@@ -1301,3 +1415,40 @@ def test_stable_helpers_track_eager_across_temperature_and_scale_grid() -> None:
         )
         assert int(np.argmax(probabilities)) == int(np.argmax(eager_probabilities)), context
 
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("magnitude", [2e-20, 2e19, 2e38])
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+def test_input_gradient_norm_retains_representable_scales(compiled, magnitude, sign):
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    state = model.init(2, jax.random.key(0))
+    row = jnp.asarray([sign * magnitude, -sign * magnitude], dtype=jnp.float32)
+    state = state.replace(weights=jnp.stack([row, -row]))
+    gradient_fn = model.input_loss_gradient
+    if compiled:
+        gradient_fn = jax.jit(gradient_fn)
+    with jax.disable_jit(not compiled):
+        result = gradient_fn(state, jnp.zeros(2), jnp.asarray(0, dtype=jnp.int32))
+    expected_gradient = -np.asarray(row, dtype=np.float64)
+    expected_norm = float(np.linalg.norm(expected_gradient))
+    assert bool(result.valid)
+    np.testing.assert_allclose(np.asarray(result.gradient), expected_gradient, rtol=2e-6, atol=0)
+    assert float(result.gradient_norm) == pytest.approx(expected_norm, rel=2e-6, abs=0)
+    assert float(result.loss) == pytest.approx(np.log(2.0), rel=2e-6)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_input_gradient_true_norm_overflow_remains_invalid(compiled):
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    state = model.init(2, jax.random.key(0))
+    row = jnp.full(2, 3e38, dtype=jnp.float32)
+    state = state.replace(weights=jnp.stack([row, -row]))
+    gradient_fn = model.input_loss_gradient
+    if compiled:
+        gradient_fn = jax.jit(gradient_fn)
+    with jax.disable_jit(not compiled):
+        result = gradient_fn(state, jnp.zeros(2), jnp.asarray(0, dtype=jnp.int32))
+    assert not bool(result.valid)
+    np.testing.assert_array_equal(np.asarray(result.gradient), np.zeros(2))
+    assert float(result.gradient_norm) == 0.0

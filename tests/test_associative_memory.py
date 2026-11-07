@@ -538,6 +538,36 @@ def test_update_rejects_labels_outside_the_vocabulary_instead_of_clipping(
     chex.assert_trees_all_equal(result.metrics, jnp.zeros_like(result.metrics))
 
 
+@pytest.mark.parametrize("token", [-1, 4, 9999])
+def test_update_rejects_contexts_outside_the_vocabulary(token: int) -> None:
+    """An out-of-vocabulary token must not allocate rows under an unreachable key."""
+    learner = AssociativeMemoryLearner(
+        AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2, max_features=8)
+    )
+    state = learner.init()
+    result = learner.update(
+        state,
+        jnp.asarray([1, 2, token], dtype=jnp.int32),
+        jnp.asarray(1, dtype=jnp.int32),
+    )
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, state)
+    chex.assert_trees_all_equal(result.metrics, jnp.zeros_like(result.metrics))
+
+
+def test_scan_update_applies_only_the_valid_contexts_of_a_mixed_stream() -> None:
+    learner = AssociativeMemoryLearner(
+        AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2, max_features=8)
+    )
+    contexts = jnp.asarray([[1, 2, 3], [1, 2, 4], [1, 2, 3]], dtype=jnp.int32)
+    labels = jnp.ones((3,), dtype=jnp.int32)
+
+    result = run_associative_memory_arrays(learner, learner.init(), contexts, labels)
+
+    assert result.updates_applied.tolist() == [True, False, True]
+    assert int(result.state.step_count) == 2
+
+
 @pytest.mark.parametrize("label", [-1, 4, 9999])
 def test_scan_update_rejects_out_of_vocabulary_traced_labels(label: int) -> None:
     """A traced out-of-vocabulary label is a rejected transaction, not a substituted class."""

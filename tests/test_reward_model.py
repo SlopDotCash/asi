@@ -525,3 +525,19 @@ def test_rls_reward_model_preserves_equal_covariance_entries(
     assert bool(result.update_applied)
     assert int(result.state.step_count) == 1
     np.testing.assert_array_equal(result.state.covariance, covariance)
+
+
+def test_rls_reward_model_rejects_nonpositive_innovation_denominator() -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0))
+    # Use a finite indefinite covariance directly. Whether an initially
+    # positive covariance becomes indefinite through rounding depends on XLA.
+    covariance = jnp.array([[1.0, 2.0], [2.0, 1.0]], dtype=jnp.float32)
+    state = model.init().replace(covariance=covariance)
+    features = jnp.array([1.0, -1.0], dtype=jnp.float32)
+    assert float(1.0 + features @ (covariance @ features)) == -1.0
+
+    result = model.update(state, features, jnp.float32(1.0))
+
+    assert not bool(result.update_applied)
+    np.testing.assert_array_equal(result.gain, np.zeros(2, dtype=np.float32))
+    chex.assert_trees_all_equal(result.state, state)

@@ -1,0 +1,34 @@
+{
+  "source_commit": "c8c1050e4d69a41ddf1950cd49ca1cae0e331d08",
+  "seed": 311001,
+  "measured_object": "initial (params, learner state, noise key) pytree",
+  "resources_by_arm": {
+    "s02_anneal_f1t1000_wd0": {
+      "persistent_jax_array_leaves": 35,
+      "persistent_jax_array_scalar_count": 612961,
+      "persistent_jax_array_bytes": 2451845,
+      "persistent_state_measurement": "numeric_jax_and_numpy_pytree_leaves",
+      "trainable_scalar_count_estimate": 612171,
+      "trainable_scalar_count_method": "floating_jax_pytree_leaves_upper_bound",
+      "hardware_peak_memory_measured": false
+    },
+    "s005625_anneal_f1t1000_wd0": {
+      "persistent_jax_array_leaves": 35,
+      "persistent_jax_array_scalar_count": 612961,
+      "persistent_jax_array_bytes": 2451845,
+      "persistent_state_measurement": "numeric_jax_and_numpy_pytree_leaves",
+      "trainable_scalar_count_estimate": 612171,
+      "trainable_scalar_count_method": "floating_jax_pytree_leaves_upper_bound",
+      "hardware_peak_memory_measured": false
+    },
+    "s005625_anneal_f2t1000_wd0": {
+      "persistent_jax_array_leaves": 35,
+      "persistent_jax_array_scalar_count": 612961,
+      "persistent_jax_array_bytes": 2451845,
+      "persistent_state_measurement": "numeric_jax_and_numpy_pytree_leaves",
+      "trainable_scalar_count_estimate": 612171,
+      "trainable_scalar_count_method": "floating_jax_pytree_leaves_upper_bound",
+      "hardware_peak_memory_measured": false
+    }
+  }
+}

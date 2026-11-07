@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 
 from alberta_framework.core.world_model import (
+    ActionConditionedWorldModel,
+    ActionConditionedWorldModelConfig,
     OneStepWorldModel,
     WorldModelConfig,
     run_world_model_learning_loop,
@@ -612,3 +614,33 @@ def test_world_model_scan_preserves_initialized_host_clocks() -> None:
         assert type(returned.learner_state.uptime_s) is float
         assert returned.learner_state.uptime_s == initial.learner_state.uptime_s
     assert int(continued.state.step_count) == 4
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_discrete_world_models_reject_boolean_actions(compiled: bool) -> None:
+    """A boolean is not an action code; JAX would silently read True as action 1."""
+    one_step = OneStepWorldModel(
+        WorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=())
+    )
+    conditioned = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=())
+    )
+    action = jnp.array(True)
+
+    for model in (one_step, conditioned):
+        encode = jax.jit(model.encode_action) if compiled else model.encode_action
+        with pytest.raises(ValueError, match="action must have a real numeric dtype"):
+            encode(action)
+        with pytest.raises(ValueError, match="action must have a real numeric dtype"):
+            encode(True)  # type: ignore[arg-type]
+
+
+def test_discrete_world_model_update_rejects_boolean_action_before_learning() -> None:
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=())
+    )
+    state = model.init(jr.key(0))
+    zero = jnp.zeros(2, dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="action must have a real numeric dtype"):
+        model.update(state, zero, jnp.array(False), jnp.array(0.0), jnp.array(1.0), zero)

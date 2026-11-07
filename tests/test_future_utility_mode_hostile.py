@@ -66,9 +66,8 @@ def test_bias_correct_rejects_hostile_before_not_in() -> None:
     # benign valid
     out = bias_correct_future_utility(utils, ages, utility_decay=0.9, mode="age")
     assert out is not None
-    # benign unknown returns same (no raise for unknown str, but type guard passes)
-    out2 = bias_correct_future_utility(utils, ages, utility_decay=0.9, mode="unknown_mode_xyz")
-    assert out2 is not None
+    with pytest.raises(ValueError, match="mode must be one of"):
+        bias_correct_future_utility(utils, ages, utility_decay=0.9, mode="unknown_mode_xyz")
 
 
 def test_non_string_rejects() -> None:

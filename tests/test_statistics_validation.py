@@ -629,6 +629,26 @@ class TestBootstrapCI:
         with pytest.raises(ValueError, match="n_bootstrap.*positive integer"):
             bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=HostileInt(10))
 
+    @pytest.mark.parametrize(
+        "seed",
+        [None, True, False, 1.0, -1, [1], (1,), "1"],
+        ids=repr,
+    )
+    def test_bootstrap_seed_must_be_one_reproducible_integer(self, seed: object) -> None:
+        with pytest.raises(ValueError, match="seed must be a non-negative integer"):
+            bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=10, seed=seed)  # type: ignore[arg-type]
+
+    def test_bootstrap_seed_rejects_a_stateful_generator(self) -> None:
+        generator = np.random.default_rng(0)
+        state = generator.bit_generator.state
+        with pytest.raises(ValueError, match="seed must be a non-negative integer"):
+            bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=10, seed=generator)  # type: ignore[arg-type]
+        assert generator.bit_generator.state == state
+
+    def test_bootstrap_numpy_integer_seed_keeps_its_stream(self) -> None:
+        expected = bootstrap_ci([1.0, 2.0, 9.0], n_bootstrap=20, seed=7)
+        assert bootstrap_ci([1.0, 2.0, 9.0], n_bootstrap=20, seed=np.int64(7)) == expected
+
     @pytest.mark.parametrize("confidence_level", [0.0, 1.0, -0.1, 1.1, float("nan")])
     def test_invalid_confidence_level_rejected_without_warnings(
         self,
@@ -1184,6 +1204,14 @@ class TestPairwiseComparisons:
         with pytest.raises(ValueError, match="Unknown correction"):
             pairwise_comparisons(self._results(), correction="fdr")
 
+    @pytest.mark.parametrize("n_methods", [0, 1])
+    def test_unknown_options_raise_with_nothing_to_compare(self, n_methods: int) -> None:
+        results = {"only": _make_aggregated("only", 0.1, seed=4)} if n_methods else {}
+        with pytest.raises(ValueError, match="Unknown test"):
+            pairwise_comparisons(results, test="anova")
+        with pytest.raises(ValueError, match="Unknown correction"):
+            pairwise_comparisons(results, correction="fdr")
+
     @pytest.mark.parametrize("window", [0, -1])
     def test_nonpositive_window_rejected_without_warnings(self, window: int) -> None:
         with warnings.catch_warnings():
@@ -1381,6 +1409,14 @@ class TestPairwiseComparisons:
         with pytest.raises(ValueError, match="window must be a positive integer"):
             common_final_window({"learner": 10}, window, "squared_error")
 
+    @pytest.mark.parametrize("n_steps", [0, -1, True, 1.5, 10.0, "10", None])
+    def test_common_final_window_requires_positive_step_counts(self, n_steps: object) -> None:
+        with pytest.raises(ValueError, match="step count must be a positive integer"):
+            common_final_window({"learner": n_steps}, 10, "squared_error")
+
+    def test_common_final_window_keeps_positive_numpy_step_counts(self) -> None:
+        assert common_final_window({"learner": np.int64(4)}, 10, "squared_error") == 4
+
 
 @pytest.mark.parametrize("timeseries", [False, True])
 def test_unrepresentable_maximum_spread_raises_without_runtime_warning(timeseries: bool) -> None:
@@ -1393,6 +1429,50 @@ def test_unrepresentable_maximum_spread_raises_without_runtime_warning(timeserie
                 compute_timeseries_statistics(values[:, None])
             else:
                 compute_statistics(values)
+
+
+_REAL_SAMPLES = np.array([1.0, 2.0, 3.0, 4.0, 5.5])
+_OTHER_SAMPLES = np.array([1.5, 2.5, 3.0, 4.5, 6.0])
+_NON_REAL_SAMPLES = [
+    pytest.param(_REAL_SAMPLES + 1j, id="complex"),
+    pytest.param(np.array(["2020-01-01"] * 5, dtype="datetime64[D]"), id="datetime"),
+    pytest.param(np.array([1, 2, 3, 4, 5], dtype="timedelta64[s]"), id="timedelta"),
+]
+
+
+@pytest.mark.parametrize("samples", _NON_REAL_SAMPLES)
+@pytest.mark.parametrize(
+    "summarize",
+    [
+        pytest.param(compute_statistics, id="compute_statistics"),
+        pytest.param(lambda x: bootstrap_ci(x, n_bootstrap=20), id="bootstrap_ci"),
+        pytest.param(lambda x: cohens_d(x, _OTHER_SAMPLES), id="cohens_d_a"),
+        pytest.param(lambda x: cohens_d(_OTHER_SAMPLES, x), id="cohens_d_b"),
+        pytest.param(lambda x: ttest_comparison(x, _OTHER_SAMPLES), id="ttest_a"),
+        pytest.param(lambda x: ttest_comparison(_OTHER_SAMPLES, x), id="ttest_b"),
+        pytest.param(
+            lambda x: ttest_comparison(x, _OTHER_SAMPLES, paired=False), id="ttest_unpaired"
+        ),
+        pytest.param(lambda x: mann_whitney_comparison(x, _OTHER_SAMPLES), id="mann_whitney"),
+        pytest.param(lambda x: wilcoxon_comparison(x, _OTHER_SAMPLES), id="wilcoxon"),
+        pytest.param(lambda x: compute_timeseries_statistics(np.stack([x, x])), id="timeseries"),
+    ],
+)
+def test_non_real_samples_are_rejected(summarize: Any, samples: np.ndarray) -> None:
+    """A real-valued summary must not drop an imaginary part or read a date as a number."""
+    with pytest.raises(ValueError, match="must be real numeric samples"):
+        summarize(samples)
+
+
+@pytest.mark.parametrize("samples", _NON_REAL_SAMPLES)
+def test_pairwise_comparisons_reject_non_real_final_windows(samples: np.ndarray) -> None:
+    window = np.stack([samples, samples[::-1]])
+    results = {
+        "real": AggregatedResults("real", [0, 1], {"m": np.stack([_REAL_SAMPLES] * 2)}, {}),
+        "other": AggregatedResults("other", [0, 1], {"m": window}, {}),
+    }
+    with pytest.raises(ValueError, match="must be real numeric samples"):
+        pairwise_comparisons(results, metric="m", window=3)
 
 
 class TestProbabilityPrecision:

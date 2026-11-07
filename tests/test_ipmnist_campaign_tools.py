@@ -57,6 +57,8 @@ def _shard(
     noise_mode: str | None = "step",
     noise_pool_steps: int | None = None,
     schema: str = "alberta.ipmnist_screening.shard.v1",
+    base_learner: str | None = None,
+    hyperparameters: dict[str, Any] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -76,6 +78,10 @@ def _shard(
         payload["noise_mode"] = noise_mode
     if noise_pool_steps is not None:
         payload["noise_pool_steps"] = noise_pool_steps
+    if base_learner is not None:
+        payload["base_learner"] = base_learner
+    if hyperparameters is not None:
+        payload["hyperparameters"] = hyperparameters
     path.write_text(
         json.dumps(payload),
         encoding="utf-8",
@@ -280,6 +286,65 @@ def test_seed_means_rejects_payload_arm_substitution(tmp_path: Path) -> None:
         seed_means(tmp_path, "disc_r1")
 
 
+def test_seed_means_rejects_mixed_base_learner_across_seeds(tmp_path: Path) -> None:
+    # Failing-test-first for the campaign-tools gap: merge_shards rejects
+    # base_learner drift within one arm, but seed_means did not, so two
+    # different mechanisms could be averaged under one arm name.
+    _shard(
+        tmp_path / "candidate_seed0.json",
+        seed=0,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.01},
+    )
+    _shard(
+        tmp_path / "candidate_seed1.json",
+        seed=1,
+        accuracy=0.9,
+        base_learner="upgd_w",
+        hyperparameters={"lr": 0.99},
+    )
+    with pytest.raises(ValueError, match="inconsistent base_learner"):
+        seed_means(tmp_path, "candidate")
+
+
+def test_seed_means_rejects_mixed_hyperparameters_across_seeds(tmp_path: Path) -> None:
+    _shard(
+        tmp_path / "candidate_seed0.json",
+        seed=0,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.01},
+    )
+    _shard(
+        tmp_path / "candidate_seed1.json",
+        seed=1,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.99},
+    )
+    with pytest.raises(ValueError, match="inconsistent base_learner"):
+        seed_means(tmp_path, "candidate")
+
+
+def test_seed_means_accepts_consistent_learner_across_seeds(tmp_path: Path) -> None:
+    _shard(
+        tmp_path / "candidate_seed0.json",
+        seed=0,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.01},
+    )
+    _shard(
+        tmp_path / "candidate_seed1.json",
+        seed=1,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.01},
+    )
+    assert seed_means(tmp_path, "candidate") == {0: 0.9, 1: 0.9}
+
+
 def test_campaign_cli_uses_strict_json_serialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -306,6 +371,27 @@ def test_across_seed_spread_uses_sample_estimator() -> None:
     assert across_seed_spread(values) > float(np.std(values))
     assert across_seed_spread([]) == 0.0
     assert across_seed_spread([0.5]) == 0.0
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [float("nan")],
+        [float("inf")],
+        [float("nan"), 0.5],
+        [float("inf"), 0.5],
+        [float("-inf"), 0.5],
+        np.asarray([0.5, np.nan, 0.75]),
+    ],
+)
+def test_across_seed_spread_rejects_non_finite_observations(values: Any) -> None:
+    with pytest.raises(ValueError, match="values must be finite"):
+        across_seed_spread(values)
+
+
+def test_across_seed_spread_rejects_an_unrepresentable_spread() -> None:
+    with pytest.raises(ValueError, match="spread must be finite"):
+        across_seed_spread([1e308, -1e308])
 
 
 def test_frontier_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
@@ -1029,6 +1115,53 @@ def test_rule_summary_rejects_hyperparameter_drift_within_an_arm(
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="inconsistent hyperparameters across seeds"):
+        build_legacy_rule_discovery_summary(
+            screen,
+            tmp_path / "confirm",
+            seeds=(0, 1),
+        )
+
+
+def test_rule_summary_rejects_shape_drift_within_an_arm(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    for name in SCREEN_ARMS:
+        for seed in (0, 1):
+            _rule_shard(
+                screen / f"{name}_seed{seed}.json",
+                name=name,
+                seed=seed,
+                accuracy=0.8,
+            )
+    path = screen / f"{SCREEN_ARMS[0]}_seed1.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["config"]["hidden1"] = 16
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protocol config"):
+        build_legacy_rule_discovery_summary(
+            screen,
+            tmp_path / "confirm",
+            seeds=(0, 1),
+        )
+
+
+def test_rule_summary_rejects_shape_drift_across_arms(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    for name in SCREEN_ARMS:
+        for seed in (0, 1):
+            _rule_shard(
+                screen / f"{name}_seed{seed}.json",
+                name=name,
+                seed=seed,
+                accuracy=0.8,
+            )
+    for seed in (0, 1):
+        path = screen / f"{SCREEN_ARMS[0]}_seed{seed}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["config"]["hidden1"] = 16
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protocol config"):
         build_legacy_rule_discovery_summary(
             screen,
             tmp_path / "confirm",

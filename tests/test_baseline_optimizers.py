@@ -867,3 +867,64 @@ class TestGradientPathErrorContract:
         )
         assert bool(result.update_applied)
         assert bool(jnp.all(jnp.isfinite(result.step)))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+@pytest.mark.parametrize("mode", ["linear", "loss_gradient", "prediction_gradient"])
+def test_rmsprop_finite_weighted_square_overflow(compiled, sign, mode):
+    """A representable weighted moment must not reject a large finite gradient."""
+    import jax
+
+    optimizer = RMSprop(decay=0.99)
+    magnitude = 2e19
+    error = jnp.asarray(sign * magnitude, dtype=jnp.float32)
+    if mode == "linear":
+        state = optimizer.init(1)
+        update = optimizer.update
+        if compiled:
+            update = jax.jit(update)
+        result = update(state, error, jnp.ones(1, dtype=jnp.float32))
+        observed = result.weight_delta
+        assert bool(result.update_applied)
+        assert float(result.new_state.bias_v) == pytest.approx(
+            (1.0 - float(state.decay)) * magnitude**2, rel=2e-6
+        )
+        expected_sign = sign
+        assert float(result.bias_delta) * expected_sign > 0.0
+    else:
+        state = optimizer.init_for_shape((1,))
+        update = optimizer.update_from_gradient_checked
+        if compiled:
+            update = jax.jit(update)
+        gradient = jnp.asarray([sign * magnitude], dtype=jnp.float32)
+        if mode == "prediction_gradient":
+            result = update(state, jnp.ones(1, dtype=jnp.float32), error)
+        else:
+            result = update(state, gradient)
+        observed = result.step
+        assert bool(result.update_applied)
+        expected_sign = sign
+    expected_v = (1.0 - float(state.decay)) * magnitude**2
+    assert float(result.new_state.v[0]) == pytest.approx(expected_v, rel=2e-6)
+    expected_step = float(state.step_size) * magnitude / (
+        math.sqrt(expected_v) + float(state.eps)
+    )
+    assert float(observed[0]) == pytest.approx(expected_sign * expected_step, rel=2e-6)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("value", [2e20, float("inf"), float("nan")])
+def test_rmsprop_unrepresentable_weighted_square_still_rejected(compiled, value):
+    """Genuinely invalid moments and inputs retain the transaction guard."""
+    import jax
+
+    optimizer = RMSprop(decay=0.99)
+    state = optimizer.init_for_shape((1,))
+    update = optimizer.update_from_gradient_checked
+    if compiled:
+        update = jax.jit(update)
+    result = update(state, jnp.asarray([value], dtype=jnp.float32))
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.new_state, state)
+    chex.assert_trees_all_equal(result.step, jnp.zeros(1, dtype=jnp.float32))

@@ -1209,7 +1209,7 @@ def run_step2_smoke(
     cfg = cast(Step2KernelConfig, _exact_config_or_default("config", config, Step2KernelConfig))
     learner = make_step2_learner(cfg)
     stream = make_step2_stream(cfg)
-    data_key, learner_key = jr.split(jr.key(seed))
+    data_key, learner_key = jr.split(jr.key(seed, impl="threefry2x32"))
     observations, targets = collect_step2_arrays(stream, steps=steps, key=data_key)
     state = learner.init(cfg.feature_dim, learner_key)
     result = run_upgd_arrays(learner, state, observations, targets)

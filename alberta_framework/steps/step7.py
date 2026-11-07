@@ -635,8 +635,14 @@ def init_step7_state(
     if memory_scalars > _INT32_MAX or 4 * memory_scalars > _INT32_MAX:
         raise ValueError("derived Step 7 planning-memory bytes must fit signed int32")
     control_key, model_key = jr.split(checked_key)
-    control_state = agent.init(feature_dim, control_key)
-    control_state, _ = agent.start(control_state, observation)
+    control_init = agent.init(feature_dim, control_key)
+    control_state, _ = agent.start(control_init, observation)
+    # agent.start is jitted, so the host-only lifecycle clocks it carries
+    # come back narrowed to float32; restore the exact init values.
+    control_state = control_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=control_init.birth_timestamp,
+        uptime_s=control_init.uptime_s,
+    )
     return Step7DynaState(
         control_state=control_state,
         world_model_state=model.init(model_key),
@@ -1315,8 +1321,22 @@ def step7_update(
         jnp.arange(config.planning_steps, dtype=jnp.int32),
     )
     planning_accepted = planning_accepted.astype(jnp.bool_)
+    # The real control and model updates are jitted, so their host-only
+    # lifecycle clocks come back narrowed to float32. One foreground
+    # transition advances neither clock, so restore the exact incoming
+    # values on the returned state.
+    control_state = planned_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=state.control_state.birth_timestamp,
+        uptime_s=state.control_state.uptime_s,
+    )
+    model_state = model_state.replace(  # type: ignore[attr-defined]
+        learner_state=model_state.learner_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=state.world_model_state.learner_state.birth_timestamp,
+            uptime_s=state.world_model_state.learner_state.uptime_s,
+        ),
+    )
     new_state = Step7DynaState(
-        control_state=planned_state,
+        control_state=control_state,
         world_model_state=model_state,
         memory_observations=memory_observations,
         memory_actions=memory_actions,
@@ -1417,8 +1437,17 @@ def run_step7_scan(
         planning_accepted,
     ) = jax.lax.scan(scan_step, state, (rewards, next_observations))
     elapsed = time.time() - t0
-    # Preserve the model's host-only lifecycle clocks at the batch boundary.
+    # Preserve the host-only lifecycle clocks at the batch boundary. The
+    # scan restores the model's clocks already (with elapsed time added);
+    # the control state passes through the same scan and needs its clocks
+    # restored exactly, or its wall-clock birth time comes back narrowed
+    # to float32. Control uptime is kept exact here, not advanced by the
+    # scan's wall time, so repeated scans of the same state stay equal.
     final_state = final_state.replace(  # type: ignore[attr-defined]
+        control_state=final_state.control_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=state.control_state.birth_timestamp,
+            uptime_s=state.control_state.uptime_s,
+        ),
         world_model_state=final_state.world_model_state.replace(  # type: ignore[attr-defined]
             learner_state=final_state.world_model_state.learner_state.replace(  # type: ignore[attr-defined]
                 birth_timestamp=state.world_model_state.learner_state.birth_timestamp,
@@ -1483,7 +1512,7 @@ def run_step7_smoke(
     ):
         raise ValueError("derived Step 7 smoke resources exceed signed-int32 bounds")
     agent, model = make_step7_components(cfg)
-    data_key, state_key = jr.split(jr.key(seed))
+    data_key, state_key = jr.split(jr.key(seed, impl="threefry2x32"))
     observations = jr.normal(
         data_key,
         (steps + 1, cfg.world_model.observation_dim),

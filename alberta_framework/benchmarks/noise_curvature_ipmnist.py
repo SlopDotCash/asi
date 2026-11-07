@@ -346,6 +346,33 @@ def _layer_squared_norm(tree: Mapping[str, Array], names: tuple[str, str]) -> Ar
     )
 
 
+def _layer_l2_norm(tree: Mapping[str, Array], names: tuple[str, str]) -> Array:
+    """Euclidean norm of one layer's power-iteration vector.
+
+    The direct square root is kept whenever it is finite. One finite entry near
+    ``2e19`` overflows its square in float32 while the norm still fits; that
+    case scales by the largest absolute entry. A norm that does not fit, or a
+    non-finite entry, stays non-finite. Gradient records still store the raw
+    sum of squares.
+    """
+
+    direct = jnp.sqrt(_layer_squared_norm(tree, names))
+    peak = jnp.asarray(0.0, dtype=jnp.float32)
+    finite = jnp.asarray(True, dtype=jnp.bool_)
+    for name in names:
+        value = tree[name]
+        peak = jnp.maximum(peak, jnp.max(jnp.abs(value)))
+        finite = finite & jnp.all(jnp.isfinite(value))
+    safe_peak = jnp.where(peak > 0.0, peak, jnp.asarray(1.0, dtype=jnp.float32))
+    scaled_squared = sum(
+        (jnp.sum(jnp.square(tree[name] / safe_peak)) for name in names),
+        start=jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    recovered = safe_peak * jnp.sqrt(scaled_squared)
+    use_fallback = finite & ~jnp.isfinite(direct) & jnp.isfinite(recovered)
+    return jnp.where(use_fallback, recovered, direct)
+
+
 def _layer_effective_step(
     adam: Mapping[str, AdamParamState], names: tuple[str, str], learning_rate: Array
 ) -> Array:
@@ -417,7 +444,7 @@ def _controller_update(
                 (jnp.sum(vector[name] * hessian_vector[name]) for name in names),
                 start=jnp.asarray(0.0, dtype=jnp.float32),
             )
-            norm = jnp.sqrt(_layer_squared_norm(hessian_vector, names))
+            norm = _layer_l2_norm(hessian_vector, names)
             valid_norm = jnp.isfinite(norm) & (norm > 0.0)
             for name in names:
                 normalized = hessian_vector[name] / jnp.maximum(norm, 1e-30)

@@ -919,7 +919,7 @@ class AssociativeMemoryLearner:
 
     def _replacement_slot(
         self, state: AssociativeMemoryState, matched: Array
-    ) -> tuple[Array, Array]:
+    ) -> tuple[Array, Array, Array]:
         eligible = (
             jnp.arange(self._config.max_features, dtype=jnp.float32)
             < self._effective_budget(state)
@@ -934,10 +934,16 @@ class AssociativeMemoryLearner:
         protected = occupied & ((state.last_update == state.step_count) | matched)
         candidate = occupied & (~protected)
         candidate_score = jnp.where(candidate, state.utility, jnp.inf)
-        occupied_score = jnp.where(occupied, state.utility, jnp.inf)
-        utility_score = jnp.where(jnp.any(candidate), candidate_score, occupied_score)
-        low_utility_slot = jnp.argmin(utility_score)
-        return jnp.where(has_empty, empty_slot, low_utility_slot), has_empty
+        low_utility_slot = jnp.argmin(candidate_score)
+        # When every eligible row is protected there is no victim: the new
+        # key must be skipped this step, not fall back to evicting a
+        # protected row (which would discard a write this update just made).
+        has_victim = has_empty | jnp.any(candidate)
+        return (
+            jnp.where(has_empty, empty_slot, low_utility_slot),
+            has_empty,
+            has_victim,
+        )
 
     def _update_family_scope(
         self,
@@ -1128,8 +1134,14 @@ class AssociativeMemoryLearner:
             found, indices = self._lookup(carry, key[None, :], active[None])
             found_scalar = found[0]
             existing_slot = indices[0]
-            replacement_slot, used_empty = self._replacement_slot(carry, matched)
+            replacement_slot, used_empty, has_victim = self._replacement_slot(
+                carry, matched
+            )
             slot = jnp.where(found_scalar, existing_slot, replacement_slot)
+            # A new key with no empty slot and no unprotected victim is
+            # skipped: writing it would evict a row this update just wrote
+            # (or matched and will write later), discarding that write.
+            write_active = (active > 0) & (found_scalar | has_victim)
             # A slot allocated or reused for a new key starts empty: the values,
             # utility, and count of an evicted occupant must not be inherited.
             slot_values = carry.values[slot]
@@ -1182,7 +1194,7 @@ class AssociativeMemoryLearner:
             new_utility = jnp.clip(new_utility, -8.0, 8.0)
             new_row = old_row * self._config.retention
             new_row = new_row.at[label].add(self._config.write_lr)
-            active_bool = active > 0
+            active_bool = write_active
             allocations = _saturating_add_bool(
                 carry.allocations,
                 active_bool & (~found_scalar) & used_empty,
@@ -1258,8 +1270,10 @@ class AssociativeMemoryLearner:
             ],
             dtype=jnp.float32,
         )
+        context_valid = jnp.all((context >= 0) & (context < self._config.vocab_size))
         update_applied = (
             label_valid
+            & context_valid
             & self._state_is_valid(state)
             & floating_tree_is_finite(prediction)
             & jnp.isfinite(loss)

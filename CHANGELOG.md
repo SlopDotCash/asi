@@ -87,6 +87,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ipmnist_screening.load_shard` now rejects a non-string `schema` and a legacy
+  v1 shard without a `config` object as `ValueError`s. Testing an unhashable
+  JSON array/object schema against the supported-schema set raised
+  `TypeError: unhashable type`, and the legacy path indexed `payload["config"]`
+  before validating it, so an absent key raised `KeyError`. Both malformed
+  artifacts crashed merge, proxy, and preregistration validation instead of
+  failing closed through the loader's validation contract.
+- `upgd_label_emnist.load_plan` now rejects a plan body whose keys differ from
+  the schema `build_plan_payload` writes, a duplicate or non-string
+  `learner_ids` entry, and a non-integer `planned_shard_count` with
+  `ValueError` instead of `KeyError` or silent acceptance. Shard validation
+  routes per-task curves and `average_online_accuracy` through the finite-real
+  gate, so a string mean, an absent mean, and nested or boolean curve entries
+  fail the loader contract instead of being coerced.
 - Required every merged screening arm's recorded `base_learner` to match its
   registered arm. `load_shard` cross-checks the registered arm only for
   source-bound v2/v3 shards and the campaign's live format is v1, so a v1 arm

@@ -19,8 +19,10 @@ the critic-form x actor-form design space:
 
 All actors implement AC(lambda), ``theta += alpha * delta * e``, with an
 eligibility trace over log-policy gradients (Sutton & Barto 2018, Ch. 13).
-The critic update is always delegated unchanged to ``HordeLearner.update()``,
-preserving per-head trace decay and auxiliary demons.
+The critic update is always delegated to ``HordeLearner.update()``,
+preserving per-head trace decay and auxiliary demons. A zero value-head
+discount ends the episode for the value head: the state-value agents clear
+its critic trace after the update, as they clear the actor traces.
 
 References:
     Sutton & Barto (2018). "Reinforcement Learning: An Introduction,"
@@ -296,6 +298,22 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _require_concrete_finite(name: str, value: Array) -> Array:
+    """Reject non-finite values at an eager, state-committing boundary.
+
+    ``start`` is the only public path that stores an observation into
+    persistent state without a runtime gate. Every ``update`` commits only
+    when the whole stored state is finite, so a non-finite value accepted
+    here would be stored in ``last_observation`` and silently reject every
+    later update with the state bitwise frozen. Traced inputs pass through:
+    under ``jax.jit`` or ``scan`` tracing the runtime state-finiteness gates
+    remain authoritative.
+    """
+    if not isinstance(value, jax.core.Tracer) and not bool(jnp.all(jnp.isfinite(value))):
+        raise ValueError(f"{name} must contain only finite values")
+    return value
+
+
 def _rollback_critic_result(
     result: HordeUpdateResult,
     previous_state: MultiHeadMLPState,
@@ -339,6 +357,37 @@ def _rollback_critic_result(
         ),
         head_updates_applied=head_updates_applied,
         update_applied=result.update_applied & outer_update_applied,
+    )
+
+
+def _clear_terminal_value_trace(
+    critic: HordeLearner,
+    result: HordeUpdateResult,
+    value_head_index: int,
+    value_discount: Array,
+) -> HordeUpdateResult:
+    """End the value head's critic eligibility after a zero-discount update.
+
+    The terminal update has already credited the finished episode along this
+    trace. Clearing it afterwards keeps that eligibility out of the next
+    episode, as the actor traces are cleared. Auxiliary demons keep their
+    configured gammas and traces. ``HordeLearner`` itself stays unchanged
+    because SARSA passes it zero discounts on continuing transitions.
+    """
+    demon = critic.horde_spec.demons[value_head_index]
+    if np.float32(demon.gamma) * np.float32(demon.lamda) == 0.0:
+        # The next update rebuilds this trace from the gradient alone.
+        return result
+    terminal = value_discount == 0.0
+    head_traces = list(result.state.head_traces)
+    head_traces[value_head_index] = tuple(
+        jnp.where(terminal, jnp.zeros_like(trace), trace) for trace in head_traces[value_head_index]
+    )
+    return cast(
+        HordeUpdateResult,
+        result.replace(  # type: ignore[attr-defined]
+            state=result.state.replace(head_traces=tuple(head_traces)),  # type: ignore[attr-defined]
+        ),
     )
 
 
@@ -722,13 +771,29 @@ class QHordeActorCriticAgent:
         ).astype(jnp.int32)
         return action, key, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: QHordeActorCriticState,
         observation: Array,
     ) -> tuple[QHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
-        """Select and store the first action for a stream or episode."""
+        """Select and store the first action for a stream or episode.
+
+        The observation is validated eagerly at this state-committing
+        boundary: ``update`` commits only when the stored state is finite, so
+        a non-finite value accepted here would be stored in
+        ``last_observation`` and silently reject every later update. Traced
+        inputs pass through to those runtime gates.
+        """
+        observation = _require_concrete_finite("observation", observation)
+        return self._start(state, observation)  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(
+        self,
+        state: QHordeActorCriticState,
+        observation: Array,
+    ) -> tuple[QHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
+        """Jitted implementation of one checked episode start."""
         action, key, probs = self.select_action(state, observation)
         new_state = state.replace(  # type: ignore[attr-defined]
             last_observation=observation,
@@ -781,6 +846,22 @@ class QHordeActorCriticAgent:
             cumulants,
             observation,
         )
+        # A terminal transition ends the episode for the prediction demons
+        # too: their traces decay by the spec gamma * lamda, so the stored
+        # trace would be credited to the next episode's first TD error.
+        # The terminal update above has already used the traces; clear them
+        # now. Action heads keep theirs: gamma=0 forces gamma * lamda = 0.
+        if self._critic.n_demons > cfg.n_actions:
+            _pred_traces = list(critic_result.state.head_traces)
+            for _i in range(cfg.n_actions, self._critic.n_demons):
+                _w, _b = _pred_traces[_i]
+                _pred_traces[_i] = (
+                    jnp.where(terminated, jnp.zeros_like(_w), _w),
+                    jnp.where(terminated, jnp.zeros_like(_b), _b),
+                )
+            critic_result = critic_result.replace(
+                state=critic_result.state.replace(head_traces=tuple(_pred_traces))
+            )
 
         actor_td_error = (
             td_error
@@ -875,7 +956,7 @@ class QHordeActorCriticAgent:
         )
         return QHordeActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(update_applied, next_action, jnp.asarray(0, jnp.int32)),
+            action=jnp.where(update_applied, next_action, state.last_action),
             policy=jnp.where(update_applied, policy, jnp.zeros_like(policy)),
             q_values=jnp.where(update_applied, q_previous, jnp.zeros_like(q_previous)),
             next_q_values=jnp.where(
@@ -898,7 +979,8 @@ class HordeActorCriticAgent:
     ``theta += alpha * delta * e``. The advantage ``delta`` is supplied by the
     configured Horde value head. The critic update is delegated entirely to
     ``HordeLearner.update()``, preserving per-head trace decay and auxiliary
-    prediction demons.
+    prediction demons. After a zero value-head discount the value head's
+    critic trace is cleared, as the actor traces are.
     """
 
     def __init__(
@@ -1037,13 +1119,29 @@ class HordeActorCriticAgent:
         ).astype(jnp.int32)
         return action, key, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: HordeActorCriticState,
         observation: Array,
     ) -> tuple[HordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
-        """Select and store the first action for a stream or episode."""
+        """Select and store the first action for a stream or episode.
+
+        The observation is validated eagerly at this state-committing
+        boundary: ``update`` commits only when the stored state is finite, so
+        a non-finite value accepted here would be stored in
+        ``last_observation`` and silently reject every later update. Traced
+        inputs pass through to those runtime gates.
+        """
+        observation = _require_concrete_finite("observation", observation)
+        return self._start(state, observation)  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(
+        self,
+        state: HordeActorCriticState,
+        observation: Array,
+    ) -> tuple[HordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
+        """Jitted implementation of one checked episode start."""
         action, key, probs = self.select_action(state, observation)
         new_state = state.replace(  # type: ignore[attr-defined]
             last_observation=observation,
@@ -1125,6 +1223,9 @@ class HordeActorCriticAgent:
                 observation,
                 discounts,
             )
+        critic_result = _clear_terminal_value_trace(
+            self._critic, critic_result, cfg.value_head_index, value_discount
+        )
         td_error = critic_result.td_errors[cfg.value_head_index]
         actor_td_error = (
             td_error
@@ -1210,7 +1311,7 @@ class HordeActorCriticAgent:
         )
         return HordeActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(update_applied, next_action, jnp.asarray(0, jnp.int32)),
+            action=jnp.where(update_applied, next_action, state.last_action),
             policy=jnp.where(update_applied, next_policy, jnp.zeros_like(next_policy)),
             value=jnp.where(update_applied, value, 0.0),
             next_value=jnp.where(update_applied & (value_discount != 0.0), next_value, 0.0),
@@ -1316,8 +1417,12 @@ def run_horde_actor_critic_from_arrays(
             lambda: carry,
         )
         return committed_state, (
+            # The action for this row was selected (or supplied) even when
+            # the learning update is rejected; only an invalid action
+            # itself falls back to 0. Reporting 0 for a valid action would
+            # falsify the recorded trajectory.
             jnp.where(
-                update_applied,
+                fixed_action_valid,
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
@@ -1709,8 +1814,10 @@ class NonlinearHordeActorCriticAgent:
 
     This is the canonical nonlinear Step 4 agent.  The actor is an MLP whose
     policy gradient is computed by ``jax.grad`` through the full softmax
-    forward pass.  The critic is delegated unchanged to a
-    :class:`~alberta_framework.core.horde.HordeLearner`.
+    forward pass.  The critic is delegated to a
+    :class:`~alberta_framework.core.horde.HordeLearner`; after a zero
+    value-head discount the value head's critic trace is cleared, as the
+    actor traces are.
 
     The update rule is AC(lambda) with MLP actor:
 
@@ -1923,13 +2030,29 @@ class NonlinearHordeActorCriticAgent:
         ).astype(jnp.int32)
         return action, key, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: NonlinearHordeActorCriticState,
         observation: Array,
     ) -> tuple[NonlinearHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
-        """Select and store the first action for a stream or episode."""
+        """Select and store the first action for a stream or episode.
+
+        The observation is validated eagerly at this state-committing
+        boundary: ``update`` commits only when the stored state is finite, so
+        a non-finite value accepted here would be stored in
+        ``last_observation`` and silently reject every later update. Traced
+        inputs pass through to those runtime gates.
+        """
+        observation = _require_concrete_finite("observation", observation)
+        return self._start(state, observation)  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(
+        self,
+        state: NonlinearHordeActorCriticState,
+        observation: Array,
+    ) -> tuple[NonlinearHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
+        """Jitted implementation of one checked episode start."""
         action, key, probs = self.select_action(state, observation)
         new_state = state.replace(  # type: ignore[attr-defined]
             last_observation=observation,
@@ -1994,6 +2117,9 @@ class NonlinearHordeActorCriticAgent:
             critic_result = self._critic.update_with_discounts(
                 state.critic_state, prev_obs, cumulants, observation, discounts
             )
+        critic_result = _clear_terminal_value_trace(
+            self._critic, critic_result, idx, value_discount
+        )
         td_error = critic_result.td_errors[idx]
         actor_td_error = (
             td_error
@@ -2213,7 +2339,7 @@ class NonlinearHordeActorCriticAgent:
         )
         return NonlinearHordeActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(update_applied, next_action, jnp.asarray(0, jnp.int32)),
+            action=jnp.where(update_applied, next_action, state.last_action),
             policy=jnp.where(update_applied, next_policy, jnp.zeros_like(next_policy)),
             value=jnp.where(update_applied, value, 0.0),
             next_value=jnp.where(update_applied & (value_discount != 0.0), next_value, 0.0),
@@ -2288,11 +2414,11 @@ def run_nonlinear_horde_actor_critic_from_arrays(
             lambda: carry,
         )
         return committed_state, (
-            jnp.where(
-                result.update_applied,
-                current_action,
-                jnp.asarray(0, dtype=jnp.int32),
-            ),
+            # The action for this row was sampled even when the learning
+            # update is rejected; reporting 0 would falsify the recorded
+            # trajectory. (This runner samples on-policy only, so the
+            # action is always a valid index.)
+            current_action,
             jnp.where(result.update_applied, current_policy, jnp.zeros_like(current_policy)),
             result.value,
             result.td_error,
@@ -2645,13 +2771,29 @@ class NonlinearQHordeActorCriticAgent:
         ).astype(jnp.int32)
         return action, key, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: NonlinearHordeActorCriticState,
         observation: Array,
     ) -> tuple[NonlinearHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
-        """Select and store the first action for a stream or episode."""
+        """Select and store the first action for a stream or episode.
+
+        The observation is validated eagerly at this state-committing
+        boundary: ``update`` commits only when the stored state is finite, so
+        a non-finite value accepted here would be stored in
+        ``last_observation`` and silently reject every later update. Traced
+        inputs pass through to those runtime gates.
+        """
+        observation = _require_concrete_finite("observation", observation)
+        return self._start(state, observation)  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(
+        self,
+        state: NonlinearHordeActorCriticState,
+        observation: Array,
+    ) -> tuple[NonlinearHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
+        """Jitted implementation of one checked episode start."""
         action, key, probs = self.select_action(state, observation)
         return (
             state.replace(  # type: ignore[attr-defined]
@@ -2705,6 +2847,22 @@ class NonlinearQHordeActorCriticAgent:
             cumulants,
             observation,
         )
+        # A terminal transition ends the episode for the prediction demons
+        # too: their traces decay by the spec gamma * lamda, so the stored
+        # trace would be credited to the next episode's first TD error.
+        # The terminal update above has already used the traces; clear them
+        # now. Action heads keep theirs: gamma=0 forces gamma * lamda = 0.
+        if self._critic.n_demons > cfg.n_actions:
+            _pred_traces = list(critic_result.state.head_traces)
+            for _i in range(cfg.n_actions, self._critic.n_demons):
+                _w, _b = _pred_traces[_i]
+                _pred_traces[_i] = (
+                    jnp.where(terminated, jnp.zeros_like(_w), _w),
+                    jnp.where(terminated, jnp.zeros_like(_b), _b),
+                )
+            critic_result = critic_result.replace(
+                state=critic_result.state.replace(head_traces=tuple(_pred_traces))
+            )
 
         actor_td_error = (
             td_error
@@ -2900,7 +3058,7 @@ class NonlinearQHordeActorCriticAgent:
         )
         return NonlinearQHordeActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(update_applied, next_action, jnp.asarray(0, jnp.int32)),
+            action=jnp.where(update_applied, next_action, state.last_action),
             policy=jnp.where(update_applied, policy, jnp.zeros_like(policy)),
             q_values=jnp.where(update_applied, q_previous, jnp.zeros_like(q_previous)),
             next_q_values=jnp.where(

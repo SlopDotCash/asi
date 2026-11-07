@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
+from alberta_framework.core.average_reward import DifferentialSARSAState
 from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
 from alberta_framework.steps.step7 import (
     Step7DynaConfig,
@@ -62,6 +63,25 @@ def _init(cfg: Step7DynaConfig, seed: int = 0) -> tuple[object, object, Step7Dyn
 
 def _assert_key_equal(actual: jax.Array, expected: jax.Array) -> None:
     chex.assert_trees_all_equal(jr.key_data(actual), jr.key_data(expected))
+
+
+def _assert_host_control_state(
+    actual: DifferentialSARSAState,
+    device_expected: DifferentialSARSAState,
+    incoming: DifferentialSARSAState,
+) -> None:
+    # The facade restores exact host clocks after its device-side updates.
+    assert type(actual.birth_timestamp) is float
+    assert actual.birth_timestamp == incoming.birth_timestamp
+    assert type(actual.uptime_s) is float
+    assert actual.uptime_s == incoming.uptime_s
+    chex.assert_trees_all_equal(
+        actual,
+        device_expected.replace(
+            birth_timestamp=incoming.birth_timestamp,
+            uptime_s=incoming.uptime_s,
+        ),
+    )
 
 
 def _assert_pairwise_distinct(keys: tuple[jax.Array, ...]) -> None:
@@ -144,7 +164,7 @@ def test_zero_planning_rejected_real_update_keeps_the_original_rng_path() -> Non
 
     assert not bool(expected.update_applied)
     chex.assert_trees_all_equal(result.real_control_result, expected)
-    chex.assert_trees_all_equal(result.state.control_state, expected.state)
+    _assert_host_control_state(result.state.control_state, expected.state, saturated_control)
 
 
 def test_rejected_real_update_reserves_its_advanced_key_before_planning() -> None:
@@ -203,9 +223,14 @@ def test_invalid_next_observation_rejects_before_building_a_control_candidate() 
     assert not bool(result.input_valid)
     assert bool(result.candidate_state_finite)
     expected_key = jr.split(control.rng_key, 4)[0]
+    # This internal helper returns the device-side conditional result.
     chex.assert_trees_all_equal(
         result.state,
-        control.replace(rng_key=expected_key),
+        control.replace(
+            rng_key=expected_key,
+            birth_timestamp=jnp.asarray(control.birth_timestamp),
+            uptime_s=jnp.asarray(control.uptime_s),
+        ),
     )
 
 
@@ -235,7 +260,7 @@ def test_rejected_rollout_updates_advance_their_local_key_each_depth() -> None:
     expected_final = jr.split(jr.split(rollout_root, 4)[0], 4)[0]
     expected_control = result.real_control_result.state.replace(rng_key=expected_final)
     _assert_key_equal(result.state.control_state.rng_key, expected_final)
-    chex.assert_trees_all_equal(result.state.control_state, expected_control)
+    _assert_host_control_state(result.state.control_state, expected_control, almost_saturated)
 
 
 @pytest.mark.parametrize("warmup", [0, 100])
@@ -275,9 +300,10 @@ def test_valid_planning_uses_the_exact_linear_key_chain(
     )
     _assert_key_equal(result.state.control_state.rng_key, expected)
     if warmup > 0:
-        chex.assert_trees_all_equal(
+        _assert_host_control_state(
             result.state.control_state,
             result.real_control_result.state.replace(rng_key=expected),
+            state.control_state,
         )
 
 

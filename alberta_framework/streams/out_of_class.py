@@ -559,7 +559,26 @@ def _finite_frequency_component_sum(products: Array) -> Array:
     products = jnp.asarray(products, dtype=jnp.float32)
     direct = jnp.sum(products, axis=-1)
     exponent = jnp.frexp(jnp.max(jnp.abs(products), axis=-1))[1]
-    scaled = jnp.ldexp(products, -exponent[:, None])
+    scaled = jnp.ldexp(products, -exponent[..., None])
+    stable = jnp.ldexp(jnp.sum(scaled, axis=-1), exponent)
+    use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+    return jnp.where(use_stable, stable, direct)
+
+
+def _finite_affine_sum(
+    products: Array,
+    bias: Array,
+    *,
+    direct: Array | None = None,
+) -> Array:
+    """Sum ``products`` along ``axis=-1`` plus ``bias`` without partial overflow."""
+    products = jnp.asarray(products, dtype=jnp.float32)
+    bias = jnp.asarray(bias, dtype=jnp.float32)
+    if direct is None:
+        direct = jnp.sum(products, axis=-1) + bias
+    terms = jnp.concatenate([products, bias[..., None]], axis=-1)
+    exponent = jnp.frexp(jnp.max(jnp.abs(terms), axis=-1))[1]
+    scaled = jnp.ldexp(terms, -exponent[..., None])
     stable = jnp.ldexp(jnp.sum(scaled, axis=-1), exponent)
     use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
     return jnp.where(use_stable, stable, direct)
@@ -1004,13 +1023,17 @@ class CompositionalStream:
         amps = state.amplitudes[context_idx]    # (T, O)
 
         # inner = tanh(V x + c) -> (T, O, H)
-        inner_pre = jnp.einsum("tohf,f->toh", inner_w, x) + inner_b
+        inner_pre = _finite_affine_sum(
+            inner_w * x,
+            inner_b,
+            direct=jnp.einsum("tohf,f->toh", inner_w, x) + inner_b,
+        )
         inner = jnp.tanh(inner_pre)
         # outer = tanh(W inner + b) -> (T, O)
-        outer_pre = jnp.sum(outer_w * inner, axis=-1) + outer_b
+        outer_pre = _finite_affine_sum(outer_w * inner, outer_b)
         outer = jnp.tanh(outer_pre)
         # target_t = sum_o amps[t, o] * outer[t, o]
-        target = jnp.sum(amps * outer, axis=-1)
+        target = _finite_frequency_component_sum(amps * outer)
         noise = self._noise_std * jr.normal(
             k_noise, (self._n_tasks,), dtype=jnp.float32
         )

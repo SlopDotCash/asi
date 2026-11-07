@@ -372,6 +372,7 @@ def _runtime_identity() -> dict[str, Any]:
         "device_count": jax.device_count(),
         "local_device_count": jax.local_device_count(),
         "devices": devices,
+        "jax_disable_jit": bool(jax.config.jax_disable_jit),
         "jax_enable_x64": bool(jax.config.jax_enable_x64),
         "jax_default_prng_impl": str(jax.config.jax_default_prng_impl),
         "jax_default_matmul_precision": str(jax.config.jax_default_matmul_precision),

@@ -235,6 +235,9 @@ def test_mechanism_off_runner_keeps_alpha_zero() -> None:
         ("metrics", "asi_whole_stream_preupdate_online_accuracy", 0.0),
         ("state", "alpha_bytes", -1),
         ("dataset", "input_dim", 1_000_001),
+        ("dataset", "sha256", ""),
+        ("dataset", "sha256", None),
+        ("dataset", "sha256", "A" * 64),
         ("provenance", "official_commit", "0" * 40),
     ],
 )

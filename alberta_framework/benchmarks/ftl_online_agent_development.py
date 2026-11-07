@@ -146,7 +146,7 @@ class DevelopmentResult:
     def __post_init__(self) -> None:
         if type(self.schema) is not str or self.schema != SCHEMA:
             raise ValueError("unsupported schema")
-        if self.seed not in FROZEN_SEEDS:
+        if type(self.seed) is not int or self.seed not in FROZEN_SEEDS:
             raise ValueError("seed is outside the frozen development schedule")
         _int(self.steps_per_task, "steps_per_task", 1, MAX_STEPS_PER_TASK)
         _int(self.planning_horizon, "planning_horizon", 1, MAX_PLANNING_HORIZON)
@@ -170,13 +170,12 @@ class DevelopmentResult:
             or self.allowed_task_information[0] != "current_goal"
         ):
             raise ValueError("the planner receives only the current goal as task information")
-        flags = (
-            self.development_only,
-            not self.scientific_promotion_allowed,
-            self.negative_results_must_be_retained,
-            not self.historical_ftl_claim_reused,
-        )
-        if any(type(x) is not bool or not x for x in flags):
+        if (
+            self.development_only is not True
+            or self.scientific_promotion_allowed is not False
+            or self.negative_results_must_be_retained is not True
+            or self.historical_ftl_claim_reused is not False
+        ):
             raise ValueError("result must remain nonpromoting, retained, and historically separate")
 
 

@@ -3,6 +3,7 @@
 import time
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -11,10 +12,12 @@ import pytest
 from alberta_framework import (
     IDBD,
     LMS,
+    TDIDBD,
     Autostep,
     BatchedLearningResult,
     EMANormalizer,
     LinearLearner,
+    MLPLearner,
     NormalizerHistory,
     NormalizerTrackingConfig,
     RandomWalkStream,
@@ -1062,6 +1065,64 @@ class TestLinearLearnerNormalizedPredict:
         )
         x = jnp.array([2.0, 1.0, 4.0], dtype=jnp.float32)
         chex.assert_trees_all_close(learner.predict(state, x), jnp.array([2.25], dtype=jnp.float32))
+
+
+def _prediction_learners() -> list[tuple[str, object, object]]:
+    linear = LinearLearner(optimizer=LMS(0.1))
+    normalized = LinearLearner(optimizer=LMS(0.1), normalizer=EMANormalizer(decay=0.99))
+    mlp = MLPLearner(hidden_sizes=(4,), optimizer=LMS(0.1))
+    td = TDLinearLearner(optimizer=TDIDBD())
+    true_online = TrueOnlineTDLearner()
+    return [
+        ("linear", linear, linear.init(3)),
+        ("normalized-linear", normalized, normalized.init(3)),
+        ("mlp", mlp, mlp.init(3, jr.key(0))),
+        ("td", td, td.init(3)),
+        ("true-online-td", true_online, true_online.init(3)),
+    ]
+
+
+class TestPredictObservationContract:
+    """One learner prediction must not silently become many or become complex."""
+
+    @pytest.mark.parametrize(
+        "name", ["linear", "normalized-linear", "mlp", "td", "true-online-td"]
+    )
+    @pytest.mark.parametrize(
+        "observation",
+        [
+            jnp.asarray(1.0, dtype=jnp.float32),
+            jnp.ones((3, 2), dtype=jnp.float32),
+            np.full(3, 1.0 + 2.0j, dtype=np.complex64),
+        ],
+        ids=["scalar-broadcast", "batched-matrix", "complex"],
+    )
+    def test_predict_rejects_malformed_observation(self, name, observation) -> None:
+        _, learner, state = next(item for item in _prediction_learners() if item[0] == name)
+
+        with pytest.raises(ValueError, match="observation must"):
+            learner.predict(state, observation)  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize(
+        "name", ["linear", "normalized-linear", "mlp", "td", "true-online-td"]
+    )
+    def test_predict_keeps_one_real_prediction_for_valid_observations(self, name) -> None:
+        _, learner, state = next(item for item in _prediction_learners() if item[0] == name)
+
+        for observation in (jnp.ones(3, dtype=jnp.float32), jnp.ones(3, dtype=jnp.int32)):
+            prediction = learner.predict(state, observation)  # type: ignore[attr-defined]
+            assert prediction.shape == (1,)
+            assert prediction.dtype == jnp.float32
+
+    def test_predict_contract_holds_under_vmap(self) -> None:
+        learner = LinearLearner(optimizer=LMS(0.1))
+        state = learner.init(3)
+
+        predictions = jax.vmap(lambda x: learner.predict(state, x))(
+            jnp.ones((2, 3), dtype=jnp.float32)
+        )
+
+        assert predictions.shape == (2, 1)
 
 
 class TestTrackingKeepsEveryRecording:

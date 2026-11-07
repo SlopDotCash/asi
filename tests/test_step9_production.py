@@ -9,9 +9,11 @@ constructible.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -21,6 +23,7 @@ from alberta_framework.core.world_model import (
     ActionConditionedWorldModel,
     ActionConditionedWorldModelConfig,
 )
+from alberta_framework.steps import step9 as step9_module
 from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
 from alberta_framework.steps.step9 import (
     Step9DreamingConfig,
@@ -515,6 +518,34 @@ def test_step9_single_update_increments_counters() -> None:
     chex.assert_shape(result.dream_accepted, (2,))
 
 
+def test_step9_rejected_observation_never_becomes_a_dream_anchor() -> None:
+    cfg = Step9DreamingConfig(
+        observation_dim=2,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=2,
+        dreaming_warmup_steps=0,
+        dreaming_max_model_error=1e30,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    state = init_step9_state(
+        agent, model, buffer,
+        key=jr.key(2),
+        initial_observation=jnp.zeros(2),
+    )
+
+    result = step9_update(
+        cfg, agent, model, buffer,
+        state,
+        jnp.array(1.0, dtype=jnp.float32),
+        jnp.array([jnp.nan, 0.2], dtype=jnp.float32),
+    )
+
+    assert not bool(result.real_model_result.update_applied)
+    chex.assert_trees_all_equal(result.state.buffer_state, state.buffer_state)
+
+
 def test_step9_dreams_rejected_before_warmup() -> None:
     """With warmup=100 and only 1 step, no dreams should be accepted."""
     cfg = Step9DreamingConfig(
@@ -929,6 +960,58 @@ def test_step9_scan_exposes_rejected_model_updates() -> None:
         result.model_updates_applied,
         jnp.asarray([False]),
     )
+
+
+@pytest.mark.parametrize("planning_budget", [0, 1])
+def test_step9_scan_preserves_initialized_world_model_host_clocks(
+    planning_budget: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = iter([100.0, 100.25, 100.25, 100.5])
+    calls = []
+    original_wait = jax.block_until_ready
+
+    def read_clock() -> float:
+        calls.append("clock")
+        return next(clock)
+
+    def wait_for_scan(value: jax.Array) -> jax.Array:
+        calls.append("wait")
+        return original_wait(value)
+
+    monkeypatch.setattr(step9_module, "time", SimpleNamespace(time=read_clock))
+    monkeypatch.setattr(jax, "block_until_ready", wait_for_scan)
+    cfg = Step9DreamingConfig(
+        observation_dim=2,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=planning_budget,
+        dreaming_warmup_steps=0,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    initial = init_step9_state(
+        agent, model, buffer, key=jr.key(17), initial_observation=jnp.zeros(2)
+    )
+    initial = initial.replace(
+        world_model_state=initial.world_model_state.replace(
+            learner_state=initial.world_model_state.learner_state.replace(uptime_s=7.0),
+        ),
+    )
+    rewards = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    observations = jnp.ones((2, 2), dtype=jnp.float32)
+    batch = run_step9_scan(cfg, agent, model, buffer, initial, rewards, observations)
+    continued = run_step9_scan(cfg, agent, model, buffer, batch.state, rewards, observations)
+    assert calls == ["clock", "wait", "clock", "clock", "wait", "clock"]
+    expected = initial.world_model_state.learner_state
+    expected_uptime = (7.25, 7.5)
+    for returned, uptime in zip((batch.state, continued.state), expected_uptime, strict=True):
+        actual = returned.world_model_state.learner_state
+        assert type(actual.birth_timestamp) is float
+        assert actual.birth_timestamp == expected.birth_timestamp
+        assert type(actual.uptime_s) is float
+        assert actual.uptime_s == uptime
+    assert int(continued.state.step_count) == 4
+    assert int(continued.state.world_model_state.step_count) == 4
 
 
 def test_step9_scan_actions_in_range() -> None:

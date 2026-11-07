@@ -295,6 +295,52 @@ postmortem.
     `outputs/ipmnist_screening/smprecond_confirm_r1/` (40 shards,
     `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
 
+24. **Unit-length RLS features lose with the fixed identmap control constants.**
+    A predeclared 60-task x 5,000-step abrupt IPMNIST development screen
+    remeasured `rls_head_resid_identmap50_r_idet003_s005625` against the same
+    arm with only the hidden RLS feature vector normalized to unit length
+    (bias unchanged). On consumed development seeds 0, 1 and 2, control online
+    pre-update accuracy was `0.934567755722` (sample SD `0.000136722460`),
+    candidate `0.906286643389` (sample SD `0.028006850565`). Paired deltas were
+    `[-0.060339999333, -0.014840002167, -0.009663335500]`; mean
+    `-0.028281112333`, sample SD `0.027884200656`. All three lost and the mean
+    crossed the frozen `-0.005` negative threshold. This rejects that fixed
+    configuration on this development sample, not feature normalization in
+    general; n=3 and the large candidate spread support no population-level
+    claim. Both arms bind clean source `9884c20403ff889307f80242ee032692ad0e80ef`,
+    identical runtime/data, and a bit-exact inert-mechanism reduction. No
+    retuning, extra seeds, confirmation or promotion followed. The losing arm
+    is retired from the live tree; the exact source and tests survive in a
+    prerequisite-bound Git bundle. Record:
+    [`unit_features_dev_20261030/`](../../outputs/ipmnist_screening/unit_features_dev_20261030/)
+    (pre-run plan, six v2 shards, official merge, raw-array analysis, source
+    bundle, commands, logs and results). Permanently nonpromoting.
+
+
+25. **At weight_decay 0, constant body steps above 0.02 miss the +0.002
+    development bar (our own #3639).** The identmap50_r idet003 wd0
+    constant-step cells with steps 0.03, 0.04 and 0.05 were tuned on seed
+    123 against the 0.02 incumbent (+0.000657, +0.000973, +0.001103; gains
+    flatten). The winner, 0.05, measured **+0.001561 paired, CI95
+    [+0.001394, +0.001728], 10/10 unseen seeds (124-133) improved** at 60
+    tasks, with no divergence. The effect is consistent but below the
+    preregistered +0.002 bar, so this is a FAIL and 0.02 stays the wd0
+    constant step. Almost all of the gain is in the first 10 tasks. Do not
+    retry larger constant steps on this cell without a reason to expect
+    late-life gains. Records:
+    `outputs/ipmnist_screening/wd0_const_step_extend2/`
+    (`PREREGISTRATION.md`, `ANALYSIS.txt`, `RECOMPUTE.txt`, 24 shards).
+
+
+26. **At weight_decay 0, kappa weight clipping of the s02 RLS-head body
+    stops at the tune gate.** The opt-in `body_wclip_kappa` bound
+    (kappa/sqrt(fan_in) on w1/b1/w2/b2) with kappa 2, 4 and 8 was tuned on
+    seed 154 at 60 tasks against s02 (0.964493): -0.000517, +0.000020 and
+    +0.000000 (kappa 8 is bit-identical; the clip never binds). None
+    cleared the +0.0005 gate, so no 10-seed screen ran. No divergence. At
+    wd0 the body weights do not grow large enough for a norm bound to
+    matter. Records: `outputs/ipmnist_screening/s02_wd0_wclip/`.
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
@@ -506,6 +552,58 @@ remains telemetry, resource Pareto selection remains unevaluated, and the prior
 run and all pinned evidence are unchanged.
 
 
+## Discounted SARSA eligibility-trace RiverSwim diagnostic (2026-10-15)
+
+A separately preregistered full reference-life comparison changed only `lamda`
+from 0.0 to 0.8 with the existing exploration schedule, step size and six-state
+environment. All six 20,000-event lives completed on three new paired development
+seeds (100401-100403). Baseline lifetime mean reward was
+`0.495116917 +/- 0.424669047`, versus `0.005533083 +/- 0.001311531` with traces;
+the paired delta was `-0.489583833 +/- 0.424023634` (means +/- sample SD).
+The fixed all-positive / mean-delta > 0.01 rule returned
+`bounded_hypothesis_negative`; no candidate is selected. This does not refute
+SARSA(lambda) generally or alter the frozen scorecard gates, and it never
+populates `reference-dev` or promotes scientific evidence. Do not retry this
+setting without a new causal hypothesis and separate bounded plan. Full per-seed
+values, reward/action/state traces, fixed action-value snapshots, byte identities,
+resource exclusions and independent recomputation are retained in
+[`discounted-sarsa-lambda-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-lambda-2026-10-15/README.md).
+
+
+## RiverSwim eligibility-trace step-size factorial (2026-10-15)
+
+The preregistered four-arm, three-seed full reference-life panel completed all
+240,000 events. At fixed lambda 0.8, reducing step size 0.05 to 0.014 produced paired
+lifetime mean-reward delta `0.504521583 +/- 0.436920817`; the no-trace
+step reduction gave `0.005125000 +/- 0.004959583`; the factorial
+interaction was `0.499396583 +/- 0.432498742` (means +/- sample SD).
+Primary decision: `bounded_trace_step_reduction_supported`. The interaction rule passed:
+`false`. These separate rules prevent a
+generic step-size effect or secondary metric from rescuing the trace-specific
+hypothesis. This bounds only the tested configuration and fresh development
+seeds 100601-100603; it establishes no sole-cause, optimality, frozen-scorecard,
+reference-dev or scientific claim. Preserve the full panel and do not retry
+these settings without a new causal hypothesis and separate bounded plan.
+All per-seed values, full raw reward/action/state traces, fixed diagnostics,
+source/runtime/UTC identities, resource exclusions and independent recomputation:
+[`discounted-sarsa-step-size-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-step-size-2026-10-15/README.md).
+
+
+## RiverSwim discount-horizon probe (2026-10-15)
+
+At fixed lambda 0.8 and learning rate 0.014, the separately preregistered
+gamma 0.9 versus 0.99 comparison completed all six full reference lives
+(three fresh development seeds 101001–101003, 120,000 events, no retries).
+Paired lifetime mean-reward difference: `0.004296750 +/- 0.007343468`
+(mean +/- sample SD). Decision: `bounded_gamma_increase_inconclusive`. The all-positive/mean-above-0.01
+screen passed: `false`; the improvement
+rule also requiring mean above sample SD passed: `false`.
+No secondary rescue or reference selection. Gamma changes discounting, trace
+decay and value scale jointly; this does not isolate horizon mediation.
+Permanently nonpromoting. Do not retry this consumed roster or retune its gates.
+Full results, per-seed values, raw traces, diagnostics, resources and verification:
+[`discounted-sarsa-horizon-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-horizon-2026-10-15/README.md).
+
 ## RiverSwim discounted-SARSA exploration decay (2026-10-15)
 
 A separately declared, permanently nonpromoting diagnostic used the full
@@ -525,3 +623,60 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## Anneal schedule sweep on anneal_f2t1000 (2026-10-30)
+
+A preregistered, nonpromoting screen changed only the anneal (floor, tau) of `rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000`. Each arm was judged on its own against the bar: ≥ +0.002, ≥ 7/10 seeds improved, and a 95% CI and Bonferroni 97.5% CI lower bound above 0. Seeds 0-9, 60 tasks.
+
+- **f2t2000 (gentler):** -0.000256, CI [-0.000345, -0.000167], 0/10 improved. +0.0013 at tasks 1-15, falling to -0.0013 at tasks 46-60.
+- **f4t1000 (stronger):** -0.000077, CI [-0.000168, +0.000013], 2/10 improved. -0.00046 at tasks 1-15, rising to +0.00023 at tasks 46-60.
+- **Secondary, f4t1000 − f2t2000:** +0.000179, CI [+0.000086, +0.000271], 9/10. More annealing pays later in life, but at 60 tasks the parent schedule is near-optimal on this axis.
+- **Integrity:** the parent shards were reused after jaxpr, environment and bit-exact re-run checks. The control was re-measured bit-exactly.
+- [Report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_anneal_sweep/RESULTS.md).
+
+
+## IPMNIST anneal floor f4t1000 at 200 tasks (2026-10-30)
+
+A preregistered (4b2d6de0) development comparison, run at the full 200-task horizon on seeds 0-19. It lowered the anneal floor from 0.0028125 (`..._s005625_anneal_f2t1000`, the incumbent parent) to 0.00140625 (`..._anneal_f4t1000`), with the rest of the schedule unchanged.
+- Paired mean +0.000143, 95% CI [+0.000104, +0.000181], 19/20 seeds improved.
+- Block gains: −0.000123 (tasks 1-50), then +0.0002 to +0.0003 per 50-task block.
+- The preregistered +0.002 mean bar failed, so there is no promotion.
+- The three-way bit-exact environment check passed: the control, the stored parent at 200 tasks, and the stored arm at 60 tasks.
+- f4t1000 had already failed at 60 tasks (0240ff25), with seeds 0-9 seen there.
+- Conclusion: more within-task decay does not pay materially over a full life.
+
+Evidence: [`outputs/ipmnist_screening/anneal_f4t1000_confirm200/RESULTS.md`](../../outputs/ipmnist_screening/anneal_f4t1000_confirm200/RESULTS.md).
+
+## IPMNIST partial anneal reset on anneal_f2t1000 (2026-10-31)
+
+A preregistered (b1c5e283) development screen. On a detected shift, the body-step anneal clock of `..._s005625_anneal_f2t1000` restarts at `1 + floor(f·s)` instead of 1. The identifier's clock is untouched.
+- Seed-0 tune: f=0.25 gave +0.000183 and f=0.5 gave +0.000807, so f=0.5 was chosen.
+- Screen, seeds 1-3: mean +0.000544, GO.
+- Confirm, seeds 4-13: +0.000613 paired, 10/10 seeds improved, 95% CI [+0.000547, +0.000680]. It FAILS the preregistered +0.002 mean bar.
+- The bit-exact environment check passed.
+- The gain is negative in tasks 1-15 and grows through tasks 46-60. A longer horizon was not tested.
+- Caveat: the anneal step is coupled to weight decay (`1 - lr*weight_decay`), so this arm changes both, and they were not separated.
+
+Evidence: [`outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md`](../../outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md).
+
+## 2026-10-31: pr50 partial reset is decay-driven; the step part hurts (pr50_wd_decoupled_screen)
+- Branch screen/identmap50-r-idet003-s005625-anneal-pr50-wd-decoupled.
+- Setup: 60 tasks, seeds 4-13, paired vs #3580 parent.
+- In the partial-reset screen, the +0.000613 pr50 gain was attributed to the step clock. Decoupling shows otherwise:
+  - step-only (pr50 step, parent decay): −0.001071, CI [−0.001163, −0.000979], 0/10 seeds improved.
+  - decay-only (parent step, pr50 decay): +0.001656, CI [+0.001565, +0.001748], 10/10 seeds improved.
+  - interaction: +0.000028, CI includes 0.
+- Preregistered verdict: DECAY-DRIVEN. Do not run f=0.5 at 200 tasks.
+- Decay-only is a post hoc lead and needs its own preregistration on fresh seeds.
+
+## Shift-timed decay relief (anneal decay clock) on identmap50_r_idet003 (2026-10-31)
+
+Preregistered fresh-seed screen (seeds 30-39, 60 tasks, prereg ccb788d6). It tested the pr50 decay-only clock (f_s 0, f_d 0.5) against the `rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000` parent.
+
+- Decay-only gained +0.001706 (CI [+0.001580, +0.001831], 10/10 seeds). This fails the +0.002 mean bar.
+- A plain constant weight_decay of 0.0084, matched to decay-only's average effective decay, did better: +0.002432.
+- D = A − B = −0.000727, CI [−0.000828, −0.000625], so the verdict is AMOUNT-ONLY.
+- The gain comes from less weight decay overall, not from when the decay is relaxed. Do not pursue the decay clock as a mechanism.
+- The descriptive arm at weight_decay 0.005 gained +0.008022. That is post hoc and nonpromoting; it would need its own preregistered sweep.
+
+Evidence: [decayonly_fresh_screen](../../outputs/ipmnist_screening/decayonly_fresh_screen/RESULTS.md).

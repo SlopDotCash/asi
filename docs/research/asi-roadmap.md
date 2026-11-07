@@ -250,8 +250,10 @@ dimensions. Post-hoc tradeoff weights cannot turn a regression into a win.
    [completed hosted scorecard](../../outputs/reference_life_scorecard_development/run2-2026-10-09/README.md)
    is independently validated. Its `valid_baseline_failure` decision reflects
    nonqualifying RiverSwim controls; no candidate is selected. Use a separately
-   declared bounded investigation rather than relaxing the completed run’s gates. The
-   literal-frozen L0 plan defines 144 fresh-process shards over 12 consumed
+   declared bounded investigation rather than relaxing the completed run’s gates.
+   The [hillclimb status](../status.md#reference-life-hillclimb) records the
+   two optimistic RiverSwim controls and the SwitchingTwoState step probe
+   that should inform the next matched plan. The literal-frozen L0 plan defines 144 fresh-process shards over 12 consumed
    development seeds, two environments, and Prototype, frozen/no-learning,
    random, finite-horizon privileged dynamic-programming, differential-SARSA,
    and discounted-SARSA arms. Each shard binds its current source identity, and

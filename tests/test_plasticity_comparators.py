@@ -240,6 +240,55 @@ def test_c_chain_churn_loss_and_off_reduction() -> None:
     assert int(ntk_threshold_rank(jnp.eye(3), threshold=0.66)) == 2
 
 
+def _scaled_square_sum(delta: np.ndarray, scale: np.float32) -> np.float32:
+    total = np.float32(0.0)
+    for value in np.asarray(delta, dtype=np.float32).reshape(-1):
+        with np.errstate(over="ignore"):
+            square = value * value
+            ordinary = scale * square
+            value_mantissa, value_exponent = np.frexp(value)
+            scale_mantissa, scale_exponent = np.frexp(scale)
+            recovered = np.ldexp(
+                scale_mantissa * value_mantissa * value_mantissa,
+                int(scale_exponent) + 2 * int(value_exponent),
+            )
+        piece = ordinary if np.isfinite(square) or not np.isfinite(recovered) else recovered
+        total = np.float32(total + np.float32(piece))
+    return total
+
+
+def test_churn_loss_keeps_direct_square_for_modest_predictions() -> None:
+    before = jnp.asarray([1.0, 2.0], dtype=jnp.float32)
+    after = jnp.asarray([2.0, 4.0], dtype=jnp.float32)
+    loss = churn_loss(before, after, strength=1.0)
+    assert loss.dtype == jnp.float32
+    assert float(loss) == float(np.float32(1.25))
+
+
+@pytest.mark.parametrize("sign", [np.float32(1.0), np.float32(-1.0)])
+def test_churn_loss_keeps_representable_square(sign: np.float32) -> None:
+    """Half a mean square stays finite when a component square overflows."""
+    before = jnp.zeros((1,), dtype=jnp.float32)
+    after = jnp.asarray([sign * np.float32(2.0e19)], dtype=jnp.float32)
+    expected = _scaled_square_sum(np.asarray([sign * np.float32(2.0e19)]), np.float32(0.5))
+    with np.errstate(over="ignore"):
+        raw_square = np.float32(2.0e19) * np.float32(2.0e19)
+    assert not np.isfinite(raw_square)
+    assert np.isfinite(expected)
+
+    loss = churn_loss(before, after, strength=1.0)
+    compiled = jax.jit(lambda left, right: churn_loss(left, right, strength=1.0))(before, after)
+    assert float(np.asarray(loss)) == float(expected)
+    assert float(np.asarray(compiled)) == float(expected)
+
+
+def test_churn_loss_rejects_unrepresentable_square() -> None:
+    before = jnp.zeros((1,), dtype=jnp.float32)
+    after = jnp.asarray([np.float32(1.0e20)], dtype=jnp.float32)
+    with pytest.raises(ValueError, match="churn loss"):
+        churn_loss(before, after, strength=1.0)
+
+
 def test_ntk_threshold_rank_never_exceeds_singular_dimension() -> None:
     mat = jr.normal(jr.key(0), (20, 20), dtype=jnp.float32)
     rank = int(ntk_threshold_rank(mat, threshold=1.0))

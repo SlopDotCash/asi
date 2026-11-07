@@ -207,6 +207,31 @@ def _reduction_safe_l2_norm(value: Array) -> Array:
     return jnp.where(reduction_only_overflow, stable, direct)
 
 
+@jax.custom_jvp
+def _half_square(error: Array) -> Array:
+    """Return ``0.5 * error**2`` when that half-square is representable.
+
+    A finite square keeps the direct product. The mantissa split applies the
+    one-half before the overflowed square. The derivative stays ``error`` on
+    both paths, so a finite behavior gradient is not dropped with the loss.
+    """
+    half = jnp.asarray(0.5, dtype=error.dtype)
+    direct = half * (error * error)
+    mantissa, exponent = jnp.frexp(error)
+    recovered = jnp.ldexp(half * (mantissa * mantissa), exponent + exponent)
+    return jnp.where(jnp.isfinite(direct) | ~jnp.isfinite(recovered), direct, recovered)
+
+
+@_half_square.defjvp
+def _half_square_jvp(
+    primals: tuple[Array, ...],
+    tangents: tuple[Array, ...],
+) -> tuple[Array, Array]:
+    (error,) = primals
+    (error_tangent,) = tangents
+    return _half_square(error), error * error_tangent
+
+
 def feature_to_subtask_specs(
     oak_state: OaKState,
     *,
@@ -3898,7 +3923,7 @@ class PrototypeAgent:
                     representation,
                 )[action]
                 error = target - prediction
-                return jnp.asarray(0.5, dtype=jnp.float32) * jnp.square(error), prediction
+                return _half_square(error), prediction
 
             (loss, prediction), gradient = jax.value_and_grad(
                 loss_fn,
@@ -3973,7 +3998,7 @@ class PrototypeAgent:
             def loss_fn(representation: Array) -> tuple[Array, Array]:
                 prediction = q_weights[action] @ representation
                 error = target - prediction
-                return jnp.asarray(0.5, dtype=jnp.float32) * jnp.square(error), prediction
+                return _half_square(error), prediction
 
             (loss, prediction), gradient = jax.value_and_grad(
                 loss_fn,

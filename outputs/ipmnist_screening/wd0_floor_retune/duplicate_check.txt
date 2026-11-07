@@ -1,0 +1,45 @@
+HEAD e7ea706210d535abf205b7ccda5fc4e057da70ea
+generated 2026-10-31 08:04 GMT
+refs scanned: 3151 (after git fetch origin)
+
+== seed freshness: shard paths for identmap50_r_idet003* seeds 70-89 on any ref (git log --all)
+matches: 0
+== any IPMNIST shard with seeds 70-89 (any config)
+matches: 0
+
+
+== arm names on any ref (git log --all -G)
+anneal_f1t1000_wd0: 
+anneal_f4t1000_wd0: 
+anneal_f8t1000_wd0: 
+f8t1000: 
+wd0_floor: 
+
+== gh search (PRs + issues, SlopDotCash/asi)
+-- prs: anneal floor wd0
+-- issues: anneal floor wd0
+-- prs: f1t1000
+-- issues: f1t1000
+-- prs: f8t1000
+-- issues: f8t1000
+-- prs: floor retune
+-- issues: floor retune
+-- prs: no anneal weight_decay 0
+-- issues: no anneal weight_decay 0
+-- prs: constant step wd0
+-- issues: constant step wd0
+-- prs: anneal_f4t1000_wd0
+-- issues: anneal_f4t1000_wd0
+-- prs: decoupled step wd0
+-- issues: decoupled step wd0
+
+== nearest prior work (context, not duplicates)
+#3584 [OPEN] by w3-bounty: Screen anneal schedule sweep on rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000 (f2t2000 gentler, f4t1000 stronger): both negative
+#3586 [OPEN] by w3-bounty: IPMNIST: lower anneal floor (f4t1000) vs the incumbent anneal_f2t1000 over the full 200-task life: negative
+#3587 [OPEN] by w3-bounty: IPMNIST: raising the post-shift anneal starting step on anneal_f2t1000 is negative (stops at the preregistered tune gate)
+#3610 [OPEN] by w3-bounty: IPMNIST: dropping the body weight_decay to 0 on anneal_f2t1000 gives +0.013667 paired (10/10 unseen seeds, 95% CI [+0.013334, +0.014000]) (development, nonpromoting)
+#3577 [OPEN] by w3-bounty: ipmnist_screening: shrink-and-perturb at remap on identmap50_r_idet003_s005625 is negative (-0.0134 paired, 0/3 seeds)
+#3125 [OPEN] by lumix5: Screen rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init: 0.93742 vs 0.94859 parent (rejected 3/3 seeds, L2-Init axis closed, development)
+
+== pre-launch re-check 2026-10-31 08:24:57 GMT (after git fetch origin, HEAD d5ae1c5a)
+refs scanned: 3151; IPMNIST shards with seeds 70-89 for any config: 0

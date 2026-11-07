@@ -2281,6 +2281,8 @@ def save_state_builder_checkpoint(
     path: str | Path,
 ) -> None:
     """Save a builder's full configuration and PyTree state."""
+    if not bool(jax.device_get(builder.state_valid(state))):
+        raise ValueError("cannot save an invalid state-builder state")
     config = builder.to_config()
     save_checkpoint(
         state,
@@ -2319,6 +2321,8 @@ def load_state_builder_checkpoint(
         raise ValueError("state-builder checkpoint metadata changed between reads")
     if restored_metadata.get("resource_budget") != builder.resource_budget().to_config():
         raise ValueError("state-builder checkpoint resource budget does not match config")
+    if not bool(jax.device_get(builder.state_valid(state))):
+        raise ValueError("state-builder checkpoint restored state is invalid")
     return builder, state
 
 

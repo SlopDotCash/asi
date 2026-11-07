@@ -356,19 +356,39 @@ def bimu_update_transaction(
         if memory_window > _INT32_MAX:
             raise ValueError("memory_window must fit in signed int32")
     scaled_gradient = likelihood_multiplier * gradient
-    uncertainty = kl_multiplier * (1.0 - jnp.tanh(state) ** 2)
-    reciprocal_eta = (
+    tanh_state = jnp.tanh(state)
+    uncertainty = kl_multiplier * (1.0 - tanh_state**2)
+    direct_reciprocal_eta = (
         uncertainty
-        + 2.0 * jnp.tanh(state) * scaled_gradient
+        + 2.0 * tanh_state * scaled_gradient
         + 1.0 / alpha_max
         + 2.0 * jnp.abs(scaled_gradient)
     )
-    forgetting = (
-        jnp.zeros_like(state)
-        if memory_window is None
-        else (state - prior) * uncertainty / memory_window
+    grouped_reciprocal_eta = (uncertainty + 1.0 / alpha_max) + 2.0 * (
+        tanh_state * scaled_gradient + jnp.abs(scaled_gradient)
     )
+    if memory_window is None:
+        forgetting = jnp.zeros_like(state)
+    else:
+        direct_forgetting = (state - prior) * uncertainty / memory_window
+        safe_forgetting = jnp.where(
+            uncertainty == 0.0,
+            jnp.zeros_like(state),
+            (state - prior) * (uncertainty / memory_window),
+        )
+        forgetting = jnp.where(
+            jnp.isfinite(direct_forgetting),
+            direct_forgetting,
+            safe_forgetting,
+        )
     numerator = gradient_scale * scaled_gradient + forgetting
+    reciprocal_eta = jnp.where(
+        jnp.isfinite(direct_reciprocal_eta)
+        & (direct_reciprocal_eta > 0.0)
+        & jnp.isfinite(state - numerator / direct_reciprocal_eta),
+        direct_reciprocal_eta,
+        grouped_reciprocal_eta,
+    )
     candidate = state - numerator / reciprocal_eta
     source_valid = (
         jnp.all(jnp.isfinite(state))
@@ -439,7 +459,20 @@ def _layer_normalize(value: Array) -> Array:
 
     scale = jnp.max(jnp.abs(value))
     safe_scale = jnp.where(scale > 0.0, scale, 1.0)
-    scaled = jnp.where(jnp.abs(value) == scale, jnp.sign(value), value / safe_scale)
+    # Rescale by an exact power of two first, then by the mantissa in
+    # [0.5, 1): a direct division by a scale above 2**126 is lowered to a
+    # multiply by a subnormal reciprocal, which XLA:CPU flushes to zero, so
+    # every non-maximum entry would collapse to 0 and the fallback would
+    # normalize [+-1, 0, 0, ...] instead of the input. Both divisors here
+    # stay normal, so the rescaled entries keep their ratios (and the
+    # maximum entry stays exactly +-1).
+    scale_mantissa, scale_exponent = jnp.frexp(safe_scale)
+    scaled = jnp.where(
+        jnp.abs(value) == scale,
+        jnp.sign(value),
+        jnp.ldexp(value, -scale_exponent)
+        / jnp.where(scale > 0.0, scale_mantissa, jnp.asarray(1.0, dtype=value.dtype)),
+    )
     scaled_centered = scaled - jnp.mean(scaled)
     scaled_variance = jnp.mean(scaled_centered**2)
     scaled_epsilon = (jnp.asarray(1e-5, dtype=value.dtype) / safe_scale) / safe_scale

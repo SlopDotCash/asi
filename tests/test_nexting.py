@@ -20,6 +20,41 @@ from alberta_framework.utils.nexting import (
 )
 
 
+class TestComplexReturnInputs:
+    """A JAX array gets the real-valued gate a NumPy array already has."""
+
+    _CUMULANTS = jnp.array([1.0 + 2.0j, 3.0 + 0.0j], dtype=jnp.complex64)
+    _GAMMAS = jnp.array([0.5, 0.9], dtype=jnp.float32)
+
+    def test_forward_view_rejects_complex_cumulants(self) -> None:
+        with pytest.raises(ValueError, match="cumulants must be real-valued"):
+            forward_view_returns(self._CUMULANTS, 0.9)
+
+    def test_multi_horizon_rejects_complex_cumulants(self) -> None:
+        with pytest.raises(ValueError, match="cumulants must be real-valued"):
+            multi_horizon_returns(self._CUMULANTS, self._GAMMAS)
+
+    def test_multi_channel_rejects_complex_cumulants(self) -> None:
+        with pytest.raises(ValueError, match="cumulants must be real-valued"):
+            multi_channel_horizon_returns(self._CUMULANTS[:, None], self._GAMMAS)
+
+    def test_jit_rejects_traced_complex_cumulants(self) -> None:
+        with pytest.raises(ValueError, match="cumulants must be real-valued"):
+            jax.jit(lambda c: forward_view_returns(c, 0.9))(self._CUMULANTS)
+
+    def test_jit_rejects_traced_complex_gamma(self) -> None:
+        cumulants = jnp.array([1.0, 2.0], dtype=jnp.float32)
+        gamma = jnp.array(0.5 + 0.5j, dtype=jnp.complex64)
+        with pytest.raises(ValueError, match="gamma must be real-valued"):
+            jax.jit(lambda g: forward_view_returns(cumulants, g))(gamma)
+
+    def test_jit_rejects_traced_complex_terminal_value(self) -> None:
+        cumulants = jnp.array([1.0, 2.0], dtype=jnp.float32)
+        terminal = jnp.array(0.5 + 0.5j, dtype=jnp.complex64)
+        with pytest.raises(ValueError, match="terminal_value must be real-valued"):
+            jax.jit(lambda t: forward_view_returns(cumulants, 0.9, terminal_value=t))(terminal)
+
+
 class TestForwardViewReturns:
     def test_gamma_zero_equals_next_cumulant(self) -> None:
         c = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])

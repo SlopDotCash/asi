@@ -89,6 +89,11 @@ def _hidden_state_ar2_persistent_bytes(feature_dim: int) -> int:
     return 4 * (2 * feature_dim + 2)
 
 
+def _random_walk_persistent_bytes(feature_dim: int) -> int:
+    """Bytes in the true-weight vector and the two-word Threefry key."""
+    return 4 * (feature_dim + 2)
+
+
 def _sutton_experiment1_persistent_bytes(feature_dim: int) -> int:
     """Named persist already counted inside ``_require_float32_resource``."""
     return 4 * (feature_dim + 3)
@@ -258,6 +263,16 @@ class RandomWalkStream:
             feature_std: Std dev of feature values
         """
         self._feature_dim = _require_positive_int("feature_dim", feature_dim)
+        _require_float32_resource(
+            "RandomWalkStream state",
+            vector_scalars=self._feature_dim,
+            fixed_scalars=2,
+        )
+        _preflight_synthetic_step_working_set(
+            "RandomWalkStream",
+            _random_walk_persistent_bytes(self._feature_dim),
+            self._feature_dim,
+        )
         self._drift_rate = _require_finite_nonnegative_float32("drift_rate", drift_rate)
         self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
         self._feature_std = _require_finite_nonnegative_float32("feature_std", feature_std)
@@ -1002,6 +1017,22 @@ class ScaledStreamWrapper:
         if jnp.issubdtype(raw_feature_scales.dtype, jnp.complexfloating):
             raise ValueError("feature_scales must contain only real values")
         self._feature_scales = jnp.asarray(raw_feature_scales, dtype=jnp.float32)
+        # A nonzero requested scale that narrows to binary32 zero would
+        # silently suppress its channel, exactly the collapse fixed for
+        # scalar stream parameters in #3315. Exact zero stays legal: it is
+        # the documented deliberate suppression. Reject only the silent
+        # nonzero-to-zero narrowing (either sign: -0.0 suppresses too).
+        try:
+            requested = np.asarray(feature_scales, dtype=np.float64)
+        except (TypeError, ValueError, OverflowError):
+            requested = None
+        if requested is not None and requested.shape == self._feature_scales.shape:
+            narrowed = np.asarray(self._feature_scales, dtype=np.float64)
+            if bool(np.any((requested != 0.0) & (narrowed == 0.0))):
+                raise ValueError(
+                    "feature_scales must not contain a nonzero value that "
+                    "narrows to float32 zero"
+                )
 
         if (
             self._feature_scales.ndim != 1

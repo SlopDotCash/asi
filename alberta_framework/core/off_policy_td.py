@@ -170,6 +170,15 @@ def _scalar_operand(name: str, value: object) -> Array:
     return _array_metadata(name, value, ())
 
 
+def _importance_ratio_operand(value: object) -> Array:
+    """Validate a non-negative importance ratio before float32 narrowing."""
+    actual_type = type(value)
+    if any(actual_type is allowed_type for allowed_type in _TRUSTED_REAL_TYPES):
+        canonical = validated_float32_scalar("rho", value, lower=0.0)
+        return jnp.asarray(canonical, dtype=jnp.float32)
+    return _array_metadata("rho", value, ())
+
+
 def _interest_operand(value: object) -> Array:
     """Validate non-negative ETD interest before float32 narrowing."""
     actual_type = type(value)
@@ -575,7 +584,7 @@ class OffPolicyTDLinearLearner:
         next_observation = _array_metadata("next_observation", next_observation, (feature_dim,))
         reward = _scalar_operand("reward", reward)
         gamma = _discount_operand(gamma)
-        rho = _scalar_operand("rho", rho)
+        rho = _importance_ratio_operand(rho)
         result = self._update_jit(state, observation, reward, next_observation, gamma, rho)
         return cast(
             OffPolicyTDUpdateResult,
@@ -624,11 +633,12 @@ class OffPolicyTDLinearLearner:
 
         # rho_clipped is already represented in the trace.
         scaled_update = alpha * td_error
+        terminal = gamma_s == jnp.asarray(0.0, dtype=jnp.float32)
         proposed_state = OffPolicyTDState(  # type: ignore[call-arg]
             weights=state.weights + scaled_update * new_e,
             bias=state.bias + scaled_update * new_e_b,
-            eligibility_traces=new_e,
-            bias_eligibility_trace=new_e_b,
+            eligibility_traces=jnp.where(terminal, jnp.zeros_like(new_e), new_e),
+            bias_eligibility_trace=jnp.where(terminal, jnp.zeros_like(new_e_b), new_e_b),
             previous_gamma=gamma_s,
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
             birth_timestamp=state.birth_timestamp,
@@ -642,6 +652,8 @@ class OffPolicyTDLinearLearner:
             & (gamma_s >= 0.0)
             & (gamma_s <= 1.0)
             & jnp.isfinite(rho_s)
+            & (rho_s >= 0.0)
+            & (state.step_count >= 0)
         )
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=_zero_if_unused(decay, state.eligibility_traces),
@@ -806,7 +818,7 @@ class ETDLinearLearner:
         next_observation = _array_metadata("next_observation", next_observation, (feature_dim,))
         reward = _scalar_operand("reward", reward)
         gamma = _discount_operand(gamma)
-        rho = _scalar_operand("rho", rho)
+        rho = _importance_ratio_operand(rho)
         interest = _interest_operand(interest)
         result = self._update_jit(
             state, observation, reward, next_observation, gamma, rho, interest
@@ -888,7 +900,9 @@ class ETDLinearLearner:
             & (gamma_s >= 0.0)
             & (gamma_s <= 1.0)
             & jnp.isfinite(rho_s)
+            & (rho_s >= 0.0)
             & jnp.isfinite(interest_s)
+            & (state.step_count >= 0)
             & (interest_s >= 0.0)
         )
         previous_checked = state.replace(  # type: ignore[attr-defined]
@@ -1054,7 +1068,7 @@ class GradientTDLinearLearner:
         next_observation = _array_metadata("next_observation", next_observation, (feature_dim,))
         reward = _scalar_operand("reward", reward)
         gamma = _discount_operand(gamma)
-        rho = _scalar_operand("rho", rho)
+        rho = _importance_ratio_operand(rho)
         result = self._update_jit(state, observation, reward, next_observation, gamma, rho)
         return cast(
             GradientTDUpdateResult,
@@ -1104,10 +1118,11 @@ class GradientTDLinearLearner:
         primary_step = alpha * (td_error * traces - bootstrap_correction)
         secondary_step = beta * (td_error * traces - secondary_dot_phi * phi)
 
+        terminal = gamma_s == jnp.asarray(0.0, dtype=jnp.float32)
         proposed_state = GradientTDState(  # type: ignore[call-arg]
             weights=state.weights + primary_step,
             secondary_weights=state.secondary_weights + secondary_step,
-            eligibility_traces=traces,
+            eligibility_traces=jnp.where(terminal, jnp.zeros_like(traces), traces),
             previous_gamma=gamma_s,
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
             birth_timestamp=state.birth_timestamp,
@@ -1120,6 +1135,8 @@ class GradientTDLinearLearner:
             & (gamma_s >= 0.0)
             & (gamma_s <= 1.0)
             & jnp.isfinite(rho_s)
+            & (rho_s >= 0.0)
+            & (state.step_count >= 0)
         )
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=_zero_if_unused(
@@ -1233,7 +1250,8 @@ def run_gradient_td_learning_loop(
     )
     elapsed = time.time() - t0
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
     )
     return GradientTDArrayResult(  # type: ignore[call-arg]
         state=final_state,

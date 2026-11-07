@@ -1,0 +1,4 @@
+tune seed 123 rls_head_resid_identmap50_r_idet003_s03_anneal_f1t1000_wd0: +0.000657  blocks(10t): +0.002820 +0.000440 +0.000780 -0.000160 +0.000100 -0.000040
+tune seed 123 rls_head_resid_identmap50_r_idet003_s04_anneal_f1t1000_wd0: +0.000973  blocks(10t): +0.003760 +0.001120 +0.000500 -0.000320 +0.000160 +0.000620
+tune seed 123 rls_head_resid_identmap50_r_idet003_s05_anneal_f1t1000_wd0: +0.001103  blocks(10t): +0.005100 +0.000900 +0.000500 +0.000040 -0.000060 +0.000140
+decision: rls_head_resid_identmap50_r_idet003_s05_anneal_f1t1000_wd0 (winner)

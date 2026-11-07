@@ -1,0 +1,133 @@
+{
+  "accepted_events": 120000,
+  "all_seeds_positive": false,
+  "baseline": {
+    "mean": 0.49511691662940815,
+    "sample_std": 0.424669046595697
+  },
+  "decision": "bounded_hypothesis_negative",
+  "development_only": true,
+  "inputs": [
+    {
+      "path": "baseline-seed100401.json",
+      "sha256": "c4a2f15aeaff2a3254a7865ad7332f4b1377bdac3d28005f3d303ab59d59c4de"
+    },
+    {
+      "path": "baseline-seed100402.json",
+      "sha256": "48daee06f850c98afaf92ca91de0bf7fbef95807f6e94879e32c7df88a1ab5ea"
+    },
+    {
+      "path": "baseline-seed100403.json",
+      "sha256": "17b582d5fdaf4f05b3343350d13a68c0bfa6c36007d41e27b385137a184e519f"
+    },
+    {
+      "path": "trace-seed100401.json",
+      "sha256": "a1c82a1c3efe7e6f9fd3f24f0ca8968831a1bdbb1673adb4b976e6fe55f9f84d"
+    },
+    {
+      "path": "trace-seed100402.json",
+      "sha256": "162db1b3ab35e3d49ea02c7abf69f275278eb7646746b72ecd953c9f22cfd7af"
+    },
+    {
+      "path": "trace-seed100403.json",
+      "sha256": "219c64a022b99617c47bfc5f8016f10a72d42d91b0e77606ab86034482cf59cf"
+    }
+  ],
+  "limits": [
+    "Separate permanently nonpromoting development diagnostic. Does not qualify the frozen scorecard, populate reference-dev, establish transfer/retention or claim general SARSA(lambda) superiority. Three paired seeds cannot establish robust statistical confidence. A positive screen would require separately planned confirmation and regression/transfer checks before any integrated selection.",
+    "Numeric state bytes exclude total process/native peak memory.",
+    "Independent checks reconstruct metrics, reward lattice and transition support; they are not authenticated execution attestation.",
+    "No confidence interval or claim of general superiority from three development seeds."
+  ],
+  "n_paired_seeds": 3,
+  "paired_delta": {
+    "mean": -0.4895838334026125,
+    "sample_std": 0.4240236344540191
+  },
+  "paired_seeds": [
+    {
+      "baseline_first_upstream_reward_event": 661,
+      "baseline_late_mean_reward": 0.8005,
+      "baseline_mean_reward": 0.7354967499967199,
+      "baseline_parameter_change_events": 20000,
+      "baseline_rightmost_visits": 14931,
+      "paired_delta": -0.7284492501028348,
+      "seed": 100401,
+      "trace_first_upstream_reward_event": 86,
+      "trace_late_mean_reward": 0.004929999889805913,
+      "trace_mean_reward": 0.007047499893885106,
+      "trace_parameter_change_events": 18985,
+      "trace_rightmost_visits": 70
+    },
+    {
+      "baseline_first_upstream_reward_event": 943,
+      "baseline_late_mean_reward": 0.8265,
+      "baseline_mean_reward": 0.7450714999984018,
+      "baseline_parameter_change_events": 20000,
+      "baseline_rightmost_visits": 15107,
+      "paired_delta": -0.7402910001052543,
+      "seed": 100402,
+      "trace_first_upstream_reward_event": null,
+      "trace_late_mean_reward": 0.004924999889917672,
+      "trace_mean_reward": 0.004780499893147498,
+      "trace_parameter_change_events": 19268,
+      "trace_rightmost_visits": 0
+    },
+    {
+      "baseline_first_upstream_reward_event": null,
+      "baseline_late_mean_reward": 0.004947499889414757,
+      "baseline_mean_reward": 0.004782499893102795,
+      "baseline_parameter_change_events": 20000,
+      "baseline_rightmost_visits": 0,
+      "paired_delta": -1.1249999748543134e-05,
+      "seed": 100403,
+      "trace_first_upstream_reward_event": null,
+      "trace_late_mean_reward": 0.004947499889414757,
+      "trace_mean_reward": 0.004771249893354252,
+      "trace_parameter_change_events": 19680,
+      "trace_rightmost_visits": 0
+    }
+  ],
+  "plan_sha256": "b70d6224ce5cb59203ad2180066222194485f491bcadc1f8b31921f33ab33d9c",
+  "reference_dev_population_allowed": false,
+  "resources": {
+    "final": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    },
+    "initial": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    }
+  },
+  "runtime": {
+    "backend": "cpu",
+    "machine": "AMD64",
+    "python": "3.12.4",
+    "system": "Windows",
+    "thread_settings": {
+      "MKL_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+    },
+    "versions": {
+      "chex": "0.1.92",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "numpy": "2.5.1"
+    }
+  },
+  "schema": "asi.riverswim_sarsa_lambda_diagnostic.summary.v1",
+  "scientific_promotion_allowed": false,
+  "script_sha256": "a4e8f1a2e11c2efd3b1df6376d84cd505fa3b32ed8ae62ed016e08895761542e",
+  "source_commit": "023726c8b643cc332b73e220d67c26b4a886f334",
+  "trace": {
+    "mean": 0.005533083226795619,
+    "sample_std": 0.0013115314604663006
+  }
+}

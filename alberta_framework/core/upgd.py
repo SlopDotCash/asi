@@ -62,7 +62,12 @@ from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import Bounder, ObGDBounding
 from alberta_framework.core.types import MLPParams
-from alberta_framework.core.update_safety import zero_if_collapsed_infinity
+from alberta_framework.core.update_safety import (
+    floating_tree_is_finite,
+    neutralize_array,
+    select_transaction,
+    zero_if_collapsed_infinity,
+)
 
 
 def _require_exact_str(name: object, value: object) -> str:
@@ -2128,6 +2133,11 @@ class UPGDLearner:
         inactive (NaN target) heads contribute zero. Gradients are computed
         for all trunk and head parameters at once via :func:`jax.grad`.
 
+        A step with a non-finite observation, an infinite target, or a
+        non-finite candidate state is rejected atomically: the prior state
+        is returned unchanged and diagnostics are neutralized to zero, so
+        one bad step cannot permanently poison the learner.
+
         Args:
             state: Current UPGD state
             observation: Input feature vector ``(feature_dim,)``
@@ -3453,11 +3463,21 @@ class UPGDLearner:
 
         metrics = jnp.stack([loss_value, mean_utility, min_utility, max_perturbation_magnitude])
 
+        # Fail closed: a non-finite observation, an infinite target, or a
+        # non-finite candidate state must not commit. NaN targets remain
+        # inactive-head markers, so they are allowed here; an infinite
+        # target is not. A rejected step returns the prior state exactly
+        # (key and step counter included) with neutral zero diagnostics,
+        # so a later finite step can still learn.
+        inputs_valid = jnp.all(jnp.isfinite(jnp.asarray(observation))) & jnp.all(
+            jnp.isfinite(targets) | jnp.isnan(targets)
+        )
+        update_applied = inputs_valid & floating_tree_is_finite(new_state)
         return UPGDUpdateResult(  # type: ignore[call-arg]
-            state=new_state,
-            predictions=predictions,
-            errors=errors,
-            metrics=metrics,
+            state=select_transaction(update_applied, new_state, state),
+            predictions=neutralize_array(update_applied, predictions),
+            errors=neutralize_array(update_applied, errors),
+            metrics=neutralize_array(update_applied, metrics),
         )
 
 
@@ -3559,7 +3579,12 @@ def run_upgd_arrays(
     jax.block_until_ready(scan_result)  # type: ignore[no-untyped-call]
     final_state, metrics = scan_result
     elapsed = time.time() - t0
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]  # noqa: E501
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return UPGDLearningResult(state=final_state, metrics=metrics)  # type: ignore[call-arg]
 
 
@@ -3621,7 +3646,12 @@ def run_upgd_loop[StreamStateT](
     jax.block_until_ready(scan_result)  # type: ignore[no-untyped-call]
     (final_learner, _), metrics = scan_result
     elapsed = time.time() - t0
-    final_learner = final_learner.replace(uptime_s=final_learner.uptime_s + elapsed)  # type: ignore[attr-defined]  # noqa: E501
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_learner = final_learner.replace(  # type: ignore[attr-defined]
+        birth_timestamp=learner_state.birth_timestamp,
+        uptime_s=learner_state.uptime_s + elapsed,
+    )
     return UPGDLearningResult(  # type: ignore[call-arg]
         state=final_learner, metrics=metrics
     )

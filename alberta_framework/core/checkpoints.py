@@ -49,6 +49,7 @@ from alberta_framework._bounded_containers import (
     require_bounded_container_tree,
     require_json_text_nesting,
 )
+from alberta_framework._strict_json import load_strict_json_object_from_text
 
 # Stamped into checkpoint metadata on save, but deliberately NOT validated on
 # load: compatibility is enforced structurally instead, by restoring into the
@@ -215,7 +216,7 @@ def _on_disk_metadata_path(path: Path) -> Path:
 
 
 def _preflight_on_disk_metadata(path: Path) -> None:
-    """Reject deep on-disk metadata JSON before Orbax ``json.loads``."""
+    """Reject ambiguous or deep metadata JSON before Orbax ``json.loads``."""
 
     meta_path = _on_disk_metadata_path(path)
     try:
@@ -263,6 +264,65 @@ def _preflight_on_disk_metadata(path: Path) -> None:
         if "nesting limit" not in str(exc):
             raise
         raise ValueError("checkpoint metadata exceeds the JSON nesting limit") from exc
+    try:
+        load_strict_json_object_from_text(text, label="checkpoint metadata")
+    except ValueError as exc:
+        message = str(exc)
+        if message in {
+            "non-finite JSON number is forbidden",
+            "non-standard JSON numeric constant is forbidden",
+        }:
+            raise ValueError("checkpoint metadata must be JSON-safe and finite") from exc
+        if message.endswith("payload must contain one JSON object"):
+            raise ValueError("checkpoint metadata must be a mapping") from exc
+        raise
+
+
+def _preflight_on_disk_state(path: Path) -> None:
+    """Reject symlinks and special files at or below ``<checkpoint>/state``.
+
+    Only the ``state`` subtree is walked; ``path`` itself, its parents and the
+    metadata file are not. The walk runs before Orbax opens the files, so it
+    covers a static artifact (for example an unpacked archive), not a writer
+    that swaps entries during the load. A missing ``state`` directory raises
+    ``FileNotFoundError``, as a missing checkpoint does.
+    """
+
+    state_path = path / "state"
+    pending = [state_path]
+    while pending:
+        directory = pending.pop()
+        try:
+            directory_stat = directory.lstat()
+        except FileNotFoundError as error:
+            raise FileNotFoundError(f"checkpoint state not found: {directory}") from error
+        except OSError as error:
+            raise ValueError(f"checkpoint state path is not readable: {directory}") from error
+        if stat_module.S_ISLNK(directory_stat.st_mode) or not stat_module.S_ISDIR(
+            directory_stat.st_mode
+        ):
+            raise ValueError(f"checkpoint state path must be a regular directory: {directory}")
+
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        entry_stat = entry.stat(follow_symlinks=False)
+                    except OSError as error:
+                        raise ValueError(
+                            f"checkpoint state entry is not readable: {entry.path}"
+                        ) from error
+                    if stat_module.S_ISDIR(entry_stat.st_mode):
+                        pending.append(Path(entry.path))
+                    elif not stat_module.S_ISREG(entry_stat.st_mode):
+                        raise ValueError(
+                            "checkpoint state entry must be a regular file or directory: "
+                            f"{entry.path}"
+                        )
+        except OSError as error:
+            raise ValueError(
+                f"checkpoint state directory is not readable: {directory}"
+            ) from error
 
 
 def _require_json_safe_metadata(metadata: dict[str, Any]) -> None:
@@ -281,11 +341,13 @@ def _require_json_safe_metadata(metadata: dict[str, Any]) -> None:
             raise
         raise ValueError("checkpoint metadata exceeds the JSON nesting limit") from exc
     try:
-        json.dumps(metadata, allow_nan=False)
+        serialized = json.dumps(metadata, allow_nan=False)
     except RecursionError as exc:
         raise ValueError("checkpoint metadata exceeds the JSON nesting limit") from exc
     except (TypeError, ValueError) as exc:
         raise ValueError("checkpoint metadata must be JSON-safe and finite") from exc
+    if len(serialized.encode("utf-8")) > _JSON_MAX_BYTES:
+        raise ValueError("checkpoint metadata exceeds the JSON byte limit")
 
 
 def save_checkpoint(
@@ -317,6 +379,10 @@ def save_checkpoint(
     empty_array_manifest = _empty_array_manifest(state)
     if empty_array_manifest is not None:
         meta_to_save[_EMPTY_ARRAYS_KEY] = empty_array_manifest
+    # Re-check the exact dict Orbax writes: the version key and manifest
+    # add bytes, so user metadata just under the limit could otherwise
+    # still produce a checkpoint the load preflight refuses.
+    _require_json_safe_metadata(meta_to_save)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with ocp.Checkpointer(ocp.CompositeCheckpointHandler()) as ckptr:
@@ -358,6 +424,7 @@ def load_checkpoint(
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
+    _preflight_on_disk_state(path)
     _preflight_on_disk_metadata(path)
     try:
         compatible_template = _orbax_compatible_tree(state_template)

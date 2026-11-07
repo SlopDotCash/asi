@@ -1529,13 +1529,22 @@ class DualReplayMemory:
             0.0,
             1.0,
         )
-        distances = jnp.linalg.norm(
-            long_term.observations - transition.observation[None, :], axis=1
+        # Only distances below coverage_scale matter after clipping. Normalize
+        # first, then scale the norm to avoid squaring tiny raw observations.
+        deltas = jnp.clip(
+            (long_term.observations - transition.observation[None, :])
+            / jnp.asarray(cfg.coverage_scale, dtype=jnp.float32),
+            -1.0,
+            1.0,
+        )
+        scales = jnp.max(jnp.abs(deltas), axis=1, keepdims=True)
+        distances = scales[:, 0] * jnp.linalg.norm(
+            deltas / jnp.where(scales > 0.0, scales, 1.0), axis=1
         )
         nearest = jnp.min(jnp.where(long_term.valid, distances, jnp.inf))
         coverage = jnp.where(
             jnp.any(long_term.valid),
-            jnp.clip(nearest / jnp.asarray(cfg.coverage_scale, dtype=jnp.float32), 0.0, 1.0),
+            jnp.clip(nearest, 0.0, 1.0),
             jnp.asarray(1.0, dtype=jnp.float32),
         )
         surprise_weight = jnp.asarray(cfg.surprise_weight, dtype=jnp.float32)

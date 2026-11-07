@@ -1,5 +1,6 @@
 """Tests for Gymnasium experience streams."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -311,6 +312,41 @@ def test_runtime_values_must_match_declared_flattened_shapes_and_be_finite() -> 
         _flatten_observation(np.asarray((0.0, np.nan), dtype=np.float32), box)
     with pytest.raises(ValueError, match="action.*finite"):
         _flatten_action(np.asarray((0.0, np.inf), dtype=np.float32), box)
+
+
+@pytest.mark.parametrize("consumer", ("collector", "stream", "td_stream"))
+def test_host_finite_reward_must_remain_finite_in_float32_target(consumer: str) -> None:
+    class WideRewardEnv(gymnasium.Env):
+        observation_space = gymnasium.spaces.Box(
+            -1.0,
+            1.0,
+            shape=(1,),
+            dtype=np.float32,
+        )
+        action_space = gymnasium.spaces.Discrete(2)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return np.zeros((1,), dtype=np.float32), {}
+
+        def step(self, action):
+            del action
+            return (
+                np.zeros((1,), dtype=np.float32),
+                float(np.finfo(np.float64).max),
+                False,
+                False,
+                {},
+            )
+
+    env = WideRewardEnv()
+    with pytest.raises(ValueError, match="target.*finite.*float32"):
+        if consumer == "collector":
+            collect_trajectory(env, lambda _observation: 0, 1)
+        elif consumer == "stream":
+            next(GymnasiumStream(env, policy=lambda _observation: 0))
+        else:
+            next(TDStream(env, policy=lambda _observation: 0))
 
 
 @pytest.mark.parametrize(
@@ -800,6 +836,58 @@ class TestMakeEpsilonGreedyPolicy:
 
         # Should have some 0s (random exploration)
         assert 0 in actions
+
+
+class _DiscreteStub:
+    """Minimal env: epsilon-greedy only reads ``action_space``."""
+
+    action_space = gymnasium.spaces.Discrete(2)
+
+
+def _discrete_actions(policy: object, count: int) -> list[int]:
+    observation = jnp.zeros((1,), dtype=jnp.float32)
+    return [policy(observation) for _ in range(count)]  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(("seed", "coupled_seed"), [(5, 6), (2**32 - 2, 2**32 - 1)])
+def test_epsilon_greedy_exploration_does_not_reuse_the_next_seed(
+    seed: int, coupled_seed: int
+) -> None:
+    """Exploratory actions must not be the next experiment seed's random stream.
+
+    ``jr.key(seed + 1)`` is the root a paired run records as a different seed.
+    Seed ``S`` then draws the same actions as a random policy at ``S + 1``,
+    and the uint32 boundary used yet another derivation (``fold_in``).
+    """
+    exploratory = make_epsilon_greedy_policy(
+        lambda _observation: 0,
+        _DiscreteStub(),  # type: ignore[arg-type]
+        epsilon=1.0,
+        seed=seed,
+    )
+    coupled = make_random_policy(_DiscreteStub(), seed=coupled_seed)  # type: ignore[arg-type]
+    assert _discrete_actions(exploratory, 32) != _discrete_actions(coupled, 32)
+
+
+@pytest.mark.parametrize("implementation", ["rbg", "unsafe_rbg"])
+@pytest.mark.parametrize("seed", [5, 2**32 - 2, 2**32 - 1])
+def test_epsilon_greedy_exploration_stays_on_threefry(implementation: str, seed: int) -> None:
+    """A process-wide PRNG default must not change recorded exploratory actions."""
+
+    def actions() -> list[int]:
+        policy = make_epsilon_greedy_policy(
+            lambda _observation: 0,
+            _DiscreteStub(),  # type: ignore[arg-type]
+            epsilon=1.0,
+            seed=seed,
+        )
+        return _discrete_actions(policy, 32)
+
+    with jax.default_prng_impl("threefry2x32"):
+        expected = actions()
+    with jax.default_prng_impl(implementation):
+        actual = actions()
+    assert actual == expected
 
 
 class TestMakeGymnasiumStream:

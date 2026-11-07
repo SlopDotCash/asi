@@ -169,3 +169,27 @@ def test_duplicate_hook_rejects_non_string_key_before_hostile_hooks() -> None:
 
     with pytest.raises(ValueError, match="exact strings"):
         _reject_duplicate_object_keys([(HostileKey(), 1)])  # type: ignore[list-item]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"value": "\\ud800"}',
+        '{"value": "tail \\udfff"}',
+        '{"\\ud800": 1}',
+        '{"nested": [{"\\udc00": "ok"}]}',
+        '{"nested": {"value": ["\\ud83d"]}}',
+    ],
+)
+def test_loaders_reject_lone_surrogate_escapes(tmp_path: Path, text: str) -> None:
+    with pytest.raises(ValueError, match="valid Unicode"):
+        load_strict_json_object_from_text(text, label="payload")
+    path = tmp_path / "payload.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="valid Unicode"):
+        load_strict_json_object(path)
+
+
+def test_loaders_keep_paired_surrogate_escapes() -> None:
+    loaded = load_strict_json_object_from_text('{"\\ud83d\\ude00": "\\ud83d\\ude00"}', label="x")
+    assert loaded == {"\U0001f600": "\U0001f600"}

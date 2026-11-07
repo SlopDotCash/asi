@@ -1,0 +1,135 @@
+{
+  "source_head": "0e205b7b54346189290721c8846fd03af2b27e32",
+  "seeds": [
+    118331,
+    118332,
+    118333
+  ],
+  "horizon": 4000,
+  "arms": {
+    "prototype_step020": {
+      "mean_reward": 3554.0,
+      "reward_by_seed": [
+        3507.0,
+        3581.0,
+        3574.0
+      ],
+      "parameter_changes_by_seed": [
+        4000,
+        4000,
+        4000
+      ],
+      "persistent_bytes_initial_by_seed": [
+        217,
+        217,
+        217
+      ],
+      "persistent_bytes_final_by_seed": [
+        217,
+        217,
+        217
+      ]
+    },
+    "prototype_step010": {
+      "mean_reward": 3406.6666666666665,
+      "reward_by_seed": [
+        3349.0,
+        3424.0,
+        3447.0
+      ],
+      "parameter_changes_by_seed": [
+        4000,
+        4000,
+        4000
+      ],
+      "persistent_bytes_initial_by_seed": [
+        217,
+        217,
+        217
+      ],
+      "persistent_bytes_final_by_seed": [
+        217,
+        217,
+        217
+      ]
+    },
+    "prototype": {
+      "mean_reward": 3030.3333333333335,
+      "reward_by_seed": [
+        3005.0,
+        2997.0,
+        3089.0
+      ],
+      "parameter_changes_by_seed": [
+        4000,
+        4000,
+        4000
+      ],
+      "persistent_bytes_initial_by_seed": [
+        217,
+        217,
+        217
+      ],
+      "persistent_bytes_final_by_seed": [
+        217,
+        217,
+        217
+      ]
+    },
+    "differential_sarsa": {
+      "mean_reward": 3231.3333333333335,
+      "reward_by_seed": [
+        3277.0,
+        3202.0,
+        3215.0
+      ],
+      "parameter_changes_by_seed": [
+        3999,
+        4000,
+        3999
+      ],
+      "persistent_bytes_initial_by_seed": [
+        108,
+        108,
+        108
+      ],
+      "persistent_bytes_final_by_seed": [
+        108,
+        108,
+        108
+      ]
+    }
+  },
+  "pairs": {
+    "prototype_step020_vs_prototype_step010": {
+      "mean_gain": 147.33333333333334,
+      "gains_in_seed_order": [
+        158.0,
+        157.0,
+        127.0
+      ],
+      "improved_seeds": 3,
+      "paired_seeds": 3
+    },
+    "prototype_step020_vs_prototype": {
+      "mean_gain": 523.6666666666666,
+      "gains_in_seed_order": [
+        502.0,
+        584.0,
+        485.0
+      ],
+      "improved_seeds": 3,
+      "paired_seeds": 3
+    },
+    "prototype_step020_vs_differential_sarsa": {
+      "mean_gain": 322.6666666666667,
+      "gains_in_seed_order": [
+        230.0,
+        379.0,
+        359.0
+      ],
+      "improved_seeds": 3,
+      "paired_seeds": 3
+    }
+  }
+}

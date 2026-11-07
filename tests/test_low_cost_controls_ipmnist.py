@@ -171,6 +171,23 @@ class TestResultContract:
         with pytest.raises(ValueError, match=message):
             dataclasses.replace(result, **changes)
 
+    def test_result_rejects_forged_resource_receipts(self) -> None:
+        images, labels = _fixture()
+        result = run_comparator(images, labels)
+        for index in (0, ARM_IDS.index("deep_fourier")):
+            arm = result.arms[index]
+            for field, offset, message in (
+                ("model_queries", -1, "model queries"),
+                ("model_queries", 1, "model queries"),
+                ("persistent_bytes", -4, "persistent bytes"),
+                ("persistent_bytes", 4, "persistent bytes"),
+            ):
+                forged = dataclasses.replace(arm, **{field: getattr(arm, field) + offset})
+                with pytest.raises(ValueError, match=message):
+                    dataclasses.replace(
+                        result, arms=(*result.arms[:index], forged, *result.arms[index + 1 :])
+                    )
+
     def test_arm_binds_mechanism_flag_to_roster(self) -> None:
         with pytest.raises(ValueError, match="mechanism flag"):
             LowCostArmResult(

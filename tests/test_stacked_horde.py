@@ -532,6 +532,62 @@ class TestExactSemantics:
         # Demon 1 weights moved.
         assert not np.array_equal(np.asarray(r2.state.weights[1]), np.asarray(r.state.weights[1]))
 
+    def test_nan_cumulant_decays_trace_without_importance_ratio(self):
+        """A quiet demon decays by gamma*lambda; rho stays on the asked question."""
+        cfg = _simple_config()
+        horde = StackedLinearHorde(cfg)
+        state = horde.init()
+        x = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        rho = jnp.array([2.0, 1.0], dtype=jnp.float32)
+
+        warm = horde.update(
+            state, x, x, jnp.array([1.0, 1.0], dtype=jnp.float32), rho=rho
+        )
+        quiet = horde.update(
+            warm.state,
+            x,
+            x,
+            jnp.array([jnp.nan, 1.0], dtype=jnp.float32),
+            rho,
+        )
+        expected = 0.9 * 0.5 * np.asarray(warm.state.traces[0])
+        np.testing.assert_array_equal(
+            np.asarray(quiet.state.weights[0]), np.asarray(warm.state.weights[0])
+        )
+        np.testing.assert_allclose(np.asarray(quiet.state.traces[0]), expected, rtol=1e-6)
+        # A zero ratio on the quiet demon must not erase eligibility it already earned.
+        held = horde.update(
+            warm.state,
+            x,
+            x,
+            jnp.array([jnp.nan, 1.0], dtype=jnp.float32),
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+        )
+        np.testing.assert_allclose(np.asarray(held.state.traces[0]), expected, rtol=1e-6)
+        np.testing.assert_array_equal(
+            np.asarray(held.state.weights[0]), np.asarray(warm.state.weights[0])
+        )
+        # The sibling question still composes its own ratio into the trace.
+        on_policy_sibling = 0.9 * 0.5 * np.asarray(warm.state.traces[1]) + np.asarray(x)
+        np.testing.assert_allclose(
+            np.asarray(quiet.state.traces[1]),
+            1.0 * on_policy_sibling,
+            rtol=1e-6,
+        )
+        scaled = horde.update(
+            warm.state,
+            x,
+            x,
+            jnp.array([jnp.nan, 1.0], dtype=jnp.float32),
+            2.0,
+        )
+        np.testing.assert_allclose(np.asarray(scaled.state.traces[0]), expected, rtol=1e-6)
+        np.testing.assert_allclose(
+            np.asarray(scaled.state.traces[1]),
+            2.0 * on_policy_sibling,
+            rtol=1e-6,
+        )
+
     def test_rho_composes_into_trace(self):
         """z = rho * (decay * z + x): rho=0 zeroes the trace and the update."""
         cfg = _simple_config()

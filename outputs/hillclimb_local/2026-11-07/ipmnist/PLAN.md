@@ -1,0 +1,5 @@
+# ASI local IPMNIST comparison
+
+Permanently nonpromoting. Use #3646 head c8c1050e, CPU macOS arm64, locked Python 3.12 and JAX 0.11.0. Verify the 60,000 x 784 normalized MNIST training arrays against both hashes in a retained #3646 confirmation shard before use. Use the exact screening runner with 300 x 150 hidden units, 12 tasks of 5,000 pre-update predictions, same initialization and task schedule within seed, and fresh process per run. The predeclared seeds 311001–311003 were absent from retained outputs inspected.
+
+Compare zero-decay constant body steps 0.02 and 0.005625, and remeasure the 0.005625-to-half annealed zero-decay arm from #3646. The question is whether 0.02 improves on the strongest constant-step full-length control that #3646 did not compare on matched seeds. Hypothesis: 0.02 beats constant 0.005625 in every seed. Report mean paired differences, individual means, and wall time as telemetry. The runner uses identical persistent array shapes for these arms; this local run does not measure runtime peak memory. Report any failures and all completed arms. This short horizon does not repeat the 200-task confirmation or qualify any new promotion.

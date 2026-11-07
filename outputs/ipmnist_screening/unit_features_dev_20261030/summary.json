@@ -1,0 +1,268 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "rls_head_resid_identmap50_r_idet003_s005625",
+ "created_unix": 1793376697.7825549,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "arm64",
+   "release": "24.6.0",
+   "system": "Darwin"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": "cpu",
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.10"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 6,
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.9345677557222222,
+   "average_online_accuracy_stderr": 7.893674919159548e-05,
+   "average_plasticity_mean": 0.4946055690555555,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_identmap50_r_idet003_s005625",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 1.0,
+    "head_resid": 1.0,
+    "ident_match2": 200.0,
+    "ident_match3": 2000.0,
+    "ident_match_at": 50.0,
+    "ident_reset_frac": 0.03,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.005625,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -1.833267857142815e-05,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.934433,
+    0.934563,
+    0.934707
+   ],
+   "per_seed_late_window_slope": [
+    8.643e-05,
+    -0.00011928,
+    -2.214e-05
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 225.61
+  },
+  {
+   "average_online_accuracy_mean": 0.906286643388889,
+   "average_online_accuracy_stderr": 0.01616976271257327,
+   "average_plasticity_mean": 0.5001979040000001,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_identmap50_r_idet003_s005625_unitfeatures",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 1.0,
+    "head_resid": 1.0,
+    "ident_match2": 200.0,
+    "ident_match3": 2000.0,
+    "ident_match_at": 50.0,
+    "ident_reset_frac": 0.03,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.005625,
+    "unit_features": 1.0,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -8.238030952380975e-05,
+   "n_seeds": 3,
+   "paired_vs_control": {
+    "all_seeds_improve": false,
+    "beats_control": false,
+    "confirmation_candidate": false,
+    "control": "rls_head_resid_identmap50_r_idet003_s005625",
+    "mean_diff": -0.028281112333333264,
+    "per_seed_diff": [
+     -0.06034,
+     -0.01484,
+     -0.009663
+    ],
+    "seeds": [
+     0,
+     1,
+     2
+    ],
+    "stderr_diff": 0.01609895075466627
+   },
+   "per_seed_average_online_accuracy": [
+    0.874093,
+    0.919723,
+    0.925043
+   ],
+   "per_seed_late_window_slope": [
+    0.00058714,
+    0.00016643,
+    -0.00100071
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 188.05
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v2",
+ "shard_manifest": [
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s005625",
+   "path": "outputs/ipmnist_screening/unit_features_dev_20261030/shards/rls_head_resid_identmap50_r_idet003_s005625_seed0.json",
+   "seed": 0,
+   "sha256": "622aea72f58a0afb7389fdc5d2271f6dad322bccaa3162ed2d0414c115899eac",
+   "size_bytes": 5855
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s005625",
+   "path": "outputs/ipmnist_screening/unit_features_dev_20261030/shards/rls_head_resid_identmap50_r_idet003_s005625_seed1.json",
+   "seed": 1,
+   "sha256": "a6f474a62820321f3f2ef7bca6fd0bec279993052929177c4298e45f22ddf4cc",
+   "size_bytes": 5850
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s005625",
+   "path": "outputs/ipmnist_screening/unit_features_dev_20261030/shards/rls_head_resid_identmap50_r_idet003_s005625_seed2.json",
+   "seed": 2,
+   "sha256": "a408276b4f2eb2fe899af2ac94b13b3441822c9dc9d0e8182c3ba59a40f52bfd",
+   "size_bytes": 5847
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s005625_unitfeatures",
+   "path": "outputs/ipmnist_screening/unit_features_dev_20261030/shards/rls_head_resid_identmap50_r_idet003_s005625_unitfeatures_seed0.json",
+   "seed": 0,
+   "sha256": "5e44a6a09ff241edfea53d63c1eee7e800c1ae7f9e9a3dd7cd3a9feea9681c6b",
+   "size_bytes": 5888
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s005625_unitfeatures",
+   "path": "outputs/ipmnist_screening/unit_features_dev_20261030/shards/rls_head_resid_identmap50_r_idet003_s005625_unitfeatures_seed1.json",
+   "seed": 1,
+   "sha256": "af04a131020b65d793a49a05af9f1223766572881a5f3bcf443b4a5bab97cfcf",
+   "size_bytes": 5876
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s005625_unitfeatures",
+   "path": "outputs/ipmnist_screening/unit_features_dev_20261030/shards/rls_head_resid_identmap50_r_idet003_s005625_unitfeatures_seed2.json",
+   "seed": 2,
+   "sha256": "7ebd4550c662311a9acd3d96064eb30fbb3eb205bba3accb8d6f363497201f5d",
+   "size_bytes": 5872
+  }
+ ],
+ "slope_window": 15,
+ "source_provenance": {
+  "git_commit": "9884c20403ff889307f80242ee032692ad0e80ef",
+  "git_object_format": "sha1",
+  "git_tree": "397ea6471500e914b8c2c9fa64289d902c11da8c",
+  "relevant_source_file_count": 232,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "f0be17e23b12ae9d330cb34d73bd3515ca459173e2fa924f90ad035a212deefb",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}

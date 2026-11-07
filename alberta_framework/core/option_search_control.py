@@ -774,10 +774,16 @@ class OptionSearchControl:
                 jnp.zeros_like(discount),
                 discount * jnp.max(next_values),
             )
-            target = (
-                models.env_return_ema[index]
-                - state.base_average_reward * models.baseline_mass_ema[index]
-                + bootstrap
+            reward_term = models.env_return_ema[index]
+            baseline_term = state.base_average_reward * models.baseline_mass_ema[index]
+            direct_target = reward_term - baseline_term + bootstrap
+            # Left association overflows when reward and baseline cancel through
+            # the bootstrap. Use the other association only for that finite value.
+            recovered_target = reward_term - (baseline_term - bootstrap)
+            target = jnp.where(
+                jnp.isfinite(direct_target) | ~jnp.isfinite(recovered_target),
+                direct_target,
+                recovered_target,
             )
             residual = target - option_values[index]
             prediction_finite = (
@@ -1007,7 +1013,7 @@ class OptionSearchControl:
                 .set(selected_target)
             )
 
-            def propose_update(_: None) -> tuple[MultiHeadMLPState, Array]:
+            def propose_update(_: None) -> tuple[MultiHeadMLPState, Array, Array]:
                 update = self._agent.base_learner.update(
                     trace_neutral_state,
                     safe_observation,
@@ -1021,12 +1027,16 @@ class OptionSearchControl:
                         normalizer_state=learner_state.normalizer_state,
                     ),
                 )
-                return restored, update.errors[selected_extended]
+                return restored, update.errors[selected_extended], update.update_applied
 
-            def skip_update(_: None) -> tuple[MultiHeadMLPState, Array]:
-                return learner_state, jnp.float32(0.0)
+            def skip_update(_: None) -> tuple[MultiHeadMLPState, Array, Array]:
+                return (
+                    learner_state,
+                    jnp.float32(0.0),
+                    jnp.asarray(False, dtype=jnp.bool_),
+                )
 
-            candidate_state, candidate_td_error = jax.lax.cond(
+            candidate_state, candidate_td_error, learner_update_applied = jax.lax.cond(
                 any_valid,
                 propose_update,
                 skip_update,
@@ -1048,7 +1058,12 @@ class OptionSearchControl:
                     learner_state.head_traces,
                 )
             )
-            accepted = candidate_finite & traces_preserved
+            # The planner's own finite/trace checks cannot see a rejected
+            # learner transaction: a rejection restores the exact input
+            # state, so the restored candidate is finite with preserved
+            # traces and a neutralized zero TD error. Only the learner's
+            # verdict distinguishes an applied backup from that no-op.
+            accepted = candidate_finite & traces_preserved & learner_update_applied
             next_learner_state = jax.lax.cond(
                 accepted,
                 lambda _: candidate_state,

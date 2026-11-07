@@ -198,6 +198,9 @@ def _validate_confidence_level(confidence_level: object) -> float:
 
 def _require_finite_values(values: NDArray[np.floating], *, name: str) -> None:
     """Reject NaN/inf samples so summaries cannot gold-plate a poisoned seed."""
+    # float64 conversion would drop imaginary parts and read dates as day counts.
+    if values.dtype.kind in "cmM":
+        raise ValueError(f"{name} must be real numeric samples, got dtype {values.dtype}")
     if not np.isfinite(values).all():
         raise ValueError(f"{name} must be finite")
 
@@ -275,6 +278,16 @@ def _require_positive_int(name: str, value: object) -> int:
     if count <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return count
+
+
+def _require_bootstrap_seed(value: object) -> int:
+    """Admit one integer stream ID; ``default_rng`` also takes None and aliases."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError("seed must be a non-negative integer")
+    seed = operator.index(cast(SupportsIndex, value))
+    if seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+    return seed
 
 
 def _require_p_value(value: object, *, name: str) -> float:
@@ -470,6 +483,35 @@ def cohens_d(
             "cohens_d requires positive pooled degrees of freedom "
             f"(got n_a={n_a}, n_b={n_b}, pooled_df={pooled_df})"
         )
+
+    if a.dtype.kind in "iu" and b.dtype.kind in "iu":
+        # Integer counters can retain unit differences far above float64's
+        # exact-integer range. Center exactly before estimating their spread.
+        integers_a = [int(value) for value in a]
+        integers_b = [int(value) for value in b]
+        exact_mean_a = Fraction(sum(integers_a), n_a)
+        exact_mean_b = Fraction(sum(integers_b), n_b)
+        centered_a = np.asarray(
+            [float(Fraction(value) - exact_mean_a) for value in integers_a], dtype=np.float64
+        )
+        centered_b = np.asarray(
+            [float(Fraction(value) - exact_mean_b) for value in integers_b], dtype=np.float64
+        )
+        centered_a.sort()
+        centered_b.sort()
+        integer_std_a = np.std(centered_a, ddof=1) if n_a > 1 else 0.0
+        integer_std_b = np.std(centered_b, ddof=1) if n_b > 1 else 0.0
+        integer_pooled_std = float(np.hypot(
+            np.sqrt((n_a - 1) / pooled_df) * integer_std_a,
+            np.sqrt((n_b - 1) / pooled_df) * integer_std_b,
+        ))
+        integer_mean_difference = float(exact_mean_a - exact_mean_b)
+        if integer_pooled_std == 0.0:
+            return (
+                0.0 if integer_mean_difference == 0.0
+                else float(np.copysign(np.inf, integer_mean_difference))
+            )
+        return integer_mean_difference / integer_pooled_std
 
     # Compute each group's spread at its own bounded scale so a large constant
     # group cannot erase the smaller group's variance. Cohen's d is unchanged
@@ -701,7 +743,16 @@ def mann_whitney_comparison(
             f"independent Mann-Whitney test requires non-empty groups (got {len(a)} and {len(b)})"
         )
 
-    if np.all(a == a[0]) and np.all(b == a[0]):
+    rank_a, rank_b = a, b
+    if a.dtype.kind in "iu" and b.dtype.kind in "iu":
+        # Concatenating signed and unsigned integer arrays can itself narrow
+        # their observations to float64. Only their shared ordering is needed.
+        integer_values = sorted({int(value) for values in (a, b) for value in values})
+        order = {value: index for index, value in enumerate(integer_values)}
+        rank_a = np.asarray([float(order[int(value)]) for value in a])
+        rank_b = np.asarray([float(order[int(value)]) for value in b])
+
+    if np.all(rank_a == rank_a[0]) and np.all(rank_b == rank_a[0]):
         # Every cross-group pair is a tie.  The exact permutation null puts
         # all mass at U=n_a*n_b/2, hence p=1; scipy's asymptotic tie variance
         # is zero and some supported versions return NaN instead.
@@ -711,7 +762,7 @@ def mann_whitney_comparison(
         try:
             from scipy import stats
 
-            result = stats.mannwhitneyu(a, b, alternative="two-sided")
+            result = stats.mannwhitneyu(rank_a, rank_b, alternative="two-sided")
             # scipy returns (statistic, pvalue) tuple
             stat_val = float(result[0])
             p_val = _require_p_value(
@@ -788,7 +839,15 @@ def wilcoxon_comparison(
         )
     _require_exact_str("method_a", method_a)
     _require_exact_str("method_b", method_b)
-    if a.size > 0 and np.array_equal(a, b):
+    integer_differences = (
+        [int(left) - int(right) for left, right in zip(a, b, strict=True)]
+        if a.dtype.kind in "iu" and b.dtype.kind in "iu" else None
+    )
+    identical = (
+        not any(integer_differences)
+        if integer_differences is not None else bool(np.array_equal(a, b))
+    )
+    if a.size > 0 and identical:
         raise ValueError(
             f"Paired comparison '{method_a}' vs '{method_b}' has identical "
             "samples; the Wilcoxon signed-rank statistic is undefined"
@@ -801,7 +860,19 @@ def wilcoxon_comparison(
     try:
         from scipy import stats
 
-        result = stats.wilcoxon(a, b, alternative="two-sided")
+        if integer_differences is not None:
+            # The signed-rank test depends only on signs, zeros and ordering of
+            # absolute differences. Preserve these exactly before SciPy casts
+            # integer observations to float64, which can erase whole pairs.
+            magnitudes = sorted({abs(value) for value in integer_differences if value})
+            order = {value: index for index, value in enumerate(magnitudes, start=1)}
+            rank_input = np.asarray([
+                0.0 if value == 0 else float(order[abs(value)]) * (1 if value > 0 else -1)
+                for value in integer_differences
+            ])
+            result = stats.wilcoxon(rank_input, alternative="two-sided")
+        else:
+            result = stats.wilcoxon(a, b, alternative="two-sided")
         # scipy returns (statistic, pvalue) tuple
         stat_val = float(result[0])
         p_val = _require_p_value(
@@ -917,13 +988,16 @@ def common_final_window(step_counts: Mapping[str, int], window: int, metric: str
     would silently compare methods over different horizons.
 
     Raises:
-        ValueError: If ``step_counts`` is empty or the per-method
-            ``min(window, n_steps)`` values disagree.
+        ValueError: If ``step_counts`` is empty, a step count is not a positive
+            integer, or the per-method ``min(window, n_steps)`` values disagree.
     """
     window = _require_positive_int("window", window)
     if not step_counts:
         raise ValueError("at least one method is required to derive a final window")
-    final_windows = {min(window, n_steps) for n_steps in step_counts.values()}
+    final_windows = {
+        min(window, _require_positive_int("step count", n_steps))
+        for n_steps in step_counts.values()
+    }
     if len(final_windows) != 1:
         described = ", ".join(
             f"{name}: {n_steps} steps" for name, n_steps in sorted(step_counts.items())
@@ -960,8 +1034,10 @@ def pairwise_comparisons(
 
     Raises:
         ValueError: If ``alpha`` is not a finite probability strictly between
-            0 and 1, ``window`` is not positive, a metric has no steps, seed
-            identities are duplicated, seeds do not match metric rows, seeds
+            0 and 1, ``test`` or ``correction`` is unknown (even when fewer than
+            two methods leave nothing to compare), ``window`` is not positive, a
+            metric has no steps, seed identities are duplicated, seeds do not match
+            metric rows, seeds
             differ between methods used by a paired test, or ``window`` exceeds
             the shortest trace while trace lengths differ between methods.
             Paired rows are aligned by seed identity; Mann-Whitney samples
@@ -971,6 +1047,10 @@ def pairwise_comparisons(
 
     if type(test) is not str:
         raise ValueError("test is invalid")
+    if test not in ("ttest", "mann_whitney", "wilcoxon"):
+        raise ValueError(f"Unknown test: {test}")
+    if type(correction) is not str or correction not in ("bonferroni", "holm"):
+        raise ValueError(f"Unknown correction: {correction}")
     alpha_value = _require_alpha(alpha)
     window = _require_positive_int("window", window)
 
@@ -1023,9 +1103,6 @@ def pairwise_comparisons(
             final_mean = np.mean(scaled, axis=1) * np.squeeze(scales, axis=1)
         _require_finite_statistics(final_mean, name=f"metric '{name}' final window")
         final_values[name] = final_mean
-
-    if test not in ("ttest", "mann_whitney", "wilcoxon"):
-        raise ValueError(f"Unknown test: {test}")
 
     # Perform all pairwise comparisons
     comparisons: dict[tuple[str, str], SignificanceResult] = {}
@@ -1080,10 +1157,8 @@ def pairwise_comparisons(
     if correction == "bonferroni":
         significant_list, corrected_alpha = bonferroni_correction(p_values, alpha_value)
         decision_thresholds = [corrected_alpha] * len(p_values)
-    elif correction == "holm":
-        significant_list, decision_thresholds = _holm_decisions(p_values, alpha_value)
     else:
-        raise ValueError(f"Unknown correction: {correction}")
+        significant_list, decision_thresholds = _holm_decisions(p_values, alpha_value)
 
     # Update significance based on correction
     corrected_comparisons: dict[tuple[str, str], SignificanceResult] = {}
@@ -1126,7 +1201,8 @@ def bootstrap_ci(
     Raises:
         ValueError: If ``values`` is empty or contains a non-finite sample,
             ``statistic`` is not ``"mean"`` or ``"median"``, ``confidence_level``
-            is not strictly between 0 and 1, or ``n_bootstrap`` is not positive.
+            is not strictly between 0 and 1, ``n_bootstrap`` is not positive, or
+            ``seed`` is not a non-negative integer.
     """
     arr = _require_sample_vector(values, name="values")
     if len(arr) == 0:
@@ -1145,7 +1221,7 @@ def bootstrap_ci(
         )
     sample_count = require_parallel_count("sample count", len(arr), _BOOTSTRAP_BUDGET)
     require_step_units(n_bootstrap, sample_count, _BOOTSTRAP_BUDGET)
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(_require_bootstrap_seed(seed))
 
     stat_func = np.mean if statistic == "mean" else np.median
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)

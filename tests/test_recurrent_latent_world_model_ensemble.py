@@ -517,6 +517,45 @@ def test_member_gradient_validity_is_finiteness_only_not_a_raw_norm_ceiling() ->
     assert bool(result.diagnostics.candidate_state_valid)
 
 
+def test_head_logits_are_not_gated_by_max_prediction_magnitude() -> None:
+    """Head logits are not predictions, so the prediction bound must not veto them.
+
+    The mean head reaches its target through ``M * tanh(logit / M)`` and the
+    variance head through a sigmoid into ``[variance_floor, max_variance]``,
+    so a logit beyond ``M`` is still an in-bounds prediction.  A member that
+    learns a low-noise stream drives its variance logit below ``-M``, and
+    because a rejection leaves state unchanged, gating the logits deadlocks
+    the model (the failure mode of issue #366).
+    """
+    # The initial variance logit (-5.76) already exceeds a bound of 5.
+    model = RecurrentLatentWorldModelEnsemble(_config(max_prediction_magnitude=5.0))
+    assert abs(model.config.initial_variance_logit) > model.config.max_prediction_magnitude
+    state = model.init(jr.key(0))
+    decision = _decision(model, state)
+    assert bool(decision.valid)
+    assert bool(model.update(state, decision, _transition()).diagnostics.applied)
+
+    # A low-noise member: variance near the floor, a mean at 0.83 * M.
+    model = RecurrentLatentWorldModelEnsemble(_config(max_prediction_magnitude=10.0))
+    state = model.init(jr.key(0))
+    first_member = state.member_parameters[0]
+    low_noise_member = cast(Any, first_member).replace(
+        mean_bias=first_member.mean_bias.at[0].set(12.0),
+        variance_bias=jnp.full_like(first_member.variance_bias, -10.5),
+    )
+    state = cast(Any, state).replace(
+        member_parameters=(low_noise_member, *state.member_parameters[1:])
+    )
+    assert bool(model.state_valid(state))
+    decision = _decision(model, state)
+    prediction = decision.prediction
+    assert float(jnp.max(jnp.abs(prediction.member_raw_outputs))) > 10.0
+    assert float(jnp.max(jnp.abs(prediction.member_mean_predictions))) < 10.0
+    assert float(jnp.min(prediction.member_aleatoric_variances)) > model.config.variance_floor
+    assert bool(decision.valid)
+    assert bool(model.update(state, decision, _transition()).diagnostics.applied)
+
+
 def test_finite_low_variance_gradients_are_clipped_instead_of_rejected() -> None:
     """A representable tree norm must survive overflow in the square reduction."""
     model = RecurrentLatentWorldModelEnsemble(
@@ -1204,3 +1243,28 @@ def test_recurrent_ensemble_config_rejects_non_dict_schema_containers() -> None:
 def test_recurrent_ensemble_config_rejects_derived_resource_overflow() -> None:
     with pytest.raises(ValueError, match="persistent state"):
         _config(observation_dim=3_000_000)
+
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("magnitude", [2.0e38, -2.0e38, 1.0, 1.1754943508222875e-38])
+def test_public_decision_retains_finite_raw_member_mean(
+    disable_jit: bool, magnitude: float
+) -> None:
+    model = RecurrentLatentWorldModelEnsemble(_config(
+        ensemble_size=2, max_prediction_magnitude=2.5e38,
+        max_parameter_magnitude=2.5e38,
+    ))
+    state = model.init(jr.key(0))
+    members = tuple(dataclasses.replace(
+        member, mean_kernel=jnp.zeros_like(member.mean_kernel),
+        mean_bias=jnp.zeros_like(member.mean_bias).at[-1].set(magnitude),
+    ) for member in state.member_parameters)
+    state = dataclasses.replace(state, member_parameters=members)
+    with jax.disable_jit(disable_jit):
+        decision = _decision(model, state)
+        assert bool(decision.valid)
+        raw = np.asarray(decision.prediction.member_raw_outputs)
+        np.testing.assert_array_equal(raw[:, 3], np.full(2, magnitude, dtype=np.float32))
+        assert float(decision.prediction.mean_raw_output[3]) == float(np.float32(magnitude))
+        assert np.all(np.isfinite(np.asarray(decision.prediction.mean_raw_output)))

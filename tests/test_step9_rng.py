@@ -17,6 +17,7 @@ import pytest
 from alberta_framework.core.behavior_model import BehaviorModel, BehaviorModelConfig
 from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
 from alberta_framework.steps.step9 import (
+    Step9ArrayResult,
     Step9DreamingConfig,
     Step9DreamingState,
     _update_control_with_linear_rng,
@@ -79,6 +80,18 @@ def _advance_master(key: jax.Array, budget: int) -> jax.Array:
 
 def _assert_key_equal(actual: jax.Array, expected: jax.Array) -> None:
     chex.assert_trees_all_equal(jr.key_data(actual), jr.key_data(expected))
+
+
+def _without_model_uptime(result: Step9ArrayResult) -> Step9ArrayResult:
+    """Zero the world-model uptime, which each scan advances by its wall time."""
+    learner_state = result.state.world_model_state.learner_state.replace(uptime_s=0.0)
+    return result.replace(
+        state=result.state.replace(
+            world_model_state=result.state.world_model_state.replace(
+                learner_state=learner_state,
+            ),
+        ),
+    )
 
 
 def _assert_pairwise_distinct(keys: tuple[jax.Array, ...]) -> None:
@@ -540,7 +553,10 @@ def test_eager_jit_and_scan_reproduce_the_same_rng_trajectory() -> None:
         eager_scan = run_step9_scan(
             config, agent, model, buffer, state, rewards, observations
         )
-    chex.assert_trees_all_equal(first_scan, second_scan)
+    chex.assert_trees_all_equal(
+        _without_model_uptime(first_scan),
+        _without_model_uptime(second_scan),
+    )
     _assert_key_equal(
         eager_scan.state.control_state.rng_key,
         first_scan.state.control_state.rng_key,

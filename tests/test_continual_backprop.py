@@ -721,6 +721,81 @@ class TestWrapperPlumbing:
         chex.assert_tree_all_finite(preds)
 
 
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("rejection", ["overflow", "nonfinite_target", "exhausted_counter"])
+@pytest.mark.parametrize("interface", ["multi", "single", "scan"])
+def test_cbp_rejected_update_preserves_learned_state(
+    disable_jit: bool, rejection: str, interface: str
+) -> None:
+    learner = CBPMultiHeadMLPLearner(
+        n_heads=1,
+        hidden_sizes=(2,),
+        optimizer=Adam(step_size=0.01),
+        sparsity=0.0,
+        use_layer_norm=False,
+        cbp_config=ContinualBackpropConfig(
+            replacement_rate=1.0, maturity_threshold=3
+        ),
+    )
+    observation = jnp.array([0.1, 0.2], dtype=jnp.float32)
+    targets = jnp.array([1.0], dtype=jnp.float32)
+    with jax.disable_jit(disable_jit):
+        state = learner.init(2, jr.key(0, impl="threefry2x32"))
+        state = state.replace(
+            mlp_state=state.mlp_state.replace(birth_timestamp=0.0, uptime_s=0.0)
+        )
+        for _ in range(2):
+            state = learner.update(state, observation, targets).state
+        np.testing.assert_array_equal(state.cbp_state.ages[0], [2, 2])
+        accepted = learner.update(state, observation, targets)
+        assert bool(jnp.any(accepted.replacements_made))
+
+        if rejection == "overflow":
+            targets = jnp.array([1e30], dtype=jnp.float32)
+        elif rejection == "nonfinite_target":
+            targets = jnp.array([jnp.inf], dtype=jnp.float32)
+        else:
+            state = state.replace(
+                mlp_state=state.mlp_state.replace(
+                    step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32),
+                    step_words=jnp.full((2,), 2**32 - 1, dtype=jnp.uint32),
+                )
+            )
+        base = learner.learner.update(state.mlp_state, observation, targets)
+        assert not bool(base.update_applied)
+        chex.assert_trees_all_equal(base.state, state.mlp_state)
+
+        if interface == "scan":
+            result = run_cbp_learning_loop(
+                learner, state, observation[None, :], targets[None, :]
+            )
+            actual = result.state
+        elif interface == "single":
+            adapter = CBPMLPLearner.from_config(
+                {
+                    key: value
+                    for key, value in learner.to_config().items()
+                    if key not in {"n_heads", "per_head_gamma_lamda"}
+                }
+                | {"type": "CBPMLPLearner"}
+            )
+            result = adapter.update(CBPMLPState(multi_state=state), observation, targets[0])
+            actual = result.state.multi_state
+        else:
+            result = learner.update(state, observation, targets)
+            actual = result.state
+
+        assert not bool(jnp.any(result.replacements_made))
+        chex.assert_trees_all_equal(
+            actual.mlp_state.replace(uptime_s=state.mlp_state.uptime_s),
+            state.mlp_state,
+        )
+        chex.assert_trees_all_equal(
+            actual.cbp_state.replace(rng_key=jr.key_data(actual.cbp_state.rng_key)),
+            state.cbp_state.replace(rng_key=jr.key_data(state.cbp_state.rng_key)),
+        )
+
+
 class TestSingleOutputCBPMLP:
     """Single-output CBP MLP adapter should behave like a scalar learner."""
 

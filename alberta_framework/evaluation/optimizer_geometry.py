@@ -161,13 +161,15 @@ def _nonzero_magnitude_bits(value: Array) -> Array:
     operands: ``x != 0.0`` is ``False`` for every float32 subnormal, and every
     reduction over such entries returns exactly zero, so the magnitude bit pattern
     is the only surviving witness that the input was not a zero matrix. Masking the
-    sign bit keeps both signed zeros reading as zero.
+    sign bit keeps both signed zeros reading as zero. The integer maximum stays
+    between the mask and the comparison because an elementwise ``masked != 0`` can
+    compile back into the flushing float comparison inside a fused kernel.
     """
     width = value.dtype.itemsize
     unsigned = np.dtype(f"uint{8 * width}")
     bits = jax.lax.bitcast_convert_type(value, unsigned)
     magnitude_mask = jnp.asarray((1 << (8 * width - 1)) - 1, dtype=unsigned)
-    return jnp.any(jnp.bitwise_and(bits, magnitude_mask) != 0)
+    return jnp.max(jnp.bitwise_and(bits, magnitude_mask)) != 0
 
 
 def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[Array, Array]:
@@ -255,7 +257,10 @@ def flad_noise_component_transaction(perturbation: Array, gradient: Array) -> tu
     scaled = jnp.ldexp(direction, -exponent)
     squared_norm = jnp.vdot(scaled, scaled).real
     numerator = jnp.vdot(scaled, delta).real
+    # A flushed gradient would otherwise read as the zero-gradient reduction and
+    # certify the whole perturbation as noise; see spectral_matrix_sign_transaction.
     active = squared_norm > 0.0
+    destroyed = _nonzero_magnitude_bits(direction) & jnp.logical_not(active)
     denominator = jnp.where(active, squared_norm, jnp.ones_like(squared_norm))
     active_scale = active.astype(delta.dtype)
     # Dividing the dot by the squared norm overflows before the O(1) scaled
@@ -272,6 +277,7 @@ def flad_noise_component_transaction(perturbation: Array, gradient: Array) -> tu
         & jnp.isfinite(numerator)
         & jnp.all(jnp.isfinite(projection))
         & jnp.all(jnp.isfinite(candidate))
+        & jnp.logical_not(destroyed)
     )
     safe = jnp.where(valid, candidate, jnp.zeros_like(candidate))
     return safe, valid

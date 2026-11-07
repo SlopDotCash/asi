@@ -15,9 +15,12 @@ from alberta_framework.core.dreaming import (
     DreamBehaviorModelPrediction,
     DreamingConfig,
     DreamRolloutConfig,
+    DreamRolloutResult,
+    DreamRolloutState,
     DreamSelectionConfig,
     DreamWorldModelPrediction,
     GuardedDreamer,
+    ImaginedTransition,
     RecentObservationBuffer,
     action_features,
     dream_one_step,
@@ -133,6 +136,27 @@ def test_recent_observation_buffer_rejects_wrong_shaped_observations(
         match=rf"observation must have shape \(2,\), got \({shape[0]}, {shape[1]}\)",
     ):
         buffer.add(state, observation)
+
+
+@pytest.mark.parametrize("bad_value", [jnp.nan, jnp.inf, -jnp.inf])
+def test_recent_observation_buffer_never_retains_non_finite_anchors(
+    bad_value: float,
+) -> None:
+    """A rejected observation must not stay behind as a later dream anchor."""
+    buffer = RecentObservationBuffer(capacity=2, observation_dim=2)
+    first = jnp.asarray([1.0, 2.0], dtype=jnp.float32)
+    state = buffer.add(buffer.init(), first)
+
+    rejected = buffer.add(state, jnp.asarray([bad_value, 3.0], dtype=jnp.float32))
+
+    chex.assert_trees_all_equal(rejected, state)
+    following = buffer.add(rejected, jnp.asarray([4.0, 5.0], dtype=jnp.float32))
+    assert int(following.size) == 2
+    assert int(following.index) == 0
+    np.testing.assert_array_equal(
+        np.asarray(following.observations),
+        np.asarray([[1.0, 2.0], [4.0, 5.0]], dtype=np.float32),
+    )
 
 
 def _assert_rollout_state_close(left, right) -> None:  # type: ignore[no-untyped-def]
@@ -557,6 +581,63 @@ def test_rollout_to_sarsa_items_shift_actions_and_mask_last_without_bootstrap() 
     chex.assert_trees_all_close(bootstrapped.weights, rollout.transitions.valid.astype(jnp.float32))
 
 
+def test_terminal_imagined_row_carries_zero_discount_to_gvf_and_sarsa() -> None:
+    """A terminated imagined row must not bootstrap from a dummy next state.
+
+    The converters drop the ``terminated`` flag, so a nonzero model
+    discount on a terminal row used to reach GVF/SARSA updates as
+    ``reward + discount * value(dummy next state)``. The terminal row
+    keeps its weight; only its discount is forced to zero. A valid
+    non-terminal row keeps its discount unchanged.
+    """
+    horizon = 4
+    transitions = ImaginedTransition(
+        observation=jnp.zeros((horizon, 2), dtype=jnp.float32),
+        action=jnp.zeros((horizon,), dtype=jnp.int32),
+        reward=jnp.zeros((horizon,), dtype=jnp.float32),
+        next_observation=jnp.zeros((horizon, 2), dtype=jnp.float32),
+        discount=jnp.array([0.9, 0.9, 0.9, 0.9], dtype=jnp.float32),
+        terminated=jnp.array([True, False, False, False]),
+        confidence=jnp.ones((horizon,), dtype=jnp.float32),
+        model_error=jnp.zeros((horizon,), dtype=jnp.float32),
+        behavior_probability=jnp.ones((horizon,), dtype=jnp.float32),
+        valid=jnp.array([True, True, False, False]),
+        step_index=jnp.arange(horizon, dtype=jnp.int32),
+    )
+    rollout = DreamRolloutResult(
+        state=DreamRolloutState(
+            observation=jnp.zeros((2,), dtype=jnp.float32),
+            rng_key=jr.key(0),
+            active=jnp.array(False),
+            cumulative_confidence=jnp.array(1.0, dtype=jnp.float32),
+            step_count=jnp.array(2, dtype=jnp.int32),
+        ),
+        transitions=transitions,
+    )
+
+    gvf = imagined_rollout_to_gvf_items(rollout)
+    chex.assert_trees_all_close(
+        gvf.discounts,
+        jnp.array([0.0, 0.9, 0.0, 0.0], dtype=jnp.float32),
+    )
+    chex.assert_trees_all_close(
+        gvf.weights, jnp.array([1.0, 1.0, 0.0, 0.0], dtype=jnp.float32)
+    )
+
+    sarsa = imagined_rollout_to_sarsa_items(
+        rollout, bootstrap_action=jnp.array(1, dtype=jnp.int32)
+    )
+    chex.assert_trees_all_close(
+        sarsa.discounts,
+        jnp.array([0.0, 0.9, 0.0, 0.0], dtype=jnp.float32),
+    )
+
+    single = imagined_transition_to_gvf_item(
+        slice_imagined_transition(transitions, 0)
+    )
+    chex.assert_trees_all_close(single.discounts, jnp.array([0.0], dtype=jnp.float32))
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "field",
@@ -746,3 +827,70 @@ def test_terminal_dream_retains_sarsa_weight_without_bootstrap(
     chex.assert_trees_all_close(items.weights, jnp.array([expected_weight], dtype=jnp.float32))
     chex.assert_trees_all_close(items.discounts, jnp.zeros((1,), dtype=jnp.float32))
     assert float(items.weights[0] * items.rewards[0]) == pytest.approx(expected_weight * 3.7)
+
+
+class _NanAfterFirstActionBehaviorModel:
+    def sample_action(
+        self,
+        state: DeterministicBehaviorState,
+        observation: jnp.ndarray,
+        key: Any,
+    ) -> DreamBehaviorModelPrediction:
+        del key
+        return DreamBehaviorModelPrediction(
+            action=jnp.where(observation[0] > 0.25, jnp.nan, state.action),
+            action_probability=jnp.array(1.0, dtype=jnp.float32),
+            log_probability=jnp.array(0.0, dtype=jnp.float32),
+        )
+
+
+def test_sarsa_items_never_bootstrap_from_a_rejected_next_row() -> None:
+    rollout = dream_rollout(
+        MockWorldModel(),
+        _world_state(),
+        _NanAfterFirstActionBehaviorModel(),
+        DeterministicBehaviorState(action=jnp.array(1.0, dtype=jnp.float32)),
+        init_dream_rollout_state(jnp.zeros((2,), dtype=jnp.float32), jr.key(13)),
+        DreamRolloutConfig(rollout_horizon=3),
+    )
+    assert rollout.transitions.valid.tolist() == [True, False, False]
+
+    items = imagined_rollout_to_sarsa_items(
+        rollout,
+        bootstrap_action=jnp.array(1.0, dtype=jnp.float32),
+    )
+
+    chex.assert_trees_all_close(items.weights, jnp.zeros((3,), dtype=jnp.float32))
+    assert bool(jnp.all(jnp.isfinite(items.next_actions)))
+
+
+@pytest.mark.parametrize("discount", [0.9, 0.0])
+def test_sarsa_items_keep_terminal_rows_before_a_rejected_row(
+    discount: float,
+) -> None:
+    class TerminatingWorldModel(MockWorldModel):
+        def predict(self, state, observation, action, key):  # type: ignore[no-untyped-def]
+            prediction = super().predict(state, observation, action, key)
+            return dataclasses.replace(
+                prediction,
+                discount=jnp.array(discount, dtype=jnp.float32),
+                terminated=jnp.array(True),
+            )
+
+    rollout = dream_rollout(
+        TerminatingWorldModel(),
+        _world_state(),
+        DeterministicBehaviorModel(),
+        DeterministicBehaviorState(action=jnp.array(1, dtype=jnp.int32)),
+        init_dream_rollout_state(jnp.zeros((2,), dtype=jnp.float32), jr.key(13)),
+        DreamRolloutConfig(rollout_horizon=2),
+    )
+    assert rollout.transitions.valid.tolist() == [True, False]
+
+    items = imagined_rollout_to_sarsa_items(rollout, bootstrap_action=jnp.array(1))
+
+    chex.assert_trees_all_close(
+        items.weights,
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+    )
+    chex.assert_trees_all_close(items.discounts, jnp.zeros((2,), dtype=jnp.float32))

@@ -189,6 +189,8 @@ def plot_learning_curves(
         _require_positive_int("window_size", window_size),
         _VIS_WINDOW_BUDGET,
     )
+    if not results:
+        raise ValueError("plot_learning_curves requires at least one result")
 
     try:
         import matplotlib.pyplot as plt
@@ -480,6 +482,8 @@ def plot_step_size_evolution(
         Tuple of (figure, axes)
     """
     show_ci = _require_exact_bool("show_ci", show_ci)
+    if not any(metric in agg.metric_arrays for agg in results.values()):
+        raise ValueError(f"plot_step_size_evolution found no result with metric '{metric}'")
 
     try:
         import matplotlib.pyplot as plt
@@ -639,8 +643,25 @@ def save_figure(
     """
     if formats is None:
         formats = ["pdf", "png"]
+    if type(formats) is not list or not formats:
+        raise ValueError("formats must be a non-empty exact list of format names")
+    if any(type(fmt) is not str for fmt in formats):
+        raise ValueError("formats must contain exact format-name strings")
+    if len(set(formats)) != len(formats):
+        raise ValueError("formats must not contain duplicate format names")
+    if type(dpi) is not int or dpi <= 0:
+        raise ValueError("dpi must be a positive exact int")
+    transparent = _require_exact_bool("transparent", transparent)
 
     filename = Path(filename)
+    if not filename.name or filename.suffix:
+        raise ValueError("filename must be a base name without an extension")
+    # Refuse the whole request up front so a late bad format cannot leave a
+    # partial artifact set behind.
+    supported_formats = fig.canvas.get_supported_filetypes()
+    unsupported = [fmt for fmt in formats if fmt not in supported_formats]
+    if unsupported:
+        raise ValueError(f"formats contains unsupported format names: {unsupported}")
     filename.parent.mkdir(parents=True, exist_ok=True)
 
     saved_paths = []

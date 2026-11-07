@@ -322,6 +322,13 @@ class RecurrentLatentWorldModelEnsembleConfig:
     still bounds the representation gradient (a returned diagnostic signal,
     never itself clipped) and constrains ``gradient_clip_norm`` at
     construction.
+
+    Head logits are likewise validated for finiteness only.  They are not
+    predictions: ``tanh`` squashes the observation and reward means into
+    ``max_prediction_magnitude``, a sigmoid squashes the variances into
+    ``[variance_floor, max_variance]``, and the prediction gates check those
+    outputs.  A member that learns a low-noise stream drives its variance
+    logit past any fixed ceiling, so a logit ceiling is the same deadlock.
     """
 
     observation_dim: int
@@ -1208,14 +1215,25 @@ class RecurrentLatentWorldModelEnsemble:
         variances = jnp.stack([item[3] for item in member_outputs], axis=0)
         mean_prediction, epistemic = _scale_safe_mean_and_variance(means, axis=0)
         mean_variance = _scale_safe_mean(variances, axis=0)
+        mean_raw = jnp.mean(raw, axis=0)
+        # Recover finite member means when only their reduction overflows.
+        scaled_mean_raw = jnp.sum(raw / self._config.ensemble_size, axis=0)
+        recover_raw = jnp.all(jnp.isfinite(raw), axis=0) & ~jnp.isfinite(mean_raw)
+        mean_raw = jnp.where(recover_raw, scaled_mean_raw, mean_raw)
         aleatoric_uncertainty = _scale_safe_mean(mean_variance, axis=0)
-        epistemic_disagreement = _scale_safe_mean(epistemic, axis=0)
+        # Retain the direct reduction's exact cached value in ordinary cases;
+        # use the scaled reduction only when the direct mean overflows.
+        direct_epistemic_disagreement = jnp.mean(epistemic)
+        epistemic_disagreement = jnp.where(
+            jnp.isfinite(direct_epistemic_disagreement),
+            direct_epistemic_disagreement,
+            _scale_safe_mean(epistemic, axis=0),
+        )
         warmup = state.event_count >= self._config.uncertainty_warmup_steps
         finite = (
             jnp.all(jnp.isfinite(next_hidden))
             & jnp.all(jnp.abs(next_hidden) <= 1.0 + 1.0e-6)
             & jnp.all(jnp.isfinite(raw))
-            & jnp.all(jnp.abs(raw) <= self._config.max_prediction_magnitude)
             & jnp.all(jnp.isfinite(means))
             & jnp.all(jnp.abs(means) <= self._config.max_prediction_magnitude)
             & jnp.all(jnp.isfinite(variances))
@@ -1230,7 +1248,7 @@ class RecurrentLatentWorldModelEnsemble:
         uncertainty_available = finite & warmup
         return RecurrentLatentWorldModelPrediction(
             member_raw_outputs=raw,
-            mean_raw_output=jnp.mean(raw, axis=0),
+            mean_raw_output=mean_raw,
             member_mean_predictions=means,
             mean_prediction=mean_prediction,
             member_next_observations=means[:, : self._config.observation_dim],

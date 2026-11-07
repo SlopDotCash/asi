@@ -1700,7 +1700,14 @@ def run_multi_head_learning_loop(
     if not isinstance(per_head_metrics, jax.core.Tracer):
         per_head_metrics.block_until_ready()
     elapsed = time.time() - t0
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
+    # lax.scan narrows the host-only Python-float birth_timestamp to float32
+    # (at current epoch values this shifts it by tens of seconds), just as
+    # the horde/average-reward array loops restore host clocks. Restore the
+    # incoming value and advance uptime from the original host clock.
+    final_state = final_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
 
     return MultiHeadLearningResult(
         state=final_state,

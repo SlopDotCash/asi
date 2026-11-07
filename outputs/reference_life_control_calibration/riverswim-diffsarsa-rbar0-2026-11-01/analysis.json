@@ -1,0 +1,331 @@
+{
+ "gate": {
+  "differential_sarsa": {
+   "mean": 0.002064631059597868,
+   "paired_t_lcb_95": 0.001547488760579429,
+   "sample_sd": 0.0008139179796846093
+  },
+  "differential_sarsa_rbar0": {
+   "mean": 0.8888268371374369,
+   "paired_t_lcb_95": 0.8842943792968663,
+   "sample_sd": 0.007133527726517367
+  },
+  "rbar0_minus_default": {
+   "mean": 0.886762206077839,
+   "paired_t_lcb_95": 0.8819690833031378,
+   "sample_sd": 0.007543782074237063
+  }
+ },
+ "horizon": 20000,
+ "initial_average_reward": 1.0,
+ "lcb_threshold_exclusive": 0.1,
+ "normalization_scale": 17037.74875074881,
+ "per_seed": [
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.004979527089744806,
+    "differential_sarsa_rbar0": 0.734345018863678
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15403
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.889999778941274,
+    "differential_sarsa_rbar0": 1653.0
+   },
+   "normalized_differential_sarsa": 0.0029983420542984106,
+   "normalized_differential_sarsa_rbar0": 0.8864959345099004,
+   "normalized_rbar0_minus_default": 0.883497592455602,
+   "reward_sum": {
+    "differential_sarsa": 96.62999784015119,
+    "differential_sarsa_rbar0": 15149.439999990165,
+    "privileged_oracle": 17076.0,
+    "random": 45.54499925021082
+   },
+   "seed": 91510
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.004984013270586729,
+    "differential_sarsa_rbar0": 0.8030744791030884
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15492
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.849999779835343,
+    "differential_sarsa_rbar0": 1614.019999999553
+   },
+   "normalized_differential_sarsa": 0.0028337076285276015,
+   "normalized_differential_sarsa_rbar0": 0.8915139096697658,
+   "normalized_rbar0_minus_default": 0.8886802020412382,
+   "reward_sum": {
+    "differential_sarsa": 96.46999784372747,
+    "differential_sarsa_rbar0": 15237.579999987036,
+    "privileged_oracle": 17159.0,
+    "random": 48.18999923579395
+   },
+   "seed": 91511
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.0049596731550991535,
+    "differential_sarsa_rbar0": 0.8526065945625305
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15414
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.854999779723585,
+    "differential_sarsa_rbar0": 1643.0
+   },
+   "normalized_differential_sarsa": 0.0021376062728477325,
+   "normalized_differential_sarsa_rbar0": 0.8877522624629909,
+   "normalized_rbar0_minus_default": 0.8856146561901431,
+   "reward_sum": {
+    "differential_sarsa": 96.68499783892184,
+    "differential_sarsa_rbar0": 15185.564999987371,
+    "privileged_oracle": 17131.0,
+    "random": 60.26499923411757
+   },
+   "seed": 91512
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.0049657332710921764,
+    "differential_sarsa_rbar0": 0.8481147289276123
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15402
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.849999779835343,
+    "differential_sarsa_rbar0": 1674.0
+   },
+   "normalized_differential_sarsa": 0.0017112001717418436,
+   "normalized_differential_sarsa_rbar0": 0.8864439910274886,
+   "normalized_rbar0_minus_default": 0.8847327908557467,
+   "reward_sum": {
+    "differential_sarsa": 96.63499784003943,
+    "differential_sarsa_rbar0": 15170.489999989048,
+    "privileged_oracle": 17036.0,
+    "random": 67.47999925166368
+   },
+   "seed": 91513
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.0048855990171432495,
+    "differential_sarsa_rbar0": 0.7946608066558838
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15317
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.844999779947102,
+    "differential_sarsa_rbar0": 1608.0899999979883
+   },
+   "normalized_differential_sarsa": 0.0024119969846522395,
+   "normalized_differential_sarsa_rbar0": 0.8817626213729732,
+   "normalized_rbar0_minus_default": 0.879350624388321,
+   "reward_sum": {
+    "differential_sarsa": 96.41999784484506,
+    "differential_sarsa_rbar0": 15078.574999987148,
+    "privileged_oracle": 17000.0,
+    "random": 55.32499923277646
+   },
+   "seed": 91514
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.004942770581692457,
+    "differential_sarsa_rbar0": 0.840574324131012
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15689
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.904999778605998,
+    "differential_sarsa_rbar0": 1611.0699999984354
+   },
+   "normalized_differential_sarsa": 0.00040439606752600704,
+   "normalized_differential_sarsa_rbar0": 0.9013946164729396,
+   "normalized_rbar0_minus_default": 0.9009902204054137,
+   "reward_sum": {
+    "differential_sarsa": 96.64999783970416,
+    "differential_sarsa_rbar0": 15447.494999988936,
+    "privileged_oracle": 17102.0,
+    "random": 89.7599992454052
+   },
+   "seed": 91515
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.004957810044288635,
+    "differential_sarsa_rbar0": 0.8811708688735962
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15337
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.894999778829515,
+    "differential_sarsa_rbar0": 1682.0
+   },
+   "normalized_differential_sarsa": 0.0013405526109815996,
+   "normalized_differential_sarsa_rbar0": 0.8811472231658948,
+   "normalized_rbar0_minus_default": 0.8798066705549131,
+   "reward_sum": {
+    "differential_sarsa": 96.66999783925712,
+    "differential_sarsa_rbar0": 15086.5949999867,
+    "privileged_oracle": 17063.0,
+    "random": 73.82999926619232
+   },
+   "seed": 91516
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.0049439966678619385,
+    "differential_sarsa_rbar0": 0.8029098510742188
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15711
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.83499978017062,
+    "differential_sarsa_rbar0": 1594.0
+   },
+   "normalized_differential_sarsa": 0.0012982935064020204,
+   "normalized_differential_sarsa_rbar0": 0.9035178429920622,
+   "normalized_rbar0_minus_default": 0.9022195494856602,
+   "reward_sum": {
+    "differential_sarsa": 96.66999783925712,
+    "differential_sarsa_rbar0": 15468.459999989718,
+    "privileged_oracle": 17301.0,
+    "random": 74.5499992724508
+   },
+   "seed": 91517
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.004906604066491127,
+    "differential_sarsa_rbar0": 0.806186318397522
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15485
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.894999778829515,
+    "differential_sarsa_rbar0": 1582.0
+   },
+   "normalized_differential_sarsa": 0.002329826503452397,
+   "normalized_differential_sarsa_rbar0": 0.8910558092412092,
+   "normalized_rbar0_minus_default": 0.8887259827377568,
+   "reward_sum": {
+    "differential_sarsa": 96.53999784216285,
+    "differential_sarsa_rbar0": 15238.429999990389,
+    "privileged_oracle": 17045.0,
+    "random": 56.8449992435053
+   },
+   "seed": 91518
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.004879201762378216,
+    "differential_sarsa_rbar0": 0.7277175784111023
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15405
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.869999779388309,
+    "differential_sarsa_rbar0": 1611.059999998659
+   },
+   "normalized_differential_sarsa": 0.0017584481982349687,
+   "normalized_differential_sarsa_rbar0": 0.8842080735623832,
+   "normalized_rbar0_minus_default": 0.8824496253641482,
+   "reward_sum": {
+    "differential_sarsa": 96.63999783992767,
+    "differential_sarsa_rbar0": 15131.5949999867,
+    "privileged_oracle": 17205.0,
+    "random": 66.67999924719334
+   },
+   "seed": 91519
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.004981794394552708,
+    "differential_sarsa_rbar0": 0.6908265948295593
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15346
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.83999978005886,
+    "differential_sarsa_rbar0": 1575.0299999993294
+   },
+   "normalized_differential_sarsa": 0.0022608619920237057,
+   "normalized_differential_sarsa_rbar0": 0.8834914295857474,
+   "normalized_rbar0_minus_default": 0.8812305675937238,
+   "reward_sum": {
+    "differential_sarsa": 96.46999784372747,
+    "differential_sarsa_rbar0": 15110.65499998536,
+    "privileged_oracle": 16992.0,
+    "random": 57.94999926351011
+   },
+   "seed": 91520
+  },
+  {
+   "final_average_reward": {
+    "differential_sarsa": 0.004874729085713625,
+    "differential_sarsa_rbar0": 0.8598197102546692
+   },
+   "high_end_visits": {
+    "differential_sarsa": 0,
+    "differential_sarsa_rbar0": 15409
+   },
+   "late_reward_sum": {
+    "differential_sarsa": 9.869999779388309,
+    "differential_sarsa_rbar0": 1681.0
+   },
+   "normalized_differential_sarsa": 0.0032903407244858907,
+   "normalized_differential_sarsa_rbar0": 0.8871383315858871,
+   "normalized_rbar0_minus_default": 0.8838479908614012,
+   "reward_sum": {
+    "differential_sarsa": 96.6549978395924,
+    "differential_sarsa_rbar0": 15155.434999990277,
+    "privileged_oracle": 17080.0,
+    "random": 40.594999271444976
+   },
+   "seed": 91521
+  }
+ ],
+ "protocol": "asi.riverswim_diffsarsa_rbar0_calibration.development.v1",
+ "seeds": [
+  91510,
+  91511,
+  91512,
+  91513,
+  91514,
+  91515,
+  91516,
+  91517,
+  91518,
+  91519,
+  91520,
+  91521
+ ],
+ "t_critical": 2.201,
+ "verdict": "PASS",
+ "void_reasons": []
+}

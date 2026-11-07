@@ -489,6 +489,7 @@ class DifferentialSARSAReferenceConfig:
     epsilon_end: float = 0.02
     epsilon_decay_steps: int = 2500
     use_bias: bool = True
+    initial_average_reward: float | None = None
 
     def __post_init__(self) -> None:
         _require_environment_shape(
@@ -536,6 +537,14 @@ class DifferentialSARSAReferenceConfig:
             raise ValueError("epsilon_end must not exceed epsilon_start")
         if not isinstance(self.use_bias, bool):
             raise ValueError("use_bias must be boolean")
+        if self.initial_average_reward is not None:
+            initial_average_reward = _canonical_float32(
+                self.initial_average_reward,
+                name="initial_average_reward",
+                minimum=0.0,
+                maximum=_FLOAT32_MAX,
+            )
+            object.__setattr__(self, "initial_average_reward", initial_average_reward)
 
     @classmethod
     def for_switching(
@@ -576,7 +585,7 @@ class DifferentialSARSAReferenceConfig:
         )
 
     def to_config(self) -> dict[str, Any]:
-        return {
+        config: dict[str, Any] = {
             "schema": REFERENCE_CONTROL_CONFIG_SCHEMA,
             "algorithm": "differential_sarsa",
             "environment_kind": self.environment_kind,
@@ -594,6 +603,10 @@ class DifferentialSARSAReferenceConfig:
             "initial_key_contract": "scalar_threefry2x32_typed_or_legacy.preview1",
             "boundary_mode": "continuing_unit_discount_only",
         }
+        # Emitted only when set, so the default manifest identity is unchanged.
+        if self.initial_average_reward is not None:
+            config["initial_average_reward"] = self.initial_average_reward
+        return config
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1787,7 +1800,14 @@ class DifferentialSARSAReferenceAdapter(_BaseReferenceControlAdapter):
             key,
             name="differential-SARSA initial key",
         )
-        learner = self._differential_agent.init(self.config.observation_dim, explicit_key)
+        if self.config.initial_average_reward is None:
+            learner = self._differential_agent.init(self.config.observation_dim, explicit_key)
+        else:
+            learner = self._differential_agent.init(
+                self.config.observation_dim,
+                explicit_key,
+                average_reward=self.config.initial_average_reward,
+            )
         # The exact-dispatch adapter never calls the core agent's timed loop
         # helpers. Keep their host-clock metadata out of persistent state, as
         # the discounted-SARSA adapter does for the same inherited fields.

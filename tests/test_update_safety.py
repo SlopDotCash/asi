@@ -117,6 +117,68 @@ def test_integer_action_above_float32_mantissa_keeps_its_identity(action: object
     assert int(safe) == 2**24 + 1
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        2**24 + 1.0,
+        np.float64(2**24 + 1),
+        np.asarray(2**24 + 1, dtype=np.float64),
+    ],
+)
+def test_float64_action_above_float32_mantissa_keeps_its_identity(action: object) -> None:
+    # float32 rounds 2**24 + 1 to 2**24; an exact float64 code must not be
+    # silently remapped onto a neighbouring action/context row.
+    safe, valid = safe_discrete_action(action, 2**24 + 2)  # type: ignore[arg-type]
+    assert bool(valid)
+    assert int(safe) == 2**24 + 1
+
+
+def test_float_action_at_float32_rounded_domain_bound_stays_valid() -> None:
+    # float(2**24 + 1) rounds to 2**24 in float32, so a float32 range check
+    # would reject the legal float code 2**24 when n_actions is 2**24 + 1.
+    safe, valid = safe_discrete_action(float(2**24), 2**24 + 1)
+    assert bool(valid)
+    assert int(safe) == 2**24
+
+
+def test_fractional_float64_action_above_float32_mantissa_stays_invalid() -> None:
+    # 2**24 + 1.5 is not an integer code; it must stay invalid instead of
+    # being narrowed onto a neighbouring action.
+    safe, valid = safe_discrete_action(2**24 + 1.5, 2**24 + 2)
+    assert not bool(valid)
+    assert int(safe) == 0
+
+
+@pytest.mark.parametrize(
+    "action",
+    [1.00000001, np.float64(1.00000001), -0.99999999],
+)
+def test_fractional_host_float_action_cannot_round_to_integer(action: object) -> None:
+    safe, valid = safe_discrete_action(
+        action, 2**24 + 2, allow_unset=True  # type: ignore[arg-type]
+    )
+    assert not bool(valid)
+    assert int(safe) == -1
+
+
+@pytest.mark.parametrize(
+    "code, expected, accepted",
+    [(2**24 + 1.0, 2**24 + 1, True), (1.00000001, 0, False)],
+)
+def test_float64_array_action_keeps_its_original_precision(
+    code: float, expected: int, accepted: bool
+) -> None:
+    with jax.enable_x64():
+        action = jnp.asarray(code, dtype=jnp.float64)
+        eager = safe_discrete_action(action, 2**24 + 2)
+        compiled = jax.jit(lambda value: safe_discrete_action(value, 2**24 + 2))(action)
+    disabled = safe_discrete_action(action, 2**24 + 2)
+
+    for safe, valid in (eager, compiled, disabled):
+        assert bool(valid) is accepted
+        assert int(safe) == expected
+
+
 def test_wide_unsigned_integer_action_is_rejected_not_wrapped() -> None:
     safe, valid = safe_discrete_action(jnp.asarray(2**32 - 1, dtype=jnp.uint32), 3)
     assert not bool(valid)
@@ -124,6 +186,46 @@ def test_wide_unsigned_integer_action_is_rejected_not_wrapped() -> None:
     safe, valid = safe_discrete_action(2**40, 3)
     assert not bool(valid)
     assert int(safe) == 0
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        pytest.param(float(2**24), id="python-float"),
+        pytest.param(np.float32(2**24), id="numpy-float32"),
+        pytest.param(jnp.asarray(2**24, dtype=jnp.float32), id="jax-float32"),
+    ],
+)
+def test_exact_float32_action_below_wide_domain_bound_remains_valid(action: object) -> None:
+    safe, valid = safe_discrete_action(action, 2**24 + 1)  # type: ignore[arg-type]
+    assert bool(valid)
+    assert int(safe) == 2**24
+
+
+def test_exact_float32_action_below_wide_domain_bound_remains_valid_under_jit() -> None:
+    action = jnp.asarray(2**24, dtype=jnp.float32)
+    safe, valid = jax.jit(lambda value: safe_discrete_action(value, 2**24 + 1))(action)
+    assert bool(valid)
+    assert int(safe) == 2**24
+
+
+def test_first_float32_action_outside_wide_domain_remains_invalid() -> None:
+    safe, valid = safe_discrete_action(
+        jnp.asarray(2**24 + 2, dtype=jnp.float32),
+        2**24 + 1,
+    )
+    assert not bool(valid)
+    assert int(safe) == 0
+
+
+def test_float32_action_at_largest_accepted_domain_stays_valid() -> None:
+    # n_actions is capped at 2**31 - 1, so the int32 bound below never overflows.
+    largest = np.float32(2_147_483_520.0)  # largest float32 below 2**31 - 1
+    safe, valid = safe_discrete_action(largest, 2**31 - 1)
+    assert bool(valid)
+    assert int(safe) == 2_147_483_520
+    with pytest.raises(ValueError, match="n_actions must be an integer"):
+        safe_discrete_action(largest, 2**31)
 
 
 @pytest.mark.parametrize("dtype, n_actions", [

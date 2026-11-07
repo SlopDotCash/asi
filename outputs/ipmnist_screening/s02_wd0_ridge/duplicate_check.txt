@@ -1,0 +1,7 @@
+duplicate and claim check, 2026-10-31 19:25-19:29 GMT, gh search (read-only), SlopDotCash/asi, PRs and issues
+ridge on the wd0 / s02 lineage: no PR or issue. Related, other chain: #3122 (ridge 0.1, +0.0104 vs its parent) and #3123 (ridge 0.03, +0.0006 more), both open, gated s0031640625 chain at weight_decay 0.01.
+"forgetting factor", "rls_lambda": lambda < 1 closed (wind-up collapse, docs/research/ipmnist-theory.md section 3); no variable or directional forgetting PRs.
+"covariance reset", "P reset": #187 (no-reset ablation), issue #184, #3124 (reset threshold 0.03 rejected). No reset at the identifier remap.
+head structure: #3126 sgdhead, #3127 diaghead, #3128 blockhead, #3129 gdiag, #3131 lowrank, all rejected. #3125 l2init rejected.
+"shrink and perturb": #3577 (body tensors at remap, negative). "head re-init", "wout reset", "covariance inflation", "leaky RLS", "partial reset" (head): none.
+open IPMNIST PRs updated since 2026-10-30: #3610, #3626, #3632, #3634, #3636, #3638, #3639, #3646; none touches the ridge.
