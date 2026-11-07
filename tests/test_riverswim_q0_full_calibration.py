@@ -6,6 +6,7 @@ import importlib.util
 import math
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -17,17 +18,21 @@ DIR = (
 )
 
 
-def _load(name: str):
-    sys.path.insert(0, str(DIR))
+def _load(name: str, plan_run: ModuleType | None = None):
     spec = importlib.util.spec_from_file_location(f"rq0_{name}", DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    spec.loader.exec_module(module)
+    # The retained scripts import their sibling run.py under a bare name.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "path", sys.path.copy())
+        if plan_run is not None:
+            patch.setitem(sys.modules, "run", plan_run)
+        spec.loader.exec_module(module)
     return module
 
 
 run = _load("run")
-analyze = _load("analyze")
+analyze = _load("analyze", run)
 
 
 def _life(arm: str, seed: int, reward: float, *, changes: int | None = None) -> dict:
@@ -142,7 +147,7 @@ def test_void_on_nonpositive_scale() -> None:
     assert analyze.analyze(packed)["verdict"] == "VOID"
 
 
-envcheck = _load("envcheck")
+envcheck = _load("envcheck", run)
 
 
 def test_oracle_sum_difference_is_accumulation_order_not_drift() -> None:
