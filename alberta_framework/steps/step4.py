@@ -372,8 +372,16 @@ def step4_update(
         next_action,
         prediction_cumulants=prediction_cumulants,
     )
+    # The jitted update narrows the host-only clocks, which one transition
+    # does not advance. Restore their incoming values.
+    updated_state = result.state.replace(
+        learner_state=result.state.learner_state.replace(
+            birth_timestamp=state.learner_state.birth_timestamp,
+            uptime_s=state.learner_state.uptime_s,
+        )
+    )
     return Step4OneStepResult(
-        state=result.state,
+        state=updated_state,
         action=result.action,
         q_values=result.q_values,
         td_error=result.td_error,
