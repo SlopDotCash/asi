@@ -5518,9 +5518,10 @@ def _make_rls_head_identmap_learner(
     protocol permits.  ``ident_match_at = 0`` delegates verbatim to
     :func:`_make_rls_head_learner` (bit-exact reduction, pinned).
     """
+    inner_options = {"_decay_to_init": True} if _decay_to_init else {}
     match1 = float(hp["ident_match_at"])
     if match1 == 0.0:
-        return _make_rls_head_learner(hp, _decay_to_init=_decay_to_init)
+        return _make_rls_head_learner(hp, **inner_options)
     match2 = float(hp.get("ident_match2", 0.0))
     match3 = float(hp.get("ident_match3", 0.0))
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
@@ -5570,7 +5571,7 @@ def _make_rls_head_identmap_learner(
         raise ValueError(
             "anneal_decay_reset_frac needs anneal_reset_frac and 0 <= f < 1"
         )
-    inner_init, inner_step = _make_rls_head_learner(hp, _decay_to_init=_decay_to_init)
+    inner_init, inner_step = _make_rls_head_learner(hp, **inner_options)
 
     def raw_normalize(
         state: EMANormState, fast_mean: Array, x: Array

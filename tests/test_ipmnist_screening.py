@@ -7658,10 +7658,7 @@ class TestRLSHeadIdentMap:
         assert np.all(np.isfinite(np.asarray(ident.per_task_accuracy)))
 
     def test_registry_arms(self):
-        """Only the two 200-task-confirmed identifier arms plus the gated
-        idet003 trigger and idet003_s005625 step-size triple screens are
-        registered; the screened intermediates and the round-2 rejections
-        (negative result #22) are deregistered."""
+        """Pin the current and retained historical identifier arm inventory."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
             _make_rls_head_identmap_learner,
@@ -7786,17 +7783,89 @@ class TestRLSHeadIdentMap:
                 for tag, ridge in (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
             },
         }
+        expected.update({
+            f"rls_head_resid_identmap{tag}": {
+                "ident_match_at": 50.0, "ident_match2": 200.0, "ident_match3": 2000.0,
+                **overrides,
+            }
+            for tag, overrides in (
+                ("50_r_nogate", {"gate_scale": 0.0}),
+                (
+                    "200_r_nogate",
+                    {
+                        "ident_match_at": 200.0,
+                        "ident_match2": 500.0,
+                        "gate_scale": 0.0,
+                    },
+                ),
+                ("50_r_nogate_idet003", {"gate_scale": 0.0, "ident_reset_frac": 0.03}),
+                (
+                    "50_r_nogate_idet003_s0075",
+                    {
+                        "gate_scale": 0.0,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0075,
+                    },
+                ),
+                (
+                    "50_r_nogate_idet003_s005625",
+                    {
+                        "gate_scale": 0.0,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.005625,
+                    },
+                ),
+                ("50_r_idet002", {"ident_reset_frac": 0.02}),
+                ("50_r_idet003_s00421875", {"ident_reset_frac": 0.03, "step_size": 0.00421875}),
+                ("50_r_idet004_s00421875", {"ident_reset_frac": 0.04, "step_size": 0.00421875}),
+                ("50_r_idet003_s0031640625", {"ident_reset_frac": 0.03, "step_size": 0.0031640625}),
+                (
+                    "50_r_idet003_s002373046875",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.002373046875,
+                    },
+                ),
+                (
+                    "50_r_idet003_s0031640625_r01",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.1,
+                    },
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02_preset003",
+                    {
+                        "rls_reset_frac": 0.03,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                ),
+            )
+        })
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
         }
-        assert registered == set(expected)
+        assert registered == set(expected) | {
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init",
+        }
         for name, overrides in expected.items():
             spec = SCREENING_REGISTRY[name]
             assert spec.factory is _make_rls_head_identmap_learner
             assert spec.frozen_probe_input is _rls_head_frozen_probe_input
             assert spec.hyperparameters["head_resid"] == 1.0
             assert spec.hyperparameters["rls_lambda"] == 1.0
-            assert spec.hyperparameters["rls_reset_frac"] == 0.05
+            assert spec.hyperparameters["rls_reset_frac"] == overrides.get("rls_reset_frac", 0.05)
             for key, value in overrides.items():
                 assert spec.hyperparameters[key] == value
 
