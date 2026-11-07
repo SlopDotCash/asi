@@ -4834,6 +4834,62 @@ def _make_rls_head_l2init_learner(
     return _make_rls_head_learner(base_hp, _decay_to_init=True)
 
 
+def _rls_head_identmap_l2init_hp() -> dict[str, float]:
+    """Return the frozen historical r02 L2-Init configuration."""
+    return {
+        **_rls_head_hp(
+            rls_lambda=1.0,
+            rls_reset_frac=0.05,
+            head_resid=1.0,
+            ident_match_at=50.0,
+            ident_match2=200.0,
+            ident_match3=2000.0,
+            ident_reset_frac=0.03,
+            step_size=0.0031640625,
+            rls_ridge_init=0.03,
+        ),
+        "decay_to_init": 1.0,
+    }
+
+
+def _make_rls_head_identmap_l2init_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Build the gated chain's body-only L2-Init cell, failing closed on drift.
+
+    ``decay_to_init = 0.0`` delegates to the incumbent identmap factory so
+    the reduction to the r02 parent stays pinnable bit-for-bit; the
+    registered cell is the frozen ``1.0`` endpoint.
+    """
+    expected = _rls_head_identmap_l2init_hp()
+    if set(hp) != set(expected):
+        raise ValueError(
+            "frozen L2-Init configuration requires exactly the registered keys"
+        )
+    invalid = [
+        name
+        for name, expected_value in expected.items()
+        if name != "decay_to_init"
+        and (
+            type(hp[name]) is not float
+            or not math.isfinite(hp[name])
+            or hp[name].hex() != expected_value.hex()
+        )
+    ]
+    flag = hp["decay_to_init"]
+    if type(flag) is not float or flag not in (0.0, 1.0):
+        invalid.append("decay_to_init")
+    if invalid:
+        raise ValueError(
+            "frozen L2-Init configuration differs at: " + ", ".join(invalid)
+        )
+    base_hp = dict(hp)
+    del base_hp["decay_to_init"]
+    return _make_rls_head_identmap_learner(
+        base_hp, _decay_to_init=flag == 1.0
+    )
+
+
 def _rls_head_forward(
     params: dict[str, Array], wout: Array, normalized: Array,
 ) -> tuple[Array, Array]:
@@ -5349,7 +5405,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState
+    inner: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -5444,6 +5500,8 @@ def _runtime_decay(
 
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
+    *,
+    _decay_to_init: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Incumbent + online permutation identification and input remap.
 
@@ -5460,9 +5518,10 @@ def _make_rls_head_identmap_learner(
     protocol permits.  ``ident_match_at = 0`` delegates verbatim to
     :func:`_make_rls_head_learner` (bit-exact reduction, pinned).
     """
+    inner_options = {"_decay_to_init": True} if _decay_to_init else {}
     match1 = float(hp["ident_match_at"])
     if match1 == 0.0:
-        return _make_rls_head_learner(hp)
+        return _make_rls_head_learner(hp, **inner_options)
     match2 = float(hp.get("ident_match2", 0.0))
     match3 = float(hp.get("ident_match3", 0.0))
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
@@ -5512,7 +5571,7 @@ def _make_rls_head_identmap_learner(
         raise ValueError(
             "anneal_decay_reset_frac needs anneal_reset_frac and 0 <= f < 1"
         )
-    inner_init, inner_step = _make_rls_head_learner(hp)
+    inner_init, inner_step = _make_rls_head_learner(hp, **inner_options)
 
     def raw_normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -8929,6 +8988,99 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             )
             for tag, kappa in (("2", 2.0), ("4", 4.0), ("8", 8.0))
         ),
+        # Historical screens retain their exact constants for shard replay.
+        *(
+            (
+                f"rls_head_resid_identmap{suffix}",
+                {
+                    "rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0,
+                    **overrides,
+                },
+                f"historical development screen of {description}",
+            )
+            for suffix, overrides, description in (
+                (
+                    "50_r_nogate",
+                    {"gate_scale": 0.0},
+                    "ungated body with rematches at 50/200/2000",
+                ),
+                (
+                    "200_r_nogate",
+                    {"ident_match_at": 200.0, "ident_match2": 500.0, "gate_scale": 0.0},
+                    "ungated body with rematches at 200/500/2000",
+                ),
+                (
+                    "50_r_nogate_idet003",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03},
+                    "ungated body with a 0.03 identifier trigger",
+                ),
+                (
+                    "50_r_nogate_idet003_s0075",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03, "step_size": 0.0075},
+                    "ungated 0.03 identifier trigger and body step 0.0075",
+                ),
+                (
+                    "50_r_nogate_idet003_s005625",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03, "step_size": 0.005625},
+                    "ungated 0.03 identifier trigger and body step 0.005625",
+                ),
+                (
+                    "50_r_idet002",
+                    {"ident_reset_frac": 0.02},
+                    "gated body with a 0.02 identifier trigger",
+                ),
+                (
+                    "50_r_idet003_s00421875",
+                    {"ident_reset_frac": 0.03, "step_size": 0.00421875},
+                    "gated body with a 0.03 identifier trigger and body step 0.00421875",
+                ),
+                (
+                    "50_r_idet004_s00421875",
+                    {"ident_reset_frac": 0.04, "step_size": 0.00421875},
+                    "gated body with a 0.04 identifier trigger and body step 0.00421875",
+                ),
+                (
+                    "50_r_idet003_s0031640625",
+                    {"ident_reset_frac": 0.03, "step_size": 0.0031640625},
+                    "gated body with a 0.03 identifier trigger and body step 0.0031640625",
+                ),
+                (
+                    "50_r_idet003_s002373046875",
+                    {"ident_reset_frac": 0.03, "step_size": 0.002373046875},
+                    "gated body with a 0.03 identifier trigger and body step 0.002373046875",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r01",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.1,
+                    },
+                    "gated body step 0.0031640625 and RLS ridge 0.1",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                    "gated body step 0.0031640625 and RLS ridge 0.03",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02_preset003",
+                    {
+                        "rls_reset_frac": 0.03,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                    "gated RLS ridge 0.03 with head reset fraction 0.03",
+                ),
+            )
+        ),
     ):
         specs.append(
             ScreeningSpec(
@@ -8945,6 +9097,20 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_identmap_l2init_hp(),
+            factory=_make_rls_head_identmap_l2init_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Historical development screen of the gated r02 arm with "
+                "L2-to-initialization on the four body tensors."
+            ),
+        )
+    )
     # The smprecond_r1 second-moment body-preconditioning arms
     # (rls_head_resid_sm{3e4,1e3}_i50r) failed their preregistered outcome
     # — sm1e3 lost the 60t screen on all seeds and sm3e4 failed the
