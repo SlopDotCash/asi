@@ -1235,18 +1235,21 @@ def imagined_rollout_to_sarsa_items(
     """Convert a rollout to SARSA-style arrays with shifted next actions.
 
     Without a bootstrap action, retain the final row only when its discount is zero.
+    The same rule applies to any row followed by a rejected row, whose action
+    is not a usable next action.
     """
     transitions = rollout.transitions
     actions = transitions.action
     if bootstrap_action is None:
         next_actions = jnp.concatenate([actions[1:], jnp.zeros_like(actions[-1:])], axis=0)
-        weights = jnp.asarray(transitions.valid, dtype=jnp.float32)
-        # A zero-discount transition has no bootstrap term or next-action dependency.
-        weights = weights.at[-1].set(weights[-1] * (transitions.discount[-1] == 0.0))
+        final_next_valid = jnp.zeros_like(transitions.valid[-1:])
     else:
         bootstrap = jnp.expand_dims(jnp.asarray(bootstrap_action, dtype=actions.dtype), axis=0)
         next_actions = jnp.concatenate([actions[1:], bootstrap], axis=0)
-        weights = jnp.asarray(transitions.valid, dtype=jnp.float32)
+        final_next_valid = jnp.ones_like(transitions.valid[-1:])
+    next_valid = jnp.concatenate([transitions.valid[1:], final_next_valid], axis=0)
+    # A zero-discount transition has no bootstrap term or next-action dependency.
+    retained = transitions.valid & (next_valid | (transitions.discount == 0.0))
     return DreamSARSATrainingItem(
         observations=_neutralize_invalid(transitions.observation, transitions.valid),
         actions=_neutralize_invalid(actions, transitions.valid),
@@ -1259,8 +1262,8 @@ def imagined_rollout_to_sarsa_items(
         discounts=_neutralize_invalid(
             jnp.asarray(transitions.discount, dtype=jnp.float32), transitions.valid
         ),
-        next_actions=_neutralize_invalid(next_actions, transitions.valid),
-        weights=weights,
+        next_actions=_neutralize_invalid(next_actions, retained),
+        weights=jnp.asarray(retained, dtype=jnp.float32),
     )
 
 
