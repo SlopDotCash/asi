@@ -1361,6 +1361,13 @@ class AlbertaPipeline:
             ).probabilities
         else:
             initial_features = initial_observation
+        # The first features are stored without a runtime gate: a non-finite
+        # value here would make every later update refuse the transition.
+        # Traced values pass through to the update-side gates.
+        if not isinstance(initial_features, jax.core.Tracer) and not bool(
+            jnp.all(jnp.isfinite(initial_features))
+        ):
+            raise ValueError("initial features must contain only finite values")
 
         horde_state = init_step3_state(
             self._horde,

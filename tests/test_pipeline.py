@@ -2,6 +2,7 @@
 """Integrated Step 2-4 pipeline tests."""
 
 import json
+from dataclasses import replace
 from fractions import Fraction
 from types import SimpleNamespace
 
@@ -1371,3 +1372,43 @@ def test_pipeline_array_horde_clocks_preserve_initialized_host_values(
         assert type(current.horde_state.uptime_s) is float
         assert current.horde_state.uptime_s == uptime
     assert int(current.step_count) == 4
+
+
+@pytest.mark.parametrize(
+    "make_config",
+    [_small_pipeline_config, _small_upgd_config, _small_horde_ac_config],
+)
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+def test_pipeline_init_rejects_nonfinite_first_features(
+    make_config,
+    bad_value: float,
+) -> None:
+    config = make_config()
+    if config.step2 == "temporal_context":
+        config = replace(config, step2="identity")
+    pipeline = make_alberta_pipeline(config)
+    observation = jnp.full((config.features.observation_dim,), 0.5, dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="initial features must contain only finite"):
+        pipeline.init(jr.key(0), observation.at[0].set(bad_value))
+
+
+def test_pipeline_init_accepts_context_features_that_reject_a_nonfinite_observation() -> None:
+    config = AlbertaPipelineConfig(
+        features=Step2FeatureConfig(observation_dim=3),
+        horde=_small_pipeline_config().horde,
+        control=_small_pipeline_config().control,
+    )
+    pipeline = make_alberta_pipeline(config)
+    good = jnp.full((3,), 0.5, dtype=jnp.float32)
+
+    state = pipeline.init(jr.key(0), good.at[0].set(jnp.nan))
+    result = pipeline.update(
+        state,
+        good,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+
+    assert int(result.action) >= 0
+    assert int(result.state.step_count) == 1
