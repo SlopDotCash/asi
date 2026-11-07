@@ -633,11 +633,12 @@ class OffPolicyTDLinearLearner:
 
         # rho_clipped is already represented in the trace.
         scaled_update = alpha * td_error
+        terminal = gamma_s == jnp.asarray(0.0, dtype=jnp.float32)
         proposed_state = OffPolicyTDState(  # type: ignore[call-arg]
             weights=state.weights + scaled_update * new_e,
             bias=state.bias + scaled_update * new_e_b,
-            eligibility_traces=new_e,
-            bias_eligibility_trace=new_e_b,
+            eligibility_traces=jnp.where(terminal, jnp.zeros_like(new_e), new_e),
+            bias_eligibility_trace=jnp.where(terminal, jnp.zeros_like(new_e_b), new_e_b),
             previous_gamma=gamma_s,
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
             birth_timestamp=state.birth_timestamp,
@@ -1115,10 +1116,11 @@ class GradientTDLinearLearner:
         primary_step = alpha * (td_error * traces - bootstrap_correction)
         secondary_step = beta * (td_error * traces - secondary_dot_phi * phi)
 
+        terminal = gamma_s == jnp.asarray(0.0, dtype=jnp.float32)
         proposed_state = GradientTDState(  # type: ignore[call-arg]
             weights=state.weights + primary_step,
             secondary_weights=state.secondary_weights + secondary_step,
-            eligibility_traces=traces,
+            eligibility_traces=jnp.where(terminal, jnp.zeros_like(traces), traces),
             previous_gamma=gamma_s,
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
             birth_timestamp=state.birth_timestamp,
