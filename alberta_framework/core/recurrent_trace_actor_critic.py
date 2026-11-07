@@ -3068,7 +3068,7 @@ class RecurrentTraceActorCriticAgent:
             action=jnp.where(
                 update_applied,
                 next_action,
-                jnp.asarray(0, dtype=jnp.int32),
+                state.last_action,
             ),
             policy=jnp.where(update_applied, next_policy, jnp.zeros_like(next_policy)),
             value=jnp.where(update_applied, value, zero),
