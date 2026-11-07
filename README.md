@@ -61,12 +61,13 @@ program; it is not a claim about the current software's level of intelligence.
 `valid_baseline_failure` because its RiverSwim controls did not qualify. Follow-up probes
 identified two RiverSwim controls for a fresh matched run, discounted SARSA with initial
 Q = 10 and differential SARSA with initial average reward = 1. On SwitchingTwoState,
-Prototype's step 0.20 led step 0.10 on the reused development seeds. The
-[hillclimb status](docs/status.md#reference-life-hillclimb) tracks the scope and next comparison.
+Prototype's step 0.20 led step 0.10 and differential SARSA on three fresh matched seeds.
+The [hillclimb status](docs/status.md#reference-life-hillclimb) links the retained comparisons.
 
 In the [IPMNIST development lane](docs/research/ipmnist-campaign-index.md), the zero-decay,
 constant-step 0.02 arm is the leading candidate. Its retained 200-task confirmation cleared the
-annealed zero-decay comparator on all 20 seeds. All of these runs are permanently nonpromoting.
+annealed zero-decay comparator on all 20 seeds. A fresh 200-task pair also favored it over
+constant step 0.005625. All of these runs are permanently nonpromoting.
 
 Individual mechanisms range from contract-tested kernels to narrow historical evidence
 packages. The retained `PrototypeAgent` is a candidate composition surface, not a completed

@@ -361,6 +361,14 @@ split 1–2 across seeds, with mean difference +10.95 for discounted SARSA.
 Keep both controls for the full matched calibration. The smoke used raw
 rewards and omitted random and oracle normalizers.
 
+A [fresh local SwitchingTwoState comparison](../outputs/hillclimb_local/2026-11-07/reference/switching-summary.json)
+used three matched seeds over 4,000 events. Step 0.20 led step 0.10 by
+147.33 mean raw reward, the scorecard step 0.05 by 523.67, and differential
+SARSA by 322.67. It won all three seed pairs against each comparator. The
+three Prototype steps used 217 bytes of persistent numeric state versus
+108 bytes for differential SARSA. Random and oracle normalizers were outside
+the local comparison.
+
 The follow-up runs are permanently nonpromoting and the whole-life candidate
 selection remains open.
 
