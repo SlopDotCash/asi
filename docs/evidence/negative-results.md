@@ -689,3 +689,11 @@ floor of 0.0028125 and tau of 1000. All three peaks lost at the seed-0 tune
 gate. The screen and confirmation seeds were never run. The historical
 [results](../../outputs/ipmnist_screening/anneal_peak_screen/RESULTS.md)
 retain the paired scores, environment checks, and source bindings.
+
+## Shrink and perturb at the first identmap remap (2026-10-30)
+
+This preregistered development screen tested the residual-body shrink and
+perturb transform at the first remap of each detected task. The selected
+shrink 0.8 and perturbation scale 0.01 lost to the local parent on all three
+60-task seeds. The [retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_snp/README.md)
+records the paired comparison, unsuccessful tune cells, and source bindings.
