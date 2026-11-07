@@ -268,11 +268,11 @@ def cchain_gradient_component(
     scale = dot / jnp.maximum(task_energy, epsilon)
     direct_projection = {name: scale * task[name] for name in _PARAMETER_KEYS}
 
-    # A finite task gradient can have an unrepresentable squared norm.  In
-    # that case both ``dot`` and ``task_energy`` may be infinite even though
-    # the projection itself is representable.  Scale both gradients by exact
-    # powers of two and form the projection ratio in that bounded domain,
-    # without ever materializing either overflowing reduction.
+    # A finite task gradient can make ``dot`` or ``scale * task`` non-finite
+    # while the projection still fits.  ``1.5e19**2`` fits in float32 and
+    # ``1.5e19 * 3e19`` does not; the squared norm can also overflow on its
+    # own.  Scale both gradients by exact powers of two and form the ratio in
+    # that bounded domain, without materializing either overflowing reduction.
     task_peak = jnp.asarray(0.0, dtype=jnp.float32)
     churn_peak = jnp.asarray(0.0, dtype=jnp.float32)
     for name in sorted(_PARAMETER_KEYS):
@@ -315,7 +315,8 @@ def cchain_gradient_component(
     }
     projection = {
         name: jnp.where(
-            jnp.isfinite(task_energy),
+            jnp.isfinite(direct_projection[name])
+            | ~jnp.isfinite(overflow_safe_projection[name]),
             direct_projection[name],
             overflow_safe_projection[name],
         )
