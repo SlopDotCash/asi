@@ -1395,6 +1395,50 @@ def test_unrepresentable_maximum_spread_raises_without_runtime_warning(timeserie
                 compute_statistics(values)
 
 
+_REAL_SAMPLES = np.array([1.0, 2.0, 3.0, 4.0, 5.5])
+_OTHER_SAMPLES = np.array([1.5, 2.5, 3.0, 4.5, 6.0])
+_NON_REAL_SAMPLES = [
+    pytest.param(_REAL_SAMPLES + 1j, id="complex"),
+    pytest.param(np.array(["2020-01-01"] * 5, dtype="datetime64[D]"), id="datetime"),
+    pytest.param(np.array([1, 2, 3, 4, 5], dtype="timedelta64[s]"), id="timedelta"),
+]
+
+
+@pytest.mark.parametrize("samples", _NON_REAL_SAMPLES)
+@pytest.mark.parametrize(
+    "summarize",
+    [
+        pytest.param(compute_statistics, id="compute_statistics"),
+        pytest.param(lambda x: bootstrap_ci(x, n_bootstrap=20), id="bootstrap_ci"),
+        pytest.param(lambda x: cohens_d(x, _OTHER_SAMPLES), id="cohens_d_a"),
+        pytest.param(lambda x: cohens_d(_OTHER_SAMPLES, x), id="cohens_d_b"),
+        pytest.param(lambda x: ttest_comparison(x, _OTHER_SAMPLES), id="ttest_a"),
+        pytest.param(lambda x: ttest_comparison(_OTHER_SAMPLES, x), id="ttest_b"),
+        pytest.param(
+            lambda x: ttest_comparison(x, _OTHER_SAMPLES, paired=False), id="ttest_unpaired"
+        ),
+        pytest.param(lambda x: mann_whitney_comparison(x, _OTHER_SAMPLES), id="mann_whitney"),
+        pytest.param(lambda x: wilcoxon_comparison(x, _OTHER_SAMPLES), id="wilcoxon"),
+        pytest.param(lambda x: compute_timeseries_statistics(np.stack([x, x])), id="timeseries"),
+    ],
+)
+def test_non_real_samples_are_rejected(summarize: Any, samples: np.ndarray) -> None:
+    """A real-valued summary must not drop an imaginary part or read a date as a number."""
+    with pytest.raises(ValueError, match="must be real numeric samples"):
+        summarize(samples)
+
+
+@pytest.mark.parametrize("samples", _NON_REAL_SAMPLES)
+def test_pairwise_comparisons_reject_non_real_final_windows(samples: np.ndarray) -> None:
+    window = np.stack([samples, samples[::-1]])
+    results = {
+        "real": AggregatedResults("real", [0, 1], {"m": np.stack([_REAL_SAMPLES] * 2)}, {}),
+        "other": AggregatedResults("other", [0, 1], {"m": window}, {}),
+    }
+    with pytest.raises(ValueError, match="must be real numeric samples"):
+        pairwise_comparisons(results, metric="m", window=3)
+
+
 class TestProbabilityPrecision:
     """Stored p-values and alphas keep full float64 precision.
 
