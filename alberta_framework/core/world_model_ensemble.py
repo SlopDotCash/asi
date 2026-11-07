@@ -2100,6 +2100,8 @@ def load_world_model_ensemble_checkpoint(
     resource_budget = metadata.get("resource_budget")
     if type(resource_budget) is not dict or resource_budget != expected_budget:
         raise ValueError("ensemble checkpoint resource budget does not match config")
+    if set(metadata) != {"schema", "ensemble_config", "config_sha256", "resource_budget"}:
+        raise ValueError("ensemble checkpoint metadata fields do not match the schema")
     restored, restored_metadata = load_checkpoint(restore_template, path)
     if restored_metadata != metadata:
         raise ValueError("ensemble checkpoint metadata changed between reads")
