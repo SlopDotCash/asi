@@ -147,6 +147,13 @@ def _loads_strict_json_object(text: str, *, label: str) -> dict[str, Any]:
     return parsed
 
 
+def _require_valid_unicode(value: str) -> None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("JSON strings must be valid Unicode") from error
+
+
 def _validate_exact_json_tree(root: object) -> None:
     stack: list[tuple[object, int]] = [(root, 1)]
     values_seen = 0
@@ -161,13 +168,16 @@ def _validate_exact_json_tree(root: object) -> None:
             for key, child in value.items():
                 if type(key) is not str:
                     raise ValueError("JSON object keys must be exact strings")
+                _require_valid_unicode(key)
                 stack.append((child, depth + 1))
         elif type(value) is list:
             stack.extend((child, depth + 1) for child in value)
         elif type(value) is float:
             if not math.isfinite(value):
                 raise ValueError("non-finite JSON number is forbidden")
-        elif type(value) not in (str, int, bool, type(None)):
+        elif type(value) is str:
+            _require_valid_unicode(value)
+        elif type(value) not in (int, bool, type(None)):
             raise ValueError("JSON payload contains a non-JSON value")
 
 
