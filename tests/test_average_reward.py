@@ -1029,6 +1029,53 @@ def test_differential_sarsa_config_scalar_validation() -> None:
     assert cfg.epsilon_decay_steps == 100
 
 
+def test_differential_sarsa_config_rejects_rising_epsilon_schedule() -> None:
+    # The linear schedule only decays.  With epsilon_end above epsilon_start it
+    # would climb past epsilon_end and past 1, and the agent would then reject
+    # every update.  SARSAConfig refuses the same schedule.
+    with pytest.raises(ValueError, match="epsilon_end must not exceed epsilon_start"):
+        DifferentialSARSAConfig(
+            n_actions=2,
+            epsilon_start=0.1,
+            epsilon_end=0.5,
+            epsilon_decay_steps=4,
+        )
+
+    flat = DifferentialSARSAConfig(
+        n_actions=2,
+        epsilon_start=0.3,
+        epsilon_end=0.3,
+        epsilon_decay_steps=4,
+    )
+    assert flat.epsilon_end == flat.epsilon_start
+    # Without decay, epsilon_end is never read and epsilon stays at epsilon_start.
+    constant = DifferentialSARSAConfig(n_actions=2, epsilon_start=0.1, epsilon_end=0.5)
+    assert constant.epsilon_decay_steps == 0
+
+
+def test_differential_sarsa_decaying_epsilon_stays_between_its_endpoints() -> None:
+    agent = DifferentialSARSAAgent(
+        DifferentialSARSAConfig(
+            n_actions=2,
+            epsilon_start=0.5,
+            epsilon_end=0.1,
+            epsilon_decay_steps=4,
+        )
+    )
+    state, _ = agent.start(
+        agent.init(2, jr.key(5, impl="threefry2x32")),
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+    )
+    epsilons = []
+    for _ in range(8):
+        result = agent.update(state, jnp.asarray(0.5), jnp.array([0.0, 1.0], dtype=jnp.float32))
+        assert bool(result.update_applied)
+        state = result.state
+        epsilons.append(float(state.epsilon))
+
+    np.testing.assert_allclose(epsilons, [0.4, 0.3, 0.2, 0.1, 0.1, 0.1, 0.1, 0.1], rtol=1e-6)
+
+
 _NUMPY_INTEGER_TYPES = tuple(dict.fromkeys(np.dtype(code).type for code in "bhilqBHILQpP"))
 
 

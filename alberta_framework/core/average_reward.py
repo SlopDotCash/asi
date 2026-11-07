@@ -2034,6 +2034,10 @@ class DifferentialSARSAConfig:
                     upper=1.0,
                 ),
             )
+        # The linear schedule only decays; a rising one would climb past
+        # epsilon_end and out of [0, 1], and every later update is rejected.
+        if self.epsilon_decay_steps > 0 and self.epsilon_end > self.epsilon_start:
+            raise ValueError("epsilon_end must not exceed epsilon_start when decaying")
         if type(self.use_bias) is not bool:
             raise ValueError("use_bias must be boolean")
         object.__setattr__(self, "use_bias", bool(self.use_bias))
