@@ -105,6 +105,7 @@ from alberta_framework.core.normalizers import (
 )
 from alberta_framework.core.optimizers import Bounder
 from alberta_framework.core.types import TraceMode
+from alberta_framework.core.update_safety import neutralize_array, select_transaction
 
 _NUMPY_FLOAT_SCALAR_TYPES = frozenset((np.float16, np.float32, np.float64, np.longdouble))
 _NUMPY_INTEGER_SCALAR_TYPES = frozenset(
@@ -1360,6 +1361,9 @@ class CBPMultiHeadMLPLearner:
             mlp_state=new_post_state,
             cbp_state=new_cbp_state,
         )
+        # Feature replacement belongs to the underlying learner's transaction.
+        new_state = select_transaction(mlp_result.update_applied, new_state, state)
+        replacements_made = neutralize_array(mlp_result.update_applied, replacements_made)
 
         return CBPUpdateResult(  # type: ignore[call-arg]
             state=new_state,
