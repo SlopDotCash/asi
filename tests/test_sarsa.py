@@ -582,6 +582,54 @@ class TestSARSAUpdate:
         pred_changed = not jnp.allclose(old_pred_weights, new_pred_weights)
         assert pred_changed, "Prediction demon head should have been updated"
 
+    def test_terminated_prediction_demons_do_not_bootstrap(self):
+        """At a terminal transition, a prediction demon learns the cumulant.
+
+        The target must not depend on the next observation: in continuing
+        mode the terminal next observation is already the next episode's
+        reset observation, so bootstrapping it would leak one episode's
+        values into the previous episode's prediction.
+        """
+        pred_demons = [
+            GVFSpec(
+                name="pred_0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.0,
+                cumulant_index=0,
+            ),
+        ]
+        agent = _make_agent(
+            n_actions=2, prediction_demons=pred_demons, hidden_sizes=()
+        )
+        state = agent.init(feature_dim=4, key=jr.key(42))
+        obs = jnp.ones(4, dtype=jnp.float32)
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(0, dtype=jnp.int32),
+            last_observation=obs,
+        )
+
+        next_a = jnp.ones(4, dtype=jnp.float32) * 0.5
+        next_b = jnp.ones(4, dtype=jnp.float32) * -2.0
+        pred_next_a = agent.horde.predict(state.learner_state, next_a)[2]
+        pred_next_b = agent.horde.predict(state.learner_state, next_b)[2]
+        assert not jnp.allclose(pred_next_a, pred_next_b)
+
+        def terminal_weights(next_obs):
+            result = agent.update(
+                state,
+                reward=jnp.array(1.0),
+                observation=next_obs,
+                terminated=jnp.array(1.0),
+                next_action=jnp.array(0, dtype=jnp.int32),
+                prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+            )
+            return result.state.learner_state.head_params.weights[2]
+
+        chex.assert_trees_all_close(
+            terminal_weights(next_a), terminal_weights(next_b)
+        )
+
     def test_td_error_uses_last_observation_prediction(self):
         """Returned TD error is target - Q(s_t, a_t), not Q(s_{t+1}, a_t)."""
         agent = _make_agent(n_actions=2, hidden_sizes=(), gamma=0.0, epsilon_start=0.0)

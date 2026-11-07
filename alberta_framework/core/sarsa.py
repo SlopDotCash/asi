@@ -1030,9 +1030,19 @@ class SARSAAgent:
         # Horde update: learns from (s_t, cumulants, s'). Control heads use
         # zero transition discounts (the SARSA target above already contains
         # the gamma * Q(s', a') bootstrap); prediction demons keep their
-        # configured gammas. Head traces still decay by the spec's
-        # gamma * lamda, which is what makes this SARSA(lambda).
+        # configured gammas on continuing transitions, but a terminal
+        # transition must not bootstrap any demon: s' is terminal (in
+        # continuing mode it is already the next episode's reset
+        # observation), so every discount is zero and the prediction target
+        # is the cumulant plus the demon's terminal reward. Head traces
+        # still decay by the spec's gamma * lamda, which is what makes
+        # this SARSA(lambda).
         discounts = self._horde.horde_spec.gammas.at[:n_actions].set(0.0)
+        discounts = jnp.where(
+            safe_terminated != 0,
+            jnp.zeros_like(discounts),
+            discounts,
+        )
         horde_result = self._horde.update_with_discounts(
             state.learner_state,
             state.last_observation,
