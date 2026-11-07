@@ -508,7 +508,7 @@ def generate_latex_table(
     metric: str = "squared_error",
     caption: str = "Experimental Results",
     label: str = "tab:results",
-    metric_label: str = "Error",
+    metric_label: str | None = None,
     lower_is_better: bool = True,
 ) -> str:
     """Generate a LaTeX table of results.
@@ -519,7 +519,7 @@ def generate_latex_table(
         metric: Metric to display
         caption: Table caption
         label: LaTeX label for the table
-        metric_label: Human-readable name for the metric
+        metric_label: Explicit display label, or the selected metric name by default
         lower_is_better: Whether lower metric values are better
 
     Returns:
@@ -528,7 +528,8 @@ def generate_latex_table(
     _require_exact_str("metric", metric)
     _require_exact_str("caption", caption)
     _require_exact_str("label", label)
-    _require_exact_str("metric_label", metric_label)
+    if metric_label is not None:
+        _require_exact_str("metric_label", metric_label)
     lower_is_better = _require_exact_bool("lower_is_better", lower_is_better)
     if significance_results is not None:
         _preflight_significance_results(significance_results)
@@ -543,10 +544,12 @@ def _render_latex_table(
     metric: str,
     caption: str,
     label: str,
-    metric_label: str,
+    metric_label: str | None,
     lower_is_better: bool,
 ) -> str:
     """Render validated metadata, including escaped text derived by the report wrapper."""
+    if metric_label is None:
+        metric_label = "Error" if metric == "squared_error" else _escape_latex_method_name(metric)
     lines = []
     lines.append(r"\begin{table}[ht]")
     lines.append(r"\centering")
@@ -700,7 +703,7 @@ def generate_markdown_table(
     results: dict[str, "AggregatedResults"],
     significance_results: dict[tuple[str, str], "SignificanceResult"] | None = None,
     metric: str = "squared_error",
-    metric_label: str = "Error",
+    metric_label: str | None = None,
     lower_is_better: bool = True,
 ) -> str:
     """Generate a markdown table of results.
@@ -709,14 +712,19 @@ def generate_markdown_table(
         results: Dictionary mapping config name to AggregatedResults
         significance_results: Optional pairwise significance test results
         metric: Metric to display
-        metric_label: Human-readable name for the metric
+        metric_label: Explicit display label, or the selected metric name by default
         lower_is_better: Whether lower metric values are better
 
     Returns:
         Markdown table as a string
     """
     _require_exact_str("metric", metric)
-    _require_exact_str("metric_label", metric_label)
+    if metric_label is None:
+        metric_label = (
+            "Error" if metric == "squared_error" else _escape_markdown_method_name(metric)
+        )
+    else:
+        _require_exact_str("metric_label", metric_label)
     lower_is_better = _require_exact_bool("lower_is_better", lower_is_better)
     if significance_results is not None:
         _preflight_significance_results(significance_results)
@@ -910,7 +918,7 @@ def save_experiment_report(
         metric=metric,
         caption=f"{_escape_latex_method_name(experiment_name)} Results",
         label=label,
-        metric_label="Error",
+        metric_label=None,
         lower_is_better=lower_is_better,
     )
     _write_text_atomically(latex_path, latex_content)
