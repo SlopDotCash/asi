@@ -3199,14 +3199,31 @@ def _aggregate_payload(
             reward_records = _require_list(
                 manifest["raw_reward_validation"], "run.raw_reward_validation"
             )
-            seed_scores = [
-                float(_require_dict(record, "raw reward record")["fov_last_10pct_ema_auc"])
-                for record in reward_records
-            ]
+            seed_scores: list[float] = []
+            for raw_record in reward_records:
+                record = _require_dict(raw_record, "raw reward record")
+                raw_score = record.get("fov_last_10pct_ema_auc")
+                if type(raw_score) not in (int, float):
+                    raise ScreenError(f"eligible candidate has an invalid seed score set: {path}")
+                try:
+                    score = float(cast(int | float, raw_score))
+                except OverflowError as error:
+                    raise ScreenError(
+                        f"eligible candidate has an invalid seed score set: {path}"
+                    ) from error
+                seed_scores.append(score)
             if len(seed_scores) != len(protocol.seeds) or not all(
                 math.isfinite(value) for value in seed_scores
             ):
                 raise ScreenError(f"eligible candidate has an invalid seed score set: {path}")
+            try:
+                aggregate_mean = math.fsum(seed_scores) / len(seed_scores)
+            except OverflowError as error:
+                raise ScreenError(
+                    f"eligible candidate has a non-finite aggregate mean: {path}"
+                ) from error
+            if not math.isfinite(aggregate_mean):
+                raise ScreenError(f"eligible candidate has a non-finite aggregate mean: {path}")
             eligible.append(
                 {
                     "configuration": path,
@@ -3216,7 +3233,7 @@ def _aggregate_payload(
                         {"seed": seed, "fov_last_10pct_ema_auc": value}
                         for seed, value in zip(protocol.seeds, seed_scores, strict=True)
                     ],
-                    "aggregate_mean": math.fsum(seed_scores) / len(seed_scores),
+                    "aggregate_mean": aggregate_mean,
                 }
             )
         else:
