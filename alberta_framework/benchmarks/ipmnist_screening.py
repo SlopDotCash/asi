@@ -4721,6 +4721,13 @@ class RLSHeadState:
     wout: Array
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadMomentumState(RLSHeadState):
+    """RLS carry with a first moment for the four residual body gradients."""
+
+    momentum: dict[str, Array]
+
+
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
 _WHITEN_NORM_FLOOR = 1e-12
 _NEWTON_RIDGE_REL = 1e-3
@@ -5039,6 +5046,17 @@ def _make_rls_head_learner(
         ):
             raise ValueError("SGD head is scoped to the plain gated residual body")
 
+    body_momentum = hp.get("body_momentum", 0.0)
+    if not 0.0 <= body_momentum < 1.0 or np.float32(body_momentum) == 1.0:
+        raise ValueError("body_momentum must lie in [0, 1) after float32 rounding")
+    momentum_enabled = body_momentum > 0.0
+    if momentum_enabled and (
+        not resid or not gate_enabled or whiten_enabled or newton or sm_enabled
+        or _decay_to_init or wclip_on or sgd_head
+        or any(name.startswith(("anneal_", "body_as_", "polyak_", "snp_")) for name in hp)
+    ):
+        raise ValueError("body momentum requires the plain fixed-step gated residual body")
+
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
     ) -> tuple[Array, EMANormState, Array, Array]:
@@ -5093,7 +5111,7 @@ def _make_rls_head_learner(
                 wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
                 init_params={name: params[name] for name in _RLS_HEAD_BODY},
             )
-        return RLSHeadState(  # type: ignore[call-arg]
+        state = RLSHeadState(  # type: ignore[call-arg]
             utility={name: jnp.zeros_like(value) for name, value in params.items()},
             step=jnp.array(0, dtype=jnp.int32),
             norm=EMANormState(  # type: ignore[call-arg]
@@ -5105,6 +5123,17 @@ def _make_rls_head_learner(
             p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
             wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
         )
+        if momentum_enabled:
+            return RLSHeadMomentumState(  # type: ignore[call-arg]
+                utility=state.utility,
+                step=state.step,
+                norm=state.norm,
+                fast_mean=state.fast_mean,
+                p=state.p,
+                wout=state.wout,
+                momentum={name: jnp.zeros_like(params[name]) for name in _RLS_HEAD_BODY},
+            )
+        return state
 
     def _gated_sgd(
         params: dict[str, Array],
@@ -5116,6 +5145,7 @@ def _make_rls_head_learner(
         init_params: Mapping[str, Array] | None = None,
         lr: Array | None = None,
         decay_lr: Array | None = None,
+        direction: Mapping[str, Array] | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
         """Champion utility-EMA + global-max sigmoid gate + gated decayed SGD
         over ``names``; other tensors pass through with untouched utility."""
@@ -5148,9 +5178,9 @@ def _make_rls_head_learner(
             decay = _runtime_decay(dl, step_size, param_decay, weight_decay)
         for name in names:
             if init_params is None:
-                # Keep the incumbent expression byte-for-byte unchanged.
+                applied_grad = grads[name] if direction is None else direction[name]
                 new_params[name] = params[name] * decay - step * (
-                    grads[name]
+                    applied_grad
                     * (
                         1.0
                         - jax.nn.sigmoid(
@@ -5191,6 +5221,9 @@ def _make_rls_head_learner(
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
+        if momentum_enabled and (lr is not None or decay_lr is not None):
+            raise ValueError("body momentum requires a fixed step and decay")
+        new_momentum = None
         if lr is not None and (sm_enabled or not gate_enabled or not resid):
             raise ValueError("a runtime step needs the gated residual body")
         if _decay_to_init:
@@ -5318,6 +5351,23 @@ def _make_rls_head_learner(
                         )
                     )
             elif gate_enabled:
+                direction = None
+                if momentum_enabled:
+                    if not isinstance(state, RLSHeadMomentumState):
+                        raise TypeError("body momentum requires RLSHeadMomentumState")
+                    new_momentum = {
+                        name: body_momentum * state.momentum[name]
+                        + (1.0 - body_momentum) * body_grads[name]
+                        for name in _RLS_HEAD_BODY
+                    }
+                    correction = 1.0 - jnp.power(
+                        jnp.asarray(body_momentum, dtype=jnp.float32),
+                        count.astype(jnp.float32),
+                    )
+                    direction = {
+                        name: value / correction for name, value in new_momentum.items()
+                    }
+                # Utility tracks the raw gradient, independent of the step direction.
                 new_params, new_utility = _gated_sgd(
                     params,
                     body_grads,
@@ -5327,6 +5377,7 @@ def _make_rls_head_learner(
                     guard_zero_max=True,
                     init_params=init_params,
                     lr=lr,
+                    direction=direction,
                     **({} if decay_lr is None else {"decay_lr": decay_lr}),
                 )
             else:
@@ -5410,6 +5461,16 @@ def _make_rls_head_learner(
                 p=new_p,
                 wout=new_wout,
                 init_params=state.init_params,
+            ), (accuracy, loss, plasticity)
+        if new_momentum is not None:
+            return new_params, RLSHeadMomentumState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+                momentum=new_momentum,
             ), (accuracy, loss, plasticity)
         return new_params, RLSHeadState(  # type: ignore[call-arg]
             utility=new_utility,
@@ -9033,6 +9094,8 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 f"historical development screen of {description}",
             )
             for suffix, overrides, description in (
+                ("50_r_mom9", {"body_momentum": 0.9}, "gated body momentum 0.9"),
+                ("50_r_mom99", {"body_momentum": 0.99}, "gated body momentum 0.99"),
                 (
                     "50_r_nogate",
                     {"gate_scale": 0.0},

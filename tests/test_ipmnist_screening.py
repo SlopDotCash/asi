@@ -7789,6 +7789,8 @@ class TestRLSHeadIdentMap:
                 **overrides,
             }
             for tag, overrides in (
+                ("50_r_mom9", {"body_momentum": 0.9}),
+                ("50_r_mom99", {"body_momentum": 0.99}),
                 ("50_r_nogate", {"gate_scale": 0.0}),
                 (
                     "200_r_nogate",

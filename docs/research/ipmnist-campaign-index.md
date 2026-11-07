@@ -84,6 +84,7 @@ protocol. The historical waves do not change the lead development candidate.
 | #3109 | [Ungated body with a 0.03 identifier trigger](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003/summary.json) |
 | #3110 | [Ungated 0.03 identifier trigger and body step 0.0075](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s0075/summary.json) |
 | #3111 | [Ungated 0.03 identifier trigger and body step 0.005625](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s005625/summary.json) |
+| #3114 | [Gated body momentum 0.9](../../outputs/ipmnist_screening/wave_identmap50_r_mom9/summary.json) and [0.99](../../outputs/ipmnist_screening/wave_identmap50_r_mom99/summary.json) |
 | #3116 | [Gated body with a 0.02 identifier trigger](../../outputs/ipmnist_screening/wave_identmap50_r_idet002/summary.json) |
 | #3118 | [Gated body with a 0.03 identifier trigger and body step 0.00421875](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s00421875/summary.json) |
 | #3119 | [Gated body with a 0.04 identifier trigger and body step 0.00421875](../../outputs/ipmnist_screening/wave_identmap50_r_idet004_s00421875/summary.json) |
