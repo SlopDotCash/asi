@@ -198,6 +198,9 @@ def _validate_confidence_level(confidence_level: object) -> float:
 
 def _require_finite_values(values: NDArray[np.floating], *, name: str) -> None:
     """Reject NaN/inf samples so summaries cannot gold-plate a poisoned seed."""
+    # float64 conversion would drop imaginary parts and read dates as day counts.
+    if values.dtype.kind in "cmM":
+        raise ValueError(f"{name} must be real numeric samples, got dtype {values.dtype}")
     if not np.isfinite(values).all():
         raise ValueError(f"{name} must be finite")
 
@@ -275,6 +278,16 @@ def _require_positive_int(name: str, value: object) -> int:
     if count <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return count
+
+
+def _require_bootstrap_seed(value: object) -> int:
+    """Admit one integer stream ID; ``default_rng`` also takes None and aliases."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError("seed must be a non-negative integer")
+    seed = operator.index(cast(SupportsIndex, value))
+    if seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+    return seed
 
 
 def _require_p_value(value: object, *, name: str) -> float:
@@ -975,13 +988,16 @@ def common_final_window(step_counts: Mapping[str, int], window: int, metric: str
     would silently compare methods over different horizons.
 
     Raises:
-        ValueError: If ``step_counts`` is empty or the per-method
-            ``min(window, n_steps)`` values disagree.
+        ValueError: If ``step_counts`` is empty, a step count is not a positive
+            integer, or the per-method ``min(window, n_steps)`` values disagree.
     """
     window = _require_positive_int("window", window)
     if not step_counts:
         raise ValueError("at least one method is required to derive a final window")
-    final_windows = {min(window, n_steps) for n_steps in step_counts.values()}
+    final_windows = {
+        min(window, _require_positive_int("step count", n_steps))
+        for n_steps in step_counts.values()
+    }
     if len(final_windows) != 1:
         described = ", ".join(
             f"{name}: {n_steps} steps" for name, n_steps in sorted(step_counts.items())
@@ -1018,8 +1034,10 @@ def pairwise_comparisons(
 
     Raises:
         ValueError: If ``alpha`` is not a finite probability strictly between
-            0 and 1, ``window`` is not positive, a metric has no steps, seed
-            identities are duplicated, seeds do not match metric rows, seeds
+            0 and 1, ``test`` or ``correction`` is unknown (even when fewer than
+            two methods leave nothing to compare), ``window`` is not positive, a
+            metric has no steps, seed identities are duplicated, seeds do not match
+            metric rows, seeds
             differ between methods used by a paired test, or ``window`` exceeds
             the shortest trace while trace lengths differ between methods.
             Paired rows are aligned by seed identity; Mann-Whitney samples
@@ -1029,6 +1047,10 @@ def pairwise_comparisons(
 
     if type(test) is not str:
         raise ValueError("test is invalid")
+    if test not in ("ttest", "mann_whitney", "wilcoxon"):
+        raise ValueError(f"Unknown test: {test}")
+    if type(correction) is not str or correction not in ("bonferroni", "holm"):
+        raise ValueError(f"Unknown correction: {correction}")
     alpha_value = _require_alpha(alpha)
     window = _require_positive_int("window", window)
 
@@ -1081,9 +1103,6 @@ def pairwise_comparisons(
             final_mean = np.mean(scaled, axis=1) * np.squeeze(scales, axis=1)
         _require_finite_statistics(final_mean, name=f"metric '{name}' final window")
         final_values[name] = final_mean
-
-    if test not in ("ttest", "mann_whitney", "wilcoxon"):
-        raise ValueError(f"Unknown test: {test}")
 
     # Perform all pairwise comparisons
     comparisons: dict[tuple[str, str], SignificanceResult] = {}
@@ -1138,10 +1157,8 @@ def pairwise_comparisons(
     if correction == "bonferroni":
         significant_list, corrected_alpha = bonferroni_correction(p_values, alpha_value)
         decision_thresholds = [corrected_alpha] * len(p_values)
-    elif correction == "holm":
-        significant_list, decision_thresholds = _holm_decisions(p_values, alpha_value)
     else:
-        raise ValueError(f"Unknown correction: {correction}")
+        significant_list, decision_thresholds = _holm_decisions(p_values, alpha_value)
 
     # Update significance based on correction
     corrected_comparisons: dict[tuple[str, str], SignificanceResult] = {}
@@ -1184,7 +1201,8 @@ def bootstrap_ci(
     Raises:
         ValueError: If ``values`` is empty or contains a non-finite sample,
             ``statistic`` is not ``"mean"`` or ``"median"``, ``confidence_level``
-            is not strictly between 0 and 1, or ``n_bootstrap`` is not positive.
+            is not strictly between 0 and 1, ``n_bootstrap`` is not positive, or
+            ``seed`` is not a non-negative integer.
     """
     arr = _require_sample_vector(values, name="values")
     if len(arr) == 0:
@@ -1203,7 +1221,7 @@ def bootstrap_ci(
         )
     sample_count = require_parallel_count("sample count", len(arr), _BOOTSTRAP_BUDGET)
     require_step_units(n_bootstrap, sample_count, _BOOTSTRAP_BUDGET)
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(_require_bootstrap_seed(seed))
 
     stat_func = np.mean if statistic == "mean" else np.median
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)

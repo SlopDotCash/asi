@@ -28,6 +28,7 @@ _MAX_PERSISTENT_BYTES: Final[int] = 256 * 1024 * 1024
 _MAX_WORKING_SET_BYTES: Final[int] = 512 * 1024 * 1024
 _MAX_ARRAY_BYTES: Final[int] = 512 * 1024 * 1024
 _FLOAT64_BYTES: Final[int] = np.dtype(np.float64).itemsize
+_FLOAT64_SMALLEST_NORMAL: Final[float] = float(np.finfo(np.float64).smallest_normal)
 _APPENDIX_C1_VALIDATION_OBSERVATIONS: Final[int] = 10_000
 _APPENDIX_C1_BATCH_SIZE: Final[int] = 4
 _APPENDIX_C1_BATCH_COUNT: Final[int] = 128
@@ -214,6 +215,19 @@ def _squared_norm(value: NDArray[np.float64], *, name: str) -> float:
     return result
 
 
+def _require_retained_squared_norm(
+    squared_norm: float, source: NDArray[np.float64], *, name: str
+) -> None:
+    """Reject a nonzero source whose squared norm left the normal float64 range.
+
+    At zero the OR equations take their defined degenerate branches, so an
+    underflowed gradient would report the zero-gradient diagnostics, and a
+    subnormal result has already lost the precision the ratios depend on.
+    """
+    if squared_norm < _FLOAT64_SMALLEST_NORMAL and np.any(source != 0.0):
+        raise ValueError(f"{name} squared norm must not underflow float64")
+
+
 def _mean_squared_norm(values: NDArray[np.float64], *, name: str) -> float:
     """Average finite squared norms without an overflowing intermediate sum.
 
@@ -273,12 +287,18 @@ def estimate_optimization_readiness(
     gradient_squared_norm = _squared_norm(
         gradient, name="full_validation_gradient"
     )
+    _require_retained_squared_norm(
+        gradient_squared_norm, gradient, name="full_validation_gradient"
+    )
     row_squared_norms = np.asarray(
         [_squared_norm(row, name="batch gradient") for row in gradients],
         dtype=np.float64,
     )
     expected_squared_norm = _mean_squared_norm(
         row_squared_norms, name="expected batch gradient squared norm"
+    )
+    _require_retained_squared_norm(
+        expected_squared_norm, gradients, name="expected batch gradient"
     )
     strength = gradient_squared_norm / resolved_loss if resolved_loss > 0.0 else 0.0
     reliability = (

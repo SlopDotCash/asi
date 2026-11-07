@@ -786,6 +786,54 @@ def test_continuous_actor_critic_start_rejects_policy_overflow_from_finite_input
         agent.start(state, observation)
 
 
+def test_continuous_actor_critic_select_action_rejects_hidden_policy_overflow() -> None:
+    """A clipped action must not hide a non-finite mean from the caller."""
+    agent = ContinuousActorCriticAgent(
+        ContinuousActorCriticConfig(action_dim=1, action_low=-1.0, action_high=1.0)
+    )
+    state = agent.init(1, jr.key(0)).replace(
+        mean_weights=jnp.asarray([[2.0]], dtype=jnp.float32)
+    )
+    observation = jnp.asarray([np.finfo(np.float32).max], dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="action selection"):
+        agent.select_action(state, observation)
+
+
+def test_continuous_actor_critic_select_action_rejects_hidden_sample_overflow() -> None:
+    """A finite mean plus noise can overflow behind a clipped action."""
+    agent = ContinuousActorCriticAgent(
+        ContinuousActorCriticConfig(action_dim=1, action_low=-1.0, action_high=1.0)
+    )
+    state = agent.init(1, jr.key(0))
+    _, sample_key = jr.split(state.rng_key)
+    noise = jr.normal(sample_key, shape=(1,), dtype=jnp.float32)
+    state = state.replace(
+        mean_bias=jnp.sign(noise) * np.finfo(np.float32).max,
+        log_sigma=jnp.asarray([88.0], dtype=jnp.float32),
+    )
+    observation = jnp.zeros((1,), dtype=jnp.float32)
+    mean, sigma = agent.policy_params(state, observation)
+    assert bool(jnp.all(jnp.isfinite(mean))) and bool(jnp.all(jnp.isfinite(sigma)))
+
+    with pytest.raises(ValueError, match="action selection"):
+        agent.select_action(state, observation)
+
+
+def test_continuous_actor_critic_select_action_keeps_jit_and_return_shape() -> None:
+    """The eager gate must keep the public four-tuple and jitted draws."""
+    agent = ContinuousActorCriticAgent(ContinuousActorCriticConfig(action_dim=1))
+    state = agent.init(1, jr.key(0))
+    observation = jnp.asarray([1.0], dtype=jnp.float32)
+
+    eager = agent.select_action(state, observation)
+    traced = jax.jit(agent.select_action)(state, observation)
+
+    assert len(eager) == 4
+    assert np.array_equal(np.asarray(eager[0]), np.asarray(traced[0]))
+    assert np.array_equal(np.asarray(eager[2]), np.asarray(traced[2]))
+
+
 def _clip_at_mean_agent(action_high: float | None) -> ContinuousActorCriticAgent:
     # sigma frozen at 1, critic frozen at 0, gamma 0: every update has td_error == reward
     # and the actor mean step is exactly ``actor_step_size * reward * score_mu``.

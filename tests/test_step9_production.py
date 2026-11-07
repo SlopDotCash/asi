@@ -515,6 +515,34 @@ def test_step9_single_update_increments_counters() -> None:
     chex.assert_shape(result.dream_accepted, (2,))
 
 
+def test_step9_rejected_observation_never_becomes_a_dream_anchor() -> None:
+    cfg = Step9DreamingConfig(
+        observation_dim=2,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=2,
+        dreaming_warmup_steps=0,
+        dreaming_max_model_error=1e30,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    state = init_step9_state(
+        agent, model, buffer,
+        key=jr.key(2),
+        initial_observation=jnp.zeros(2),
+    )
+
+    result = step9_update(
+        cfg, agent, model, buffer,
+        state,
+        jnp.array(1.0, dtype=jnp.float32),
+        jnp.array([jnp.nan, 0.2], dtype=jnp.float32),
+    )
+
+    assert not bool(result.real_model_result.update_applied)
+    chex.assert_trees_all_equal(result.state.buffer_state, state.buffer_state)
+
+
 def test_step9_dreams_rejected_before_warmup() -> None:
     """With warmup=100 and only 1 step, no dreams should be accepted."""
     cfg = Step9DreamingConfig(

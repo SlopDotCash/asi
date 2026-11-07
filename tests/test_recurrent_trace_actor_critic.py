@@ -2108,6 +2108,26 @@ def test_config_rejects_hostile_numeric_and_serialized_container_hooks() -> None
         RecurrentTraceActorCriticConfig.from_config({**payload, "unknown": 1})
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    sorted(set(_small_config().to_config()) - {"rtrl_taylor_correction"}),
+)
+def test_from_config_rejects_missing_serialized_field(field_name: str) -> None:
+    payload = _small_config().to_config()
+    del payload[field_name]
+    with pytest.raises(ValueError, match=f"missing fields: {field_name}"):
+        RecurrentTraceActorCriticConfig.from_config(payload)
+    with pytest.raises(ValueError, match=f"missing fields: {field_name}"):
+        RecurrentTraceActorCriticAgent.from_config({"config": payload})
+
+
+def test_from_config_keeps_omitted_defaults_and_pre_taylor_payloads() -> None:
+    payload = _small_config().to_config()
+    assert not {"adaptive_obgd", "beta2", "epsilon"} & set(payload)
+    del payload["rtrl_taylor_correction"]
+    assert RecurrentTraceActorCriticConfig.from_config(payload) == _small_config()
+
+
 def test_update_decays_traces_with_previous_discount() -> None:
     """Eligibility traces decay with the incoming discount gamma_t.
 

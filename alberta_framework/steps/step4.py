@@ -372,8 +372,16 @@ def step4_update(
         next_action,
         prediction_cumulants=prediction_cumulants,
     )
+    # The jitted update narrows the host-only clocks, which one transition
+    # does not advance. Restore their incoming values.
+    updated_state = result.state.replace(
+        learner_state=result.state.learner_state.replace(
+            birth_timestamp=state.learner_state.birth_timestamp,
+            uptime_s=state.learner_state.uptime_s,
+        )
+    )
     return Step4OneStepResult(
-        state=result.state,
+        state=updated_state,
         action=result.action,
         q_values=result.q_values,
         td_error=result.td_error,
@@ -476,7 +484,7 @@ def run_step4_smoke(
 
     cfg = config or Step4SARSAConfig()
     agent = make_step4_sarsa_agent(cfg)
-    data_key, state_key = jr.split(jr.key(seed))
+    data_key, state_key = jr.split(jr.key(seed, impl="threefry2x32"))
     observations = jr.normal(data_key, (steps + 1, feature_dim), dtype=jnp.float32)
     rewards = jnp.tanh(observations[1:, 0])
     terminated = jnp.zeros(steps, dtype=jnp.float32)

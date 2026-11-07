@@ -1030,9 +1030,19 @@ class SARSAAgent:
         # Horde update: learns from (s_t, cumulants, s'). Control heads use
         # zero transition discounts (the SARSA target above already contains
         # the gamma * Q(s', a') bootstrap); prediction demons keep their
-        # configured gammas. Head traces still decay by the spec's
-        # gamma * lamda, which is what makes this SARSA(lambda).
+        # configured gammas on continuing transitions, but a terminal
+        # transition must not bootstrap any demon: s' is terminal (in
+        # continuing mode it is already the next episode's reset
+        # observation), so every discount is zero and the prediction target
+        # is the cumulant plus the demon's terminal reward. Head traces
+        # still decay by the spec's gamma * lamda, which is what makes
+        # this SARSA(lambda).
         discounts = self._horde.horde_spec.gammas.at[:n_actions].set(0.0)
+        discounts = jnp.where(
+            safe_terminated != 0,
+            jnp.zeros_like(discounts),
+            discounts,
+        )
         horde_result = self._horde.update_with_discounts(
             state.learner_state,
             state.last_observation,
@@ -1161,6 +1171,21 @@ class SARSAAgent:
 # =============================================================================
 
 
+def _dispatchable_action(action: Array) -> int:
+    """Return an environment action, refusing the rejected-decision sentinel.
+
+    :meth:`SARSAAgent.select_action` returns ``-1`` for a non-finite
+    observation or state. That value only marks the refusal: an environment
+    would read it as an ordinary (often last-index) action.
+    """
+    action_id = int(action)
+    if action_id < 0:
+        raise ValueError(
+            "SARSA rejected the decision, so no action can be dispatched to the environment"
+        )
+    return action_id
+
+
 def run_sarsa_episode(
     agent: SARSAAgent,
     state: SARSAState,
@@ -1200,7 +1225,9 @@ def run_sarsa_episode(
 
     for _ in range(max_steps):
         # Step environment
-        next_obs, reward, terminated, truncated, _info = env.step(int(action))
+        next_obs, reward, terminated, truncated, _info = env.step(
+            _dispatchable_action(action)
+        )
         next_obs = jnp.asarray(next_obs, dtype=jnp.float32).flatten()
         reward_arr = jnp.array(reward, dtype=jnp.float32)
         term_arr = jnp.array(terminated, dtype=jnp.float32)
@@ -1281,7 +1308,9 @@ def run_sarsa_continuing(
     total_reward = 0.0
 
     for _ in range(num_steps):
-        next_obs, reward, terminated, truncated, _info = env.step(int(action))
+        next_obs, reward, terminated, truncated, _info = env.step(
+            _dispatchable_action(action)
+        )
         next_obs = jnp.asarray(next_obs, dtype=jnp.float32).flatten()
         reward_arr = jnp.array(reward, dtype=jnp.float32)
 
@@ -1348,6 +1377,8 @@ def _require_sarsa_transition_continuity(
         raise ValueError("SARSA observations must be rank-two transition arrays")
     if terminated.ndim != 1:
         raise ValueError("SARSA terminated flags must be a rank-one array")
+    if not bool(state.last_action >= 0):
+        raise ValueError("SARSA array state must be primed with a selected last_action")
 
     source_matches = jnp.array_equal(
         jnp.asarray(state.last_observation), observations[0]

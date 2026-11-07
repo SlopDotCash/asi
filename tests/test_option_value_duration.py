@@ -490,6 +490,45 @@ def test_prediction_fails_closed_on_nonfinite_observation(invalid: float) -> Non
     )
 
 
+def test_prediction_fails_closed_on_overflow_from_finite_inputs() -> None:
+    """A finite observation must not publish infinite heads or NaN reward rates."""
+    learner = OptionValueDurationLearner(2)
+    state = learner.init(1).replace(
+        weights=jnp.full((2, 2, 1), 2.0, dtype=jnp.float32)
+    )
+    observation = jnp.asarray([np.finfo(np.float32).max], dtype=jnp.float32)
+
+    heads = learner.predict_heads(state, observation)
+    prediction = learner.predict(state, observation)
+
+    zeros = jnp.zeros((2,), dtype=jnp.float32)
+    chex.assert_trees_all_equal(heads, jnp.zeros((2, 2), dtype=jnp.float32))
+    chex.assert_trees_all_equal(prediction.reward_values, zeros)
+    chex.assert_trees_all_equal(prediction.durations, zeros)
+    chex.assert_trees_all_equal(prediction.reward_rates, zeros)
+
+
+def test_prediction_fails_closed_on_reward_rate_overflow() -> None:
+    """Finite heads can still overflow the division by the duration floor."""
+    learner = OptionValueDurationLearner(
+        2,
+        config=OptionValueDurationConfig(duration_floor=0.5),
+    )
+    state = learner.init(1).replace(
+        weights=jnp.array(
+            [[[np.finfo(np.float32).max], [0.1]], [[1.0], [1.0]]],
+            dtype=jnp.float32,
+        )
+    )
+
+    prediction = learner.predict(state, jnp.array([1.0], dtype=jnp.float32))
+
+    zeros = jnp.zeros((2,), dtype=jnp.float32)
+    chex.assert_trees_all_equal(prediction.reward_values, zeros)
+    chex.assert_trees_all_equal(prediction.durations, zeros)
+    chex.assert_trees_all_equal(prediction.reward_rates, zeros)
+
+
 def test_infinite_reward_on_zero_feature_does_not_poison_duration_head() -> None:
     """Inf reward is 0*inf = NaN on a silent feature of the reward head.
 

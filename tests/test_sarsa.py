@@ -632,6 +632,54 @@ class TestSARSAUpdate:
             chex.assert_trees_all_close(head[0], jnp.zeros_like(head[0]))
             chex.assert_trees_all_close(head[1], jnp.zeros_like(head[1]))
 
+    def test_terminated_prediction_demons_do_not_bootstrap(self):
+        """At a terminal transition, a prediction demon learns the cumulant.
+
+        The target must not depend on the next observation: in continuing
+        mode the terminal next observation is already the next episode's
+        reset observation, so bootstrapping it would leak one episode's
+        values into the previous episode's prediction.
+        """
+        pred_demons = [
+            GVFSpec(
+                name="pred_0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.0,
+                cumulant_index=0,
+            ),
+        ]
+        agent = _make_agent(
+            n_actions=2, prediction_demons=pred_demons, hidden_sizes=()
+        )
+        state = agent.init(feature_dim=4, key=jr.key(42))
+        obs = jnp.ones(4, dtype=jnp.float32)
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(0, dtype=jnp.int32),
+            last_observation=obs,
+        )
+
+        next_a = jnp.ones(4, dtype=jnp.float32) * 0.5
+        next_b = jnp.ones(4, dtype=jnp.float32) * -2.0
+        pred_next_a = agent.horde.predict(state.learner_state, next_a)[2]
+        pred_next_b = agent.horde.predict(state.learner_state, next_b)[2]
+        assert not jnp.allclose(pred_next_a, pred_next_b)
+
+        def terminal_weights(next_obs):
+            result = agent.update(
+                state,
+                reward=jnp.array(1.0),
+                observation=next_obs,
+                terminated=jnp.array(1.0),
+                next_action=jnp.array(0, dtype=jnp.int32),
+                prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+            )
+            return result.state.learner_state.head_params.weights[2]
+
+        chex.assert_trees_all_close(
+            terminal_weights(next_a), terminal_weights(next_b)
+        )
+
     def test_td_error_uses_last_observation_prediction(self):
         """Returned TD error is target - Q(s_t, a_t), not Q(s_{t+1}, a_t)."""
         agent = _make_agent(n_actions=2, hidden_sizes=(), gamma=0.0, epsilon_start=0.0)
@@ -1110,6 +1158,27 @@ class TestSARSAScan:
                 observations,
                 rewards,
                 terminated,
+                next_observations,
+            )
+
+    @pytest.mark.parametrize(
+        "runner",
+        [run_sarsa_from_arrays, run_sarsa_from_arrays_final_state],
+    )
+    def test_scan_rejects_unprimed_state(self, runner) -> None:
+        """An unprimed state would refuse every row without learning or raising."""
+        agent = _make_agent(n_actions=2, hidden_sizes=(), epsilon_start=0.0)
+        state = agent.init(feature_dim=2, key=jr.key(7))
+        observations = jnp.asarray([[0.0, 0.0], [1.0, 0.0]], dtype=jnp.float32)
+        next_observations = jnp.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="must be primed"):
+            runner(
+                agent,
+                state,
+                observations,
+                jnp.ones((2,), dtype=jnp.float32),
+                jnp.zeros((2,), dtype=jnp.float32),
                 next_observations,
             )
 
@@ -2295,3 +2364,52 @@ def test_sarsa_select_action_rejects_nonfinite_without_consuming_rng() -> None:
     )
     assert int(action) == -1
     chex.assert_trees_all_equal(key, state.rng_key)
+
+
+class _RecordingCorridor:
+    """Corridor that records every dispatched action and can emit a NaN sensor row."""
+
+    def __init__(self, *, nan_reset: bool = False, nan_step: bool = False) -> None:
+        self.actions: list[int] = []
+        self._nan_reset = nan_reset
+        self._nan_step = nan_step
+
+    def reset(self):
+        fill = np.nan if self._nan_reset else 1.0
+        return np.full((2,), fill, dtype=np.float32), {}
+
+    def step(self, action: int):
+        self.actions.append(action)
+        fill = np.nan if self._nan_step else 1.0
+        return np.full((2,), fill, dtype=np.float32), 1.0, False, False, {}
+
+
+@pytest.mark.parametrize("runner_name", ["run_sarsa_episode", "run_sarsa_continuing"])
+def test_env_runner_refuses_to_dispatch_rejected_first_action(runner_name: str) -> None:
+    import alberta_framework
+
+    runner = getattr(alberta_framework, runner_name)
+    agent = _make_agent(n_actions=2, hidden_sizes=())
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    env = _RecordingCorridor(nan_reset=True)
+
+    with pytest.raises(ValueError, match="dispatch"):
+        runner(agent, state, env, 3)
+
+    assert env.actions == []
+
+
+@pytest.mark.parametrize("runner_name", ["run_sarsa_episode", "run_sarsa_continuing"])
+def test_env_runner_refuses_to_dispatch_rejected_next_action(runner_name: str) -> None:
+    import alberta_framework
+
+    runner = getattr(alberta_framework, runner_name)
+    agent = _make_agent(n_actions=2, hidden_sizes=())
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    env = _RecordingCorridor(nan_step=True)
+
+    with pytest.raises(ValueError, match="dispatch"):
+        runner(agent, state, env, 3)
+
+    assert len(env.actions) == 1
+    assert env.actions[0] >= 0

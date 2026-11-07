@@ -716,7 +716,11 @@ class RecentObservationBuffer:
         state: RecentObservationBufferState,
         observation: Array,
     ) -> RecentObservationBufferState:
-        """Insert one observation into the ring buffer."""
+        """Insert one observation into the ring buffer.
+
+        A non-finite observation leaves the buffer unchanged, so a transition
+        the learners rejected can never be sampled as a dream anchor.
+        """
         raw_observation = jnp.asarray(observation)
         expected_shape = (self._observation_dim,)
         if raw_observation.shape != expected_shape:
@@ -724,11 +728,20 @@ class RecentObservationBuffer:
                 f"observation must have shape {expected_shape}, got {raw_observation.shape}"
             )
         obs = jnp.asarray(raw_observation, dtype=jnp.float32)
+        accepted = jnp.all(jnp.isfinite(obs))
         next_observations = state.observations.at[state.index].set(obs)
         return RecentObservationBufferState(
-            observations=next_observations,
-            size=jnp.minimum(state.size + 1, self._capacity).astype(jnp.int32),
-            index=((state.index + 1) % self._capacity).astype(jnp.int32),
+            observations=jnp.where(accepted, next_observations, state.observations),
+            size=jnp.where(
+                accepted,
+                jnp.minimum(state.size + 1, self._capacity).astype(jnp.int32),
+                state.size,
+            ),
+            index=jnp.where(
+                accepted,
+                ((state.index + 1) % self._capacity).astype(jnp.int32),
+                state.index,
+            ),
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -1262,6 +1275,8 @@ def imagined_rollout_to_sarsa_items(
     """Convert a rollout to SARSA-style arrays with shifted next actions.
 
     Without a bootstrap action, retain the final row only when its discount is zero.
+    The same rule applies to any row followed by a rejected row, whose action
+    is not a usable next action.
     """
     transitions = rollout.transitions
     actions = transitions.action
@@ -1272,13 +1287,14 @@ def imagined_rollout_to_sarsa_items(
     )
     if bootstrap_action is None:
         next_actions = jnp.concatenate([actions[1:], jnp.zeros_like(actions[-1:])], axis=0)
-        weights = jnp.asarray(transitions.valid, dtype=jnp.float32)
-        # A zero-discount transition has no bootstrap term or next-action dependency.
-        weights = weights.at[-1].set(weights[-1] * (effective_discounts[-1] == 0.0))
+        final_next_valid = jnp.zeros_like(transitions.valid[-1:])
     else:
         bootstrap = jnp.expand_dims(jnp.asarray(bootstrap_action, dtype=actions.dtype), axis=0)
         next_actions = jnp.concatenate([actions[1:], bootstrap], axis=0)
-        weights = jnp.asarray(transitions.valid, dtype=jnp.float32)
+        final_next_valid = jnp.ones_like(transitions.valid[-1:])
+    next_valid = jnp.concatenate([transitions.valid[1:], final_next_valid], axis=0)
+    # A zero-discount transition has no bootstrap term or next-action dependency.
+    retained = transitions.valid & (next_valid | (effective_discounts == 0.0))
     return DreamSARSATrainingItem(
         observations=_neutralize_invalid(transitions.observation, transitions.valid),
         actions=_neutralize_invalid(actions, transitions.valid),
@@ -1289,8 +1305,8 @@ def imagined_rollout_to_sarsa_items(
             transitions.next_observation, transitions.valid
         ),
         discounts=_neutralize_invalid(effective_discounts, transitions.valid),
-        next_actions=_neutralize_invalid(next_actions, transitions.valid),
-        weights=weights,
+        next_actions=_neutralize_invalid(next_actions, retained),
+        weights=jnp.asarray(retained, dtype=jnp.float32),
     )
 
 
