@@ -7786,6 +7786,15 @@ class TestRLSHeadIdentMap:
                 for tag, ridge in (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
             },
         }
+        expected.update({
+            f"rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000_{tag}": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.005625, "anneal_floor": 0.0028125,
+                "anneal_tau": 1000.0, "anneal_peak": peak,
+            }
+            for tag, peak in (("p75", 0.0075), ("p10", 0.01), ("p15", 0.015))
+        })
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
         }
@@ -8154,6 +8163,52 @@ class TestRLSHeadIdentMapStepAnneal:
                   .hyperparameters, **bad}
             with pytest.raises(ValueError):
                 _make_rls_head_identmap_learner(hp)
+
+
+class TestRLSHeadIdentMapAnnealPeak:
+    """Protect the screened peak mechanism and its parent reduction."""
+
+    @staticmethod
+    def _spec():
+        return TestRLSHeadIdentMapStepAnneal._spec(
+            anneal_floor=0.0028125, anneal_tau=1000.0,
+        )
+
+    def test_peak_reduces_to_parent_and_changes_step_when_enabled(self):
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        spec = self._spec()
+
+        def run(arm):
+            return run_screening_config(x, y, arm, seed=7, config=SMALL)
+
+        parent = run(spec)
+        pinned = run(replace(
+            spec, hyperparameters={**spec.hyperparameters, "anneal_peak": 0.005625},
+        ))
+        changed = run(replace(
+            spec, hyperparameters={**spec.hyperparameters, "anneal_peak": 0.015},
+        ))
+        np.testing.assert_array_equal(pinned.per_task_accuracy, parent.per_task_accuracy)
+        np.testing.assert_array_equal(pinned.per_task_loss, parent.per_task_loss)
+        assert not np.array_equal(changed.per_task_loss, parent.per_task_loss)
+        assert np.all(np.isfinite(changed.per_task_loss))
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for peak in (0.001, 0.0, -0.01, 1e39, float("inf"), float("nan")):
+            with pytest.raises(ValueError, match="anneal_peak"):
+                _make_rls_head_identmap_learner({**base, "anneal_peak": peak})
+        without_anneal = {key: value for key, value in base.items() if key != "anneal_floor"}
+        with pytest.raises(ValueError, match="anneal_peak"):
+            _make_rls_head_identmap_learner({**without_anneal, "anneal_peak": 0.01})
+        with pytest.raises(ValueError, match="anneal_peak"):
+            _make_rls_head_identmap_learner({
+                **base, "ident_match_at": 0.0, "anneal_peak": 0.01,
+            })
 
 
 class TestPlasticityCounterSaturation:
