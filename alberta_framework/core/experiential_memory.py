@@ -999,13 +999,21 @@ class ExperientialMemory:
 
         safe_query_key = jnp.where(jnp.isfinite(query_key), query_key, 0.0)
         safe_keys = jnp.where(finite_rows[:, None], entries.keys, 0.0)
-        squared_distance = jnp.mean(
-            (safe_keys - safe_query_key[None, :]) ** 2,
-            axis=1,
-        )
-        similarities = jnp.exp(
-            -squared_distance / jnp.asarray(cfg.distance_scale, dtype=jnp.float32)
-        )
+        differences = safe_keys - safe_query_key[None, :]
+        squared_distance = jnp.mean(differences**2, axis=1)
+        distance_scale = jnp.asarray(cfg.distance_scale, dtype=jnp.float32)
+        scaled_distance = squared_distance / distance_scale
+        # Scale before squaring when float32 loses the ordinary reduction or
+        # the reciprocal of the configured scale is not a normal float32.
+        scale_root = jnp.asarray(cfg.distance_scale**0.5, dtype=jnp.float32)
+        recovered_distance = jnp.mean((differences / scale_root) ** 2, axis=1)
+        tiny = float(jnp.finfo(jnp.float32).tiny)
+        if cfg.distance_scale < tiny or cfg.distance_scale > 1.0 / tiny:
+            normalized_distance = recovered_distance
+        else:
+            recover = ~jnp.isfinite(squared_distance) | (squared_distance < tiny)
+            normalized_distance = jnp.where(recover, recovered_distance, scaled_distance)
+        similarities = jnp.exp(-normalized_distance)
         safe_ages = jnp.where(entries.ages >= 0, entries.ages, 0)
         staleness_scale = jnp.asarray(cfg.staleness_scale, dtype=jnp.float32)
         # Every positive float32 scale is legal. Cap the mathematically huge
