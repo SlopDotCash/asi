@@ -428,6 +428,13 @@ def _copy_config_mapping(name: str, config: object) -> dict[str, Any]:
     return cast(dict[str, Any], payload)
 
 
+# ``to_config`` omits the default adaptive-ObGD fields, and retained receipts
+# predate ``rtrl_taylor_correction``. Every other field is always serialized.
+_OPTIONAL_SERIALIZED_CONFIG_FIELDS = frozenset(
+    {"adaptive_obgd", "beta2", "epsilon", "rtrl_taylor_correction"}
+)
+
+
 @dataclasses.dataclass(frozen=True)
 class RecurrentTraceActorCriticConfig:
     """Configuration for an RTU-RTRL discrete streaming actor-critic.
@@ -629,6 +636,11 @@ class RecurrentTraceActorCriticConfig:
     ) -> RecurrentTraceActorCriticConfig:
         """Reconstruct and validate a configuration mapping."""
         payload = _copy_config_mapping("config", config)
+        missing = {field.name for field in dataclasses.fields(cls)} - (
+            payload.keys() | _OPTIONAL_SERIALIZED_CONFIG_FIELDS
+        )
+        if missing:
+            raise ValueError(f"config has missing fields: {', '.join(sorted(missing))}")
         try:
             return cls(**payload)
         except TypeError as error:
