@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
@@ -934,3 +935,29 @@ def test_json_export_accepts_real_aggregate_metrics_output(trace_seed: int, tmp_
     export_to_json({"c": ex.aggregate_metrics(runs)}, output)
 
     assert output.is_file()
+
+
+@pytest.mark.parametrize(
+    ("experiment", "caption"),
+    [
+        ("trial_1", r"trial\_1"),
+        ("trial%1", r"trial\%1"),
+        ("trial{1}", r"trial\{1\}"),
+        ("trial1", "trial1"),
+        ("t_" * 100, r"t\_" * 100),
+    ],
+)
+def test_report_caption_treats_experiment_name_as_text(
+    tmp_path: Path, experiment: str, caption: str
+) -> None:
+    paths = save_experiment_report({"learner": _constant_result("learner")}, tmp_path, experiment)
+    latex = paths["latex_table"].read_text()
+    assert r"\caption{" + caption + " Results}" in latex
+    if experiment in {"trial_1", "trial1", "t_" * 100}:
+        assert r"\label{tab:" + experiment + "}" in latex
+    else:
+        assert (
+            r"\label{tab:experiment-" + hashlib.sha256(experiment.encode("utf-8")).hexdigest() + "}"
+            in latex
+        )
+    assert json.loads(paths["json"].read_text())["learner"]["summary"][_METRIC]["mean"] == 1.0

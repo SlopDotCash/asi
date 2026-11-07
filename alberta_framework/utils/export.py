@@ -5,6 +5,7 @@ and markdown, suitable for academic publications.
 """
 
 import csv
+import hashlib
 import io
 import json
 import math
@@ -531,6 +532,21 @@ def generate_latex_table(
     lower_is_better = _require_exact_bool("lower_is_better", lower_is_better)
     if significance_results is not None:
         _preflight_significance_results(significance_results)
+    return _render_latex_table(
+        results, significance_results, metric, caption, label, metric_label, lower_is_better
+    )
+
+
+def _render_latex_table(
+    results: dict[str, "AggregatedResults"],
+    significance_results: dict[tuple[str, str], "SignificanceResult"] | None,
+    metric: str,
+    caption: str,
+    label: str,
+    metric_label: str,
+    lower_is_better: bool,
+) -> str:
+    """Render validated metadata, including escaped text derived by the report wrapper."""
     lines = []
     lines.append(r"\begin{table}[ht]")
     lines.append(r"\centering")
@@ -885,12 +901,16 @@ def save_experiment_report(
 
     # Generate LaTeX table
     latex_path = output_dir / f"{experiment_name}_table.tex"
-    latex_content = generate_latex_table(
+    label = f"tab:{experiment_name}"
+    if any(character in "\\%#$&{}~^" or character.isspace() for character in experiment_name):
+        label = "tab:experiment-" + hashlib.sha256(experiment_name.encode("utf-8")).hexdigest()
+    latex_content = _render_latex_table(
         results,
         significance_results=significance_results,
         metric=metric,
-        caption=f"{experiment_name} Results",
-        label=f"tab:{experiment_name}",
+        caption=f"{_escape_latex_method_name(experiment_name)} Results",
+        label=label,
+        metric_label="Error",
         lower_is_better=lower_is_better,
     )
     _write_text_atomically(latex_path, latex_content)
