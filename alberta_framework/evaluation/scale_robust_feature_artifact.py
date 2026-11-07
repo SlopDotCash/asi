@@ -79,6 +79,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_PATHS = (
     Path("alberta_framework/core/interaction_features.py"),
     Path("alberta_framework/streams/gauntlet.py"),
+    Path("alberta_framework/evaluation/_measurement_validation.py"),
     Path("alberta_framework/evaluation/scale_robust_feature.py"),
     Path("alberta_framework/evaluation/scale_robust_feature_artifact.py"),
     Path("alberta_framework/evaluation/scale_robust_feature_cli.py"),
@@ -460,7 +461,7 @@ def _source_sha256() -> dict[str, str]:
 
 
 def current_source_fingerprint() -> dict[str, str]:
-    """Hash the exact five executable sources bound by the v2 artifact."""
+    """Hash the registered executable sources bound by the v2 artifact."""
 
     return _source_sha256()
 

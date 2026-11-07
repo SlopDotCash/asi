@@ -225,7 +225,7 @@ def main(
                 {
                     "accepted": False,
                     "errors": [
-                        "one or more of the five pinned protocol sources changed "
+                        "one or more registered protocol sources changed "
                         "during evidence execution; no artifact was written"
                     ],
                     "valid": False,
@@ -276,7 +276,7 @@ def main(
             source_before_write = current_source_fingerprint()
             if artifact_fingerprint != source_before or source_before_write != source_before:
                 raise RuntimeError(
-                    "one or more of the five pinned protocol sources changed "
+                    "one or more registered protocol sources changed "
                     "before artifact serialization; no artifact was written"
                 )
             if not threshold_calibration_ready():
