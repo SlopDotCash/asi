@@ -356,19 +356,39 @@ def bimu_update_transaction(
         if memory_window > _INT32_MAX:
             raise ValueError("memory_window must fit in signed int32")
     scaled_gradient = likelihood_multiplier * gradient
-    uncertainty = kl_multiplier * (1.0 - jnp.tanh(state) ** 2)
-    reciprocal_eta = (
+    tanh_state = jnp.tanh(state)
+    uncertainty = kl_multiplier * (1.0 - tanh_state**2)
+    direct_reciprocal_eta = (
         uncertainty
-        + 2.0 * jnp.tanh(state) * scaled_gradient
+        + 2.0 * tanh_state * scaled_gradient
         + 1.0 / alpha_max
         + 2.0 * jnp.abs(scaled_gradient)
     )
-    forgetting = (
-        jnp.zeros_like(state)
-        if memory_window is None
-        else (state - prior) * uncertainty / memory_window
+    grouped_reciprocal_eta = (uncertainty + 1.0 / alpha_max) + 2.0 * (
+        tanh_state * scaled_gradient + jnp.abs(scaled_gradient)
     )
+    if memory_window is None:
+        forgetting = jnp.zeros_like(state)
+    else:
+        direct_forgetting = (state - prior) * uncertainty / memory_window
+        safe_forgetting = jnp.where(
+            uncertainty == 0.0,
+            jnp.zeros_like(state),
+            (state - prior) * (uncertainty / memory_window),
+        )
+        forgetting = jnp.where(
+            jnp.isfinite(direct_forgetting),
+            direct_forgetting,
+            safe_forgetting,
+        )
     numerator = gradient_scale * scaled_gradient + forgetting
+    reciprocal_eta = jnp.where(
+        jnp.isfinite(direct_reciprocal_eta)
+        & (direct_reciprocal_eta > 0.0)
+        & jnp.isfinite(state - numerator / direct_reciprocal_eta),
+        direct_reciprocal_eta,
+        grouped_reciprocal_eta,
+    )
     candidate = state - numerator / reciprocal_eta
     source_valid = (
         jnp.all(jnp.isfinite(state))
