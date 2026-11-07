@@ -28,6 +28,7 @@ _ACTUAL_DECAY_TYPES = frozenset(
         *(np.dtype(code).type for code in "bBhHiIlLqQpefdg"),
     }
 )
+_NORMALIZATION_MODES = frozenset({"none", "age", "uncertainty", "uncertainty_age"})
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -68,7 +69,19 @@ def _require_exact_mode(value: object) -> str:
 
     if type(value) is not str:
         raise ValueError("mode must be an exact string")
+    if value not in _NORMALIZATION_MODES:
+        raise ValueError(f"mode must be one of {sorted(_NORMALIZATION_MODES)}")
     return value
+
+
+def _require_ema_decay_operand(name: str, value: float | Array) -> Array:
+    """Validate a helper decay; a device value cannot raise, so it stays visible."""
+    if np.shape(value):
+        raise ValueError(f"{name} must be a scalar")
+    if not isinstance(value, Array):
+        return jnp.asarray(canonical_float32_ema_decay(name, value), dtype=jnp.float32)
+    decay = jnp.asarray(value, dtype=jnp.float32)
+    return jnp.where((decay >= 0.0) & (decay < 1.0), decay, jnp.nan)
 
 
 def _validate_estimator_axes(
@@ -531,8 +544,13 @@ def normalize_future_utility_signal(
     ``ages`` and ``utility_decay`` remain in this established helper surface so
     existing callers and serialized configurations remain compatible.
     """
+    if jnp.shape(second_moment) != jnp.shape(signal):
+        raise ValueError("second_moment must match signal exactly")
+    if jnp.shape(ages) != jnp.shape(signal):
+        raise ValueError("ages must match signal exactly")
     del ages, utility_decay
-    decay = jnp.asarray(moment_decay, dtype=jnp.float32)
+    mode = _require_exact_mode(mode)
+    decay = _require_ema_decay_operand("moment_decay", moment_decay)
     decayed_second_moment = _skip_zero_scale(decay, second_moment)
     innovation_weight = 1.0 - decay
     direct_second_moment = (
@@ -554,7 +572,6 @@ def normalize_future_utility_signal(
         recovered_second_moment,
     )
     normalized = signal
-    mode = _require_exact_mode(mode)
     if mode in {"uncertainty", "uncertainty_age"}:
         normalized = normalized / jnp.sqrt(new_second_moment + 1e-6)
 
@@ -577,11 +594,13 @@ def bias_correct_future_utility(
     raw value (normally zero).
     """
     mode = _require_exact_mode(mode)
+    if jnp.shape(ages) != jnp.shape(utilities):
+        raise ValueError("ages must match utilities exactly")
+    decay = _require_ema_decay_operand("utility_decay", utility_decay).astype(utilities.dtype)
     if mode not in {"age", "uncertainty_age"}:
         return utilities
 
     age_count = jnp.maximum(ages.astype(jnp.float32), 0.0)
-    decay = jnp.asarray(utility_decay, dtype=utilities.dtype)
     debias = 1.0 - jnp.power(decay, age_count)
     safe_debias = jnp.maximum(
         debias,
