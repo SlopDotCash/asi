@@ -162,6 +162,36 @@ def test_summary_payload_raises_state_error_on_overflowing_cross_seed_metric() -
         matrix._summary_payload(runs, rule=manifest.selection_rule)
 
 
+@pytest.mark.parametrize(
+    "values",
+    [
+        # Point estimate finite (5e307); a [1e308, 1e308] resample overflows,
+        # so the bootstrap CI endpoint becomes NaN. _summary_payload is the same
+        # call for the tuning and evaluation stages.
+        (1e308, 0.0),
+        # Mixed-sign overflow of the cross-seed sum.
+        (1e308, 1e308, -1e308, -1e308),
+    ],
+)
+def test_summary_payload_raises_state_error_when_finite_metrics_overflow_the_summary(
+    values: tuple[float, ...],
+) -> None:
+    seeds = list(range(1, len(values) + 1))
+    manifest = matrix.parse_forager_matrix_manifest(_manifest_payload(seeds=seeds))
+    benchmark = matrix._build_benchmark_config(manifest)
+    config = AlbertaForagerConfig()
+    runs = tuple(
+        _make_run_result(config, benchmark, seed, batch_seeds=(seed,), value=value)
+        for seed, value in zip(seeds, values, strict=True)
+    )
+
+    with pytest.raises(
+        matrix.ForagerMatrixStateError,
+        match="variant runs cannot produce a finite benchmark summary",
+    ):
+        matrix._summary_payload(runs, rule=manifest.selection_rule)
+
+
 def test_report_payload_raises_state_error_on_overflowing_batch_wall_time_sum(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
