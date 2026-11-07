@@ -46,17 +46,12 @@ def test_test_param_rejects_non_string() -> None:
         pairwise_comparisons({}, test=123)  # type: ignore[arg-type]
 
 
-def test_test_param_benign_unknown() -> None:
-    # n<2 short-circuits before the test *value* check for exact-str inputs,
-    # so benign "unknown" with empty returns {}; hostile non-str is rejected
-    # before the short-circuit by the type gate at the top of the function.
-    result = pairwise_comparisons({}, test="unknown")
-    assert result == {}
+def test_test_param_rejects_unknown_value_without_methods() -> None:
+    with pytest.raises(ValueError, match="Unknown test: unknown"):
+        pairwise_comparisons({}, test="unknown")
 
 
 def test_test_param_benign_valid_short_circuits() -> None:
-    # n<2 returns {} without needing test *value* valid (e.g. "unknown"),
-    # but still requires exact str type — hostile/non-str must raise.
     result = pairwise_comparisons({}, test="ttest")
     assert result == {}
     result = pairwise_comparisons({}, test="mann_whitney")
