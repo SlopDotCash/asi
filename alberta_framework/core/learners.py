@@ -944,6 +944,9 @@ def run_learning_loop_batched[StreamStateT](
     batched_states, batched_metrics, batched_ss_history, batched_norm_history = jax.vmap(
         single_seed_run
     )(keys)
+    jax.block_until_ready(  # type: ignore[no-untyped-call]
+        (batched_states, batched_metrics, batched_ss_history, batched_norm_history)
+    )
     elapsed = time.time() - t0
     batched_states = batched_states.replace(  # type: ignore[attr-defined]
         uptime_s=batched_states.uptime_s + elapsed
