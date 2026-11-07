@@ -577,7 +577,7 @@ def test_continuous_actor_critic_infinite_reward_with_obgd_does_not_poison() -> 
     )
     assert not bool(poisoned.update_applied)
     assert float(poisoned.td_error) == 0.0
-    chex.assert_trees_all_close(poisoned.action, jnp.zeros_like(poisoned.action))
+    chex.assert_trees_all_close(poisoned.action, state.last_action)
 
     recovered = agent.update(
         poisoned.state,

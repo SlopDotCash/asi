@@ -1019,7 +1019,7 @@ class ActorCriticAgent:
             action=jnp.where(
                 params_ok,
                 next_action,
-                jnp.asarray(0, dtype=jnp.int32),
+                state.last_action,
             ),
             policy=jnp.where(params_ok, next_policy, jnp.zeros_like(next_policy)),
             value=jnp.where(params_ok, value, zero),
@@ -1927,7 +1927,7 @@ class ContinuousActorCriticAgent:
 
         return ContinuousActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(params_ok, next_action, jnp.zeros_like(next_action)),
+            action=jnp.where(params_ok, next_action, state.last_action),
             mean=jnp.where(params_ok, next_mean, jnp.zeros_like(next_mean)),
             sigma=jnp.where(params_ok, next_sigma, jnp.zeros_like(next_sigma)),
             value=jnp.where(params_ok, value, zero),
