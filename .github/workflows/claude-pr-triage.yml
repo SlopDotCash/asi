@@ -98,7 +98,7 @@ jobs:
           fetch_with_retry gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json number,title,body,author,baseRefName,headRefName,headRefOid,isDraft,additions,deletions,mergeable,labels \
             > "$WORKDIR/metadata.json"
-          REVIEWED_HEAD=$(jq -er '.headRefOid | select(type == "string" and test("^[0-9a-f]{40}$"))' "$WORKDIR/metadata.json")
+          REVIEWED_HEAD=$(jq -er '.headRefOid | select(type == "string" and length == 40 and test("^[0-9a-f]{40}$"))' "$WORKDIR/metadata.json")
           BASE_BRANCH=$(jq -er '.baseRefName' "$WORKDIR/metadata.json")
           if [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
             gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review

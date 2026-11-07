@@ -45,7 +45,7 @@ gh() {
   elif [ "$1" = api ] && [ "$2 $3" = "--method PUT" ]; then
     printf '%s\n' "$*" >> "$WORKDIR/merge-calls"
     case "$*" in
-      *"sha=$LIVE_HEAD merge_method=squash"*) ;;
+      *"sha=$LIVE_HEAD -f merge_method=squash"*) ;;
       *) return 1 ;;
     esac
     if [ "$DIRECT_FAILURE" = 1 ]; then return 1; fi
@@ -142,7 +142,7 @@ class TriageHeadTests(unittest.TestCase):
                 run, files = self.run_step(name)
                 self.assertEqual(run.returncode, 0, run.stderr)
                 self.assertEqual(len(files["merge-calls"].splitlines()), 1)
-                self.assertIn(f"sha={SHA} merge_method=squash", files["merge-calls"])
+                self.assertIn(f"sha={SHA} -f merge_method=squash", files["merge-calls"])
                 self.assertNotIn("edit-calls", files)
 
     def test_changed_head_or_blocked_merge_needs_manual_review(self):

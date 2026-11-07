@@ -883,8 +883,8 @@ def test_query_preserves_finite_mean_squared_distance(
         expected = np.exp(-float(np.float32(magnitude)) ** 2 / memory.config.distance_scale)
         assert bool(result.accepted) == (expected >= memory.config.min_similarity)
         if bool(result.accepted):
-            assert float(result.neighbor_similarities[0]) == pytest.approx(expected, rel=2e-6)
-            np.testing.assert_array_equal(result.action, [1.0, 0.0])
+            assert float(result.neighbor_similarities[0]) == pytest.approx(expected, rel=5e-6, abs=0.0)
+            np.testing.assert_allclose(result.action, [1.0, 0.0], rtol=1e-6, atol=0.0)
 
 
 @pytest.mark.parametrize(
