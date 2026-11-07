@@ -4894,6 +4894,20 @@ def _make_rls_head_learner(
     if not 0.0 <= resid_whiten <= 1.0:
         raise ValueError("resid_whiten must lie in [0, 1]")
     whiten_enabled = resid_whiten > 0.0
+    # Opt-in per-layer weight clipping of the residual body (w1/b1/w2/b2)
+    # after each body update, to [-kappa * s_l, +kappa * s_l] with
+    # s_l = 1/sqrt(fan_in) (:func:`_wclip_bound`, the Weight Clipping
+    # paper's bound).  Key absent: no clip is traced, the parent verbatim
+    # (pinned).  The RLS readout (wout, P) and the unused w3/b3 are never
+    # clipped.
+    wclip_on = "body_wclip_kappa" in hp
+    wclip_kappa = float(hp.get("body_wclip_kappa", 0.0))
+    if wclip_on and not (
+        resid and math.isfinite(wclip_kappa) and wclip_kappa > 0.0
+    ):
+        raise ValueError(
+            "body_wclip_kappa needs head_resid = 1 and a finite kappa > 0"
+        )
     resid_newton = hp.get("resid_newton", 0.0)
     if resid_newton not in (0.0, 1.0):
         raise ValueError(
@@ -5246,6 +5260,10 @@ def _make_rls_head_learner(
                         params[name] * param_decay - step_size * body_grads[name]
                     )
                 new_utility = state.utility
+            if wclip_on:
+                for name in _RLS_HEAD_BODY:
+                    bound = _wclip_bound(params, name, wclip_kappa)
+                    new_params[name] = jnp.clip(new_params[name], -bound, bound)
         else:
             _, grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
                 params, x_norm, y
@@ -8855,6 +8873,25 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         ),
         *(
             (
+                f"rls_head_resid_identmap50_r_idet003_s{tag}_anneal_f1t1000_wd0",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": step, "anneal_floor": step,
+                 "anneal_tau": 1000.0, "weight_decay": 0.0},
+                f"anneal_f1t1000_wd0 (constant step, floor == step_size, "
+                f"weight_decay 0) with the body step set to {step} ({desc}); "
+                "extends the constant-step grid above the 0.02 edge winner "
+                "(wd0_const_step_extend2/; development screening diagnostic)"
+            )
+            for tag, step, desc in (
+                ("03", 0.03, "1.5x the 0.02 incumbent step"),
+                ("04", 0.04, "2x the 0.02 incumbent step"),
+                ("05", 0.05, "2.5x the 0.02 incumbent step"),
+            )
+        ),
+        *(
+            (
                 f"rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0_{tag}",
                 {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
                  "ident_match_at": 50.0, "ident_match2": 200.0,
@@ -8873,6 +8910,24 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("r01", 0.1, "P0 = I/0.1"),
                 ("r003", 0.03, "P0 = I/0.03"),
             )
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+                f"_wclip{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.02, "anneal_floor": 0.02,
+                 "anneal_tau": 1000.0, "weight_decay": 0.0,
+                 "body_wclip_kappa": kappa},
+                "constant-step-0.02 wd0 incumbent with per-layer weight "
+                f"clipping of the residual body at kappa {kappa} "
+                "(|w| <= kappa/sqrt(fan_in) after each body update; RLS "
+                "readout unclipped; s02_wd0_wclip/; development screening "
+                "diagnostic)"
+            )
+            for tag, kappa in (("2", 2.0), ("4", 4.0), ("8", 8.0))
         ),
     ):
         specs.append(

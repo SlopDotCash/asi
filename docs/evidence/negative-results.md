@@ -316,6 +316,31 @@ postmortem.
     (pre-run plan, six v2 shards, official merge, raw-array analysis, source
     bundle, commands, logs and results). Permanently nonpromoting.
 
+
+25. **At weight_decay 0, constant body steps above 0.02 miss the +0.002
+    development bar (our own #3639).** The identmap50_r idet003 wd0
+    constant-step cells with steps 0.03, 0.04 and 0.05 were tuned on seed
+    123 against the 0.02 incumbent (+0.000657, +0.000973, +0.001103; gains
+    flatten). The winner, 0.05, measured **+0.001561 paired, CI95
+    [+0.001394, +0.001728], 10/10 unseen seeds (124-133) improved** at 60
+    tasks, with no divergence. The effect is consistent but below the
+    preregistered +0.002 bar, so this is a FAIL and 0.02 stays the wd0
+    constant step. Almost all of the gain is in the first 10 tasks. Do not
+    retry larger constant steps on this cell without a reason to expect
+    late-life gains. Records:
+    `outputs/ipmnist_screening/wd0_const_step_extend2/`
+    (`PREREGISTRATION.md`, `ANALYSIS.txt`, `RECOMPUTE.txt`, 24 shards).
+
+
+26. **At weight_decay 0, kappa weight clipping of the s02 RLS-head body
+    stops at the tune gate.** The opt-in `body_wclip_kappa` bound
+    (kappa/sqrt(fan_in) on w1/b1/w2/b2) with kappa 2, 4 and 8 was tuned on
+    seed 154 at 60 tasks against s02 (0.964493): -0.000517, +0.000020 and
+    +0.000000 (kappa 8 is bit-identical; the clip never binds). None
+    cleared the +0.0005 gate, so no 10-seed screen ran. No divergence. At
+    wd0 the body weights do not grow large enough for a norm bound to
+    matter. Records: `outputs/ipmnist_screening/s02_wd0_wclip/`.
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
@@ -608,3 +633,16 @@ A preregistered, nonpromoting screen changed only the anneal (floor, tau) of `rl
 - **Secondary, f4t1000 − f2t2000:** +0.000179, CI [+0.000086, +0.000271], 9/10. More annealing pays later in life, but at 60 tasks the parent schedule is near-optimal on this axis.
 - **Integrity:** the parent shards were reused after jaxpr, environment and bit-exact re-run checks. The control was re-measured bit-exactly.
 - [Report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_anneal_sweep/RESULTS.md).
+
+
+## IPMNIST anneal floor f4t1000 at 200 tasks (2026-10-30)
+
+A preregistered (4b2d6de0) development comparison, run at the full 200-task horizon on seeds 0-19. It lowered the anneal floor from 0.0028125 (`..._s005625_anneal_f2t1000`, the incumbent parent) to 0.00140625 (`..._anneal_f4t1000`), with the rest of the schedule unchanged.
+- Paired mean +0.000143, 95% CI [+0.000104, +0.000181], 19/20 seeds improved.
+- Block gains: −0.000123 (tasks 1-50), then +0.0002 to +0.0003 per 50-task block.
+- The preregistered +0.002 mean bar failed, so there is no promotion.
+- The three-way bit-exact environment check passed: the control, the stored parent at 200 tasks, and the stored arm at 60 tasks.
+- f4t1000 had already failed at 60 tasks (0240ff25), with seeds 0-9 seen there.
+- Conclusion: more within-task decay does not pay materially over a full life.
+
+Evidence: [`outputs/ipmnist_screening/anneal_f4t1000_confirm200/RESULTS.md`](../../outputs/ipmnist_screening/anneal_f4t1000_confirm200/RESULTS.md).
