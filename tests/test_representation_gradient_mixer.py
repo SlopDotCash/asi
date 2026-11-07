@@ -596,7 +596,7 @@ def test_gradient_mixer_rejects_integer_spoofs_without_running_repr() -> None:
 def test_gradient_mixer_allocation_contract_endpoints_are_allocation_free() -> None:
     fixed_output_bytes = 12 * 4 + 12
     output_last_legal = ((2**31 - 1) - fixed_output_bytes) // 4
-    update_last_legal = 18_512_789
+    update_last_legal = (_INT32_MAX - fixed_output_bytes) // (4 * 33)
     with pytest.raises(ValueError, match="update working set byte count"):
         RepresentationGradientMixerConfig(representation_dim=output_last_legal)
     config = RepresentationGradientMixerConfig(representation_dim=update_last_legal)
@@ -824,7 +824,9 @@ def test_mixer_persist_is_empty_and_output_fits_at_max_dim() -> None:
 def test_mixer_last_fit_and_first_overflow_are_adjacent() -> None:
     last_fit = None
     first_overflow = None
-    for representation_dim in range(18_512_788, 18_512_792):
+    # 33 float32 vectors and 60 fixed output bytes.
+    expected_last_fit = (_INT32_MAX - 60) // (4 * 33)
+    for representation_dim in range(expected_last_fit, expected_last_fit + 3):
         working_set_bytes = _mixer_update_working_set_bytes(representation_dim)
         if working_set_bytes <= _INT32_MAX:
             last_fit = representation_dim
