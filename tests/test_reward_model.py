@@ -525,3 +525,24 @@ def test_rls_reward_model_preserves_equal_covariance_entries(
     assert bool(result.update_applied)
     assert int(result.state.step_count) == 1
     np.testing.assert_array_equal(result.state.covariance, covariance)
+
+
+def test_rls_reward_model_rejects_nonpositive_innovation_denominator() -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=4, forgetting=1.0, ridge=1.0))
+    state = model.init()
+    stream = np.random.default_rng(0).normal(size=(5, 4)) * 1e5
+    denominators = []
+    for row in stream:
+        features = jnp.asarray(row, dtype=jnp.float32)
+        denominator = 1.0 + jnp.dot(features, state.covariance @ features)
+        denominators.append(float(denominator))
+        result = model.update(state, features, jnp.float32(1.0))
+        if float(denominator) <= 0.0:
+            assert not bool(result.update_applied)
+            np.testing.assert_array_equal(result.gain, np.zeros(4, dtype=np.float32))
+            chex.assert_trees_all_equal(result.state, state)
+        else:
+            assert bool(result.update_applied)
+        state = result.state
+    # Float32 rounding made the covariance indefinite under these finite features.
+    assert min(denominators) < 0.0

@@ -328,14 +328,16 @@ class RLSRewardModel:
             & (state.step_count >= 0)
         )
         inputs_valid = jnp.all(jnp.isfinite(x)) & jnp.isfinite(jnp.squeeze(target))
-        denominator_finite = jnp.isfinite(denominator)
+        # Float32 rounding can leave the covariance indefinite; a nonpositive
+        # innovation variance would flip the gain's sign.
+        denominator_valid = jnp.isfinite(denominator) & (denominator > 0.0)
         proposed_finite = (
             jnp.all(jnp.isfinite(next_weights))
             & jnp.all(jnp.isfinite(next_covariance))
             & jnp.isfinite(next_abs_error_ema)
         )
         update_applied = (
-            source_valid & inputs_valid & denominator_finite & proposed_finite
+            source_valid & inputs_valid & denominator_valid & proposed_finite
         )
         committed = jax.lax.cond(
             update_applied,
