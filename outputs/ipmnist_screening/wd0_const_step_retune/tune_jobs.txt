@@ -1,0 +1,4 @@
+rls_head_resid_identmap50_r_idet003_s005625_anneal_f1t1000_wd0 101 60 tune
+rls_head_resid_identmap50_r_idet003_s004_anneal_f1t1000_wd0 101 60 tune
+rls_head_resid_identmap50_r_idet003_s0075_anneal_f1t1000_wd0 101 60 tune
+rls_head_resid_identmap50_r_idet003_s01_anneal_f1t1000_wd0 101 60 tune

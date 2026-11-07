@@ -1,0 +1,41 @@
+== seed 50-69 shards for identmap50_r_idet003 on any ref
+refs: 3149
+== prs open: 200-task weight_decay
+== issues open: 200-task weight_decay
+== prs recent closed/merged: 200-task weight_decay
+== prs open: wd0
+3610 IPMNIST: dropping the body weight_decay to 0 on anneal_f2t1000 gives +0.013667 paired (10/10 unseen seeds, 95% CI [+0.013334, +0.014000]) (development, nonpromoting)
+== issues open: wd0
+== prs recent closed/merged: wd0
+== prs open: zero weight decay
+== issues open: zero weight decay
+== prs recent closed/merged: zero weight decay
+== prs open: weight_decay 0
+3610 IPMNIST: dropping the body weight_decay to 0 on anneal_f2t1000 gives +0.013667 paired (10/10 unseen seeds, 95% CI [+0.013334, +0.014000]) (development, nonpromoting)
+3596 IPMNIST: the decay-only gain is amount-only. A plain constant weight_decay of 0.0084 beats the shift-timed decay clock on fresh seeds (development, nonpromoting)
+3589 IPMNIST: partial anneal reset on anneal_f2t1000: consistent but small (+0.000613 paired, 10/10 seeds), FAILS the +0.002 bar (nonpromoting)
+3587 IPMNIST: raising the post-shift anneal starting step on anneal_f2t1000 is negative (stops at the preregistered tune gate)
+3126 Screen rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead: 0.45005 vs 0.94859 parent (matched-gradient control collapses 3/3 seeds, head's rapid exact fit is load-bearing, negative #26, development)
+== issues open: weight_decay 0
+== prs recent closed/merged: weight_decay 0
+3507 fix(optimizers): reject incomplete serialized configs
+== prs open: 200 task confirmation
+3585 IPMNIST: anneal_f2t1000 holdout on unseen seeds 20-29 (60 tasks), thin pass
+3610 IPMNIST: dropping the body weight_decay to 0 on anneal_f2t1000 gives +0.013667 paired (10/10 unseen seeds, 95% CI [+0.013334, +0.014000]) (development, nonpromoting)
+3106 Screen rls_head_resid_identmap50_r_nogate: 0.91270 vs 0.77776 control (development)
+3581 ipmnist_screening: Polyak body iterate averaging on identmap50_r_idet003_s005625_anneal_f2t1000 is negative (+0.000068 paired, 1/3 seeds; nonpromoting)
+3110 Screen rls_head_resid_identmap50_r_nogate_idet003_s0075: 0.93412 vs 0.77776 control (development)
+3107 Screen rls_head_resid_identmap200_r_nogate: 0.90549 vs 0.77776 control (development)
+3111 Screen rls_head_resid_identmap50_r_nogate_idet003_s005625: 0.93921 vs 0.77776 control (development)
+3109 Screen rls_head_resid_identmap50_r_nogate_idet003: 0.92767 vs 0.77776 control (development)
+== issues open: 200 task confirmation
+== prs recent closed/merged: 200 task confirmation
+3113 Screen rls_head_resid_identmap50_r_mom9: 0.91113 vs 0.91142 parent (rejected, development)
+3115 Screen rls_head_resid_identmap50_r_idet003: 0.92633 vs 0.91142 parent (improves, development)
+== prs open: seeds 50-69
+3610 IPMNIST: dropping the body weight_decay to 0 on anneal_f2t1000 gives +0.013667 paired (10/10 unseen seeds, 95% CI [+0.013334, +0.014000]) (development, nonpromoting)
+== issues open: seeds 50-69
+== prs recent closed/merged: seeds 50-69
+== prs open: zqxvbn_nonsense
+== issues open: zqxvbn_nonsense
+== prs recent closed/merged: zqxvbn_nonsense

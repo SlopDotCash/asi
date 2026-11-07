@@ -1,0 +1,54 @@
+duplicate check, 2026-10-31 12:02:49 GMT, gh search, SlopDotCash/asi, open+closed PRs and issues
+base f3c7d4a2; repo SlopDotCash/asi
+-- prs: s0125
+-- issues: s0125
+-- prs: s015
+-- issues: s015
+-- prs: s02_anneal
+-- issues: s02_anneal
+-- prs: step 0.0125
+#3110 [open] Madyoun: Screen rls_head_resid_identmap50_r_nogate_idet003_s0075: 0.93412 vs 0.77776 control (development)
+-- issues: step 0.0125
+-- prs: step 0.015
+-- issues: step 0.015
+-- prs: step 0.02
+-- issues: step 0.02
+-- prs: step_size 0.02
+-- issues: step_size 0.02
+-- prs: constant step
+#3632 [open] w3-bounty: IPMNIST: at weight_decay 0, dropping the within-task step anneal (constant step 0.005625) beats anneal_f2t1000_wd0 by +0.005648 paired (10/10 unseen seeds 71-80, 95% CI [+0.005440, +0.005856]) at 60 tasks; gain shrinks over the life (development, nonpromoting)
+#3634 [open] w3-bounty: IPMNIST: at weight_decay 0, a constant step (f1t1000_wd0) beats anneal_f2t1000_wd0 over the full 200-task life: +0.003587 paired (20/20 unseen seeds 81-100, 95% CI [+0.003523, +0.003652]); gain shrinks but stays positive late (development, nonpromoting)
+#3585 [open] w3-bounty: IPMNIST: anneal_f2t1000 holdout on unseen seeds 20-29 (60 tasks), thin pass
+#3126 [open] lumix5: Screen rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead: 0.45005 vs 0.94859 parent (matched-gradient control collapses 3/3 seeds, head's rapid exact fit is load-bearing, negative #26, development)
+-- issues: constant step
+-- prs: step size wd0
+-- issues: step size wd0
+-- prs: larger step
+#3587 [open] w3-bounty: IPMNIST: raising the post-shift anneal starting step on anneal_f2t1000 is negative (stops at the preregistered tune gate)
+#3585 [open] w3-bounty: IPMNIST: anneal_f2t1000 holdout on unseen seeds 20-29 (60 tasks), thin pass
+-- issues: larger step
+-- prs: step retune
+-- issues: step retune
+-- prs: step extend
+-- issues: step extend
+-- prs: s01_anneal_f1t1000_wd0
+-- issues: s01_anneal_f1t1000_wd0
+-- PRs since 2026-10-31:
+#3620 dbstkddl8-create: fix(low-cost-controls): bind query and byte receipts to the frozen schedule
+#3609 dbstkddl8-create: fix(ipmnist-provenance): bind array identities exactly or refuse them
+#3630 dbstkddl8-create: fix(ipmnist-campaign-tools): reject non-finite across-seed spreads
+#3611 dbstkddl8-create: fix(strict-json): reject lone surrogate escapes in loaded strings
+#3587 w3-bounty: IPMNIST: raising the post-shift anneal starting step on anneal_f2t1000 is negative (stops at the preregistered tune gate)
+#3610 w3-bounty: IPMNIST: dropping the body weight_decay to 0 on anneal_f2t1000 gives +0.013667 paired (10/10 unseen seeds, 95% CI [+0.013334, +0.014000]) (development, nonpromoting)
+#3632 w3-bounty: IPMNIST: at weight_decay 0, dropping the within-task step anneal (constant step 0.005625) beats anneal_f2t1000_wd0 by +0.005648 paired (10/10 unseen seeds 71-80, 95% CI [+0.005440, +0.005856]) at 60 tasks; gain shrinks over the life (development, nonpromoting)
+#3634 w3-bounty: IPMNIST: at weight_decay 0, a constant step (f1t1000_wd0) beats anneal_f2t1000_wd0 over the full 200-task life: +0.003587 paired (20/20 unseen seeds 81-100, 95% CI [+0.003523, +0.003652]); gain shrinks but stays positive late (development, nonpromoting)
+#3612 dbstkddl8-create: fix(adamo): require exact scalars in diagnostic receipts
+#3596 w3-bounty: IPMNIST: the decay-only gain is amount-only. A plain constant weight_decay of 0.0084 beats the shift-timed decay clock on fresh seeds (development, nonpromoting)
+#3626 w3-bounty: IPMNIST: weight_decay = 0 on anneal_f2t1000 holds over the full 200-task life: +0.020114 paired (20/20 unseen seeds 50-69, 95% CI [+0.020010, +0.020218]) (development, nonpromoting)
+#3603 dbstkddl8-create: fix(feature-discovery): reject non-finite collected stream samples
+#3589 w3-bounty: IPMNIST: partial anneal reset on anneal_f2t1000: consistent but small (+0.000613 paired, 10/10 seeds), FAILS the +0.002 bar (nonpromoting)
+#3593 w3-bounty: IPMNIST: pr50 partial-reset gain is decay-driven — the step part hurts (−0.00107), the decay part helps (+0.00166) (development, nonpromoting)
+#3605 dbstkddl8-create: fix(gymnasium): reject non-finite learner state in learn_from_trajectory
+-- all refs, registry names s0125/s015/s02 with identmap:
+
+verdict: no duplicate. No PR, issue or ref registers or screens constant body steps 0.0125/0.015/0.02 on the identmap50_r_idet003 wd0 cell. Nearest: #3110 (nogate s0075, coupled decay), #3587 (larger post-shift anneal start at weight_decay 0.01, confounded), our own #3632/#3634 (constant step 0.005625). Seeds 112-129: 0 shards across 3223 refs (checked 2026-10-31 12:01 GMT).
