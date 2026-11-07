@@ -7687,6 +7687,17 @@ class TestRLSHeadIdentMap:
                     ("0125", 0.0125), ("015", 0.015), ("02", 0.02),
                 )
             },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+                f"_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.02, "anneal_floor": 0.02,
+                    "anneal_tau": 1000.0, "weight_decay": 0.0,
+                    "rls_ridge_init": ridge,
+                }
+                for tag, ridge in (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -8959,3 +8970,215 @@ class TestWd0Confirm200AnalyzeShardErrors:
     def test_malformed_shard_voids(self, tmp_path):
         (self._shards(tmp_path) / f"{self.P}_seed50.json").write_text("{not json")
         self._void(_run_py(self.A, tmp_path))
+
+
+class TestRLSHeadIdentMapS02Wd0Ridge:
+    """RLS head ridge cells on the s02 wd0 incumbent (s02_wd0_ridge/)."""
+
+    INCUMBENT = "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+    RIDGES = (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
+
+    def _spec(self, **overrides):
+        spec = screening_spec(self.INCUMBENT)
+        return replace(
+            spec,
+            name=spec.name + "_ridge_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, **overrides,
+            },
+        )
+
+    def _run(self, **overrides):
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        return run_screening_config(x, y, self._spec(**overrides), seed=7, config=SMALL)
+
+    def test_registry_differs_only_in_ridge(self):
+        inc = dict(screening_spec(self.INCUMBENT).hyperparameters)
+        assert inc["rls_ridge_init"] == 1.0
+        for tag, ridge in self.RIDGES:
+            spec = screening_spec(self.INCUMBENT + "_" + tag)
+            hp = dict(spec.hyperparameters)
+            assert hp.pop("rls_ridge_init") == ridge
+            inc_rest = dict(inc); inc_rest.pop("rls_ridge_init")
+            assert hp == inc_rest
+            assert spec.factory is screening_spec(self.INCUMBENT).factory
+
+    def test_initial_p_is_identity_over_ridge(self):
+        for _, ridge in self.RIDGES:
+            spec = screening_spec(self.INCUMBENT + "_" + _)
+            init_fn, _step = spec.factory(dict(spec.hyperparameters))
+            state = init_fn(init_mlp_params(jr.key(0), SMALL))
+            p = np.asarray(state.inner.p)
+            np.testing.assert_allclose(p, np.eye(p.shape[0]) / ridge, rtol=1e-6)
+
+    def test_ridge_one_override_is_bit_exact_with_parent(self):
+        a = self._run()
+        b = self._run(rls_ridge_init=1.0)
+        assert np.array_equal(np.asarray(a.per_task_accuracy), np.asarray(b.per_task_accuracy))
+        assert np.array_equal(np.asarray(a.per_task_loss), np.asarray(b.per_task_loss))
+
+    def test_small_ridge_is_live_and_finite(self):
+        a = self._run()
+        b = self._run(rls_ridge_init=0.03)
+        acc = np.asarray(b.per_task_accuracy)
+        assert np.all(np.isfinite(acc)) and np.all(np.isfinite(np.asarray(b.per_task_loss)))
+        assert not np.array_equal(np.asarray(a.per_task_loss), np.asarray(b.per_task_loss))
+
+
+def _load_s02_ridge_analyze():
+    import importlib.util
+    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+            / "s02_wd0_ridge" / "analyze.py")
+    spec = importlib.util.spec_from_file_location("s02_ridge_analyze", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestS02Wd0RidgeDivergenceRules:
+    """Development-plan rules of s02_wd0_ridge/analyze.py on synthetic inputs."""
+
+    A = _load_s02_ridge_analyze()
+    OK = [0.95] * 60
+    LOSS = [0.1] * 60
+
+    def test_cells_registered_and_seeds_fixed(self):
+        for c, r in self.A.CELLS:
+            assert SCREENING_REGISTRY[c].hyperparameters["rls_ridge_init"] == r
+        assert self.A.INC in SCREENING_REGISTRY
+        assert self.A.TUNE_SEED == 165 and list(self.A.SCREEN_SEEDS) == list(range(166, 176))
+        assert self.A.EDGE == self.A.INC + "_r003"
+
+    def test_classify(self):
+        assert self.A.classify(self.OK, self.LOSS) is None
+        assert "missing" in self.A.classify(None, None)
+        acc = list(self.OK); acc[5] = float("nan")
+        assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
+        acc = list(self.OK); acc[3] = 0.4999
+        assert "tasks [3]" in self.A.classify(acc, self.LOSS)
+        assert self.A.FLOOR == 0.5
+
+    def test_tune_gate_diverged_and_ties_to_larger_ridge(self):
+        T = self.A.tune_decision
+        assert T([("a", 0.03, 0.001), ("b", 0.1, None), ("c", 0.3, 0.002)]) == "c"
+        assert T([("a", 0.03, None), ("b", 0.1, None)]) == "STOP_ALL_DIVERGED"
+        assert T([("a", 0.03, 0.0005), ("b", 0.1, -0.01)]) == "STOP"
+        assert T([("a", 0.03, 0.003), ("b", 0.1, 0.003)]) == "b"
+
+    def test_screen_verdict(self):
+        V = self.A.screen_verdict
+        assert V([0.003 + 0.0001 * i for i in range(10)])["verdict"] == "PASS"
+        v = V([0.5] * 9 + [None])
+        assert v["diverged"] == 1 and v["verdict"] == "FAIL"
+        assert V([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
+
+    def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
+        import json
+        d = tmp_path / "tune"; d.mkdir()
+        for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 59), (self.A.CELLS[0][0], self.OK)):
+            (d / f"{c}_seed165.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        with pytest.raises(self.A.VoidRun):
+            self.A.diff("tune", self.A.CELLS[0][0], 165)
+
+
+def _load_ridge200_analyze():
+    import importlib.util
+    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+            / "s02_wd0_ridge_200task" / "analyze.py")
+    spec = importlib.util.spec_from_file_location("ridge200_analyze", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestS02Ridge200TaskConfirm:
+    """Development-plan rules of s02_wd0_ridge_200task/analyze.py (rules reused from our own wd0 constant-step 200-task confirm)."""
+
+    A = _load_ridge200_analyze()
+    OK = [0.95] * 200
+    LOSS = [0.1] * 200
+
+    def test_both_cells_registered(self):
+        reg = ipmnist_screening.SCREENING_REGISTRY
+        assert self.A.CAND in reg and self.A.INC in reg
+        assert self.A.CAND == self.A.INC + "_r01"
+        assert reg[self.A.CAND].hyperparameters["rls_ridge_init"] == 0.1
+
+    def test_constants(self):
+        assert self.A.FLOOR == 0.5 and self.A.T19 == 2.093 and self.A.NTASK == 200 and self.A.BLOCK == 50
+        assert list(self.A.SEEDS) == list(range(176, 196))
+
+    def test_healthy_shard_passes(self):
+        assert self.A.classify(self.OK, self.LOSS) is None
+
+    def test_missing_shard_diverged(self):
+        assert "missing" in self.A.classify(None, None)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_accuracy_diverged(self, bad):
+        acc = list(self.OK); acc[117] = bad
+        assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_non_finite_loss_diverged(self, bad):
+        loss = list(self.LOSS); loss[199] = bad
+        assert "non-finite loss" in self.A.classify(self.OK, loss)
+
+    def test_missing_loss_diverged(self):
+        assert "non-finite loss" in self.A.classify(self.OK, None)
+
+    def test_floor(self):
+        acc = list(self.OK); acc[3] = 0.4999
+        assert "tasks [3]" in self.A.classify(acc, self.LOSS)
+        acc[3] = 0.5
+        assert self.A.classify(acc, self.LOSS) is None
+
+    def test_out_of_range_accuracy_diverged(self):
+        acc = list(self.OK); acc[0] = 1.5
+        assert "outside" in self.A.classify(acc, self.LOSS)
+
+    def test_pass(self):
+        v = self.A.screen_verdict([0.003 + 0.0001 * i for i in range(20)])
+        assert v["verdict"] == "PASS" and v["diverged"] == 0 and v["improved"] == 20
+
+    def test_improved_bar_is_14_of_20(self):
+        g = [0.01] * 14 + [-0.0001] * 6
+        assert self.A.screen_verdict(g)["verdict"] == "PASS"
+        assert self.A.screen_verdict([0.01] * 13 + [-0.0001] * 7)["verdict"] == "FAIL"
+
+    def test_any_diverged_seed_fails_regardless_of_mean(self):
+        v = self.A.screen_verdict([0.5] * 19 + [None])
+        assert v["mean"] >= 0.002 and v["improved"] == 19 and v["diverged"] == 1
+        assert v["verdict"] == "FAIL"
+
+    def test_bars_fail(self):
+        assert self.A.screen_verdict([0.001] * 19 + [0.0011])["verdict"] == "FAIL"
+
+    def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
+        import json
+        d = tmp_path / "confirm"; d.mkdir()
+        for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 199), (self.A.CAND, self.OK)):
+            (d / f"{c}_seed176.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        with pytest.raises(self.A.VoidRun):
+            self.A.diff("confirm", self.A.CAND, 176)
+
+    def test_candidate_divergence_scored_not_void(self, tmp_path, monkeypatch):
+        import json
+        d = tmp_path / "confirm"; d.mkdir()
+        for c, acc in ((self.A.INC, self.OK), (self.A.CAND, [0.3] + [0.9] * 199)):
+            (d / f"{c}_seed176.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        assert self.A.diff("confirm", self.A.CAND, 176) is None
+
+    def test_memguard_stop_sentinel_is_ignored_and_untracked(self):
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        rel = "outputs/ipmnist_screening/s02_wd0_ridge_200task/MEMGUARD_STOP"
+        assert subprocess.run(["git", "check-ignore", "-q", "--no-index", rel], cwd=root).returncode == 0
+        tracked = subprocess.run(["git", "ls-files", "outputs/ipmnist_screening/s02_wd0_ridge_200task/"],
+                                 cwd=root, capture_output=True, text=True, check=True).stdout.split()
+        assert not any(f.endswith("MEMGUARD_STOP") for f in tracked)

@@ -1,0 +1,8 @@
+duplicate check, 2026-10-31 20:13 GMT, gh search, SlopDotCash/asi, open+closed PRs
+base da36e02d; refs scanned for seeds 176-195 in shard names: 3286, hits 0 (positive control seed166 at da36e02d: 2)
+-- ridge 200 task: #200 [merged] unrelated (Horde bootstraps)
+-- rls_ridge_init: #3122, #3123, #3124, #3126, #3129 [open] lumix5, gated s0031640625 chain, 60-task screens; #3144 unrelated
+-- ridge confirm: no hits
+-- s02 ridge: #3648 [open] our own weight-clipping negative; #3647 unrelated
+-- open PRs above #3646: #3647, #3648 only
+verdict: no PR confirms a reduced RLS-head ridge over 200 tasks on any chain; the 60-task idea is lumix5's (#3122/#3123), credited.
