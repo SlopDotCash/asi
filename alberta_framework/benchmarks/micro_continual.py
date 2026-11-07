@@ -720,7 +720,7 @@ def bayes_predict(component_means: Array, dim_sigma: Array, x: Array) -> Array:
         # Keep the exponent separate even if whitening the difference itself
         # overflows. Zero coordinates must not set the common exponent.
         max_exponent = jnp.max(
-            jnp.where(mantissa != 0.0, exponent, np.iinfo(np.int32).min),
+            jnp.where(mantissa != 0.0, exponent, -_INT32_MAX - 1),
             axis=1,
         )
         max_exponent = jnp.where(jnp.any(mantissa != 0.0, axis=1), max_exponent, 0)

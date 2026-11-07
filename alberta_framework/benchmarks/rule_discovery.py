@@ -465,11 +465,14 @@ def _rms_mix(hidden: Array, f_rms: Array) -> Array:
         epsilon = jnp.ldexp(jnp.asarray(_EPS, dtype=values.dtype), -2 * exponent)
         return scaled / jnp.sqrt(jnp.mean(scaled * scaled) + epsilon)
 
-    direction = jax.lax.cond(
-        use_fallback,
-        scaled_direction,
-        lambda values: values / jnp.sqrt(jnp.mean(values * values) + _EPS),
-        hidden,
+    direction = cast(
+        Array,
+        jax.lax.cond(
+            use_fallback,
+            scaled_direction,
+            lambda values: values / jnp.sqrt(jnp.mean(values * values) + _EPS),
+            hidden,
+        ),
     )
     return cast(Array, f_rms * direction + (1.0 - f_rms) * hidden)
 
