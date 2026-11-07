@@ -12,18 +12,15 @@ from alberta_framework.core.intentional_td import (
 )
 
 
-def test_config_rejects_trace_decay_that_rounds_to_one_in_float32():
+def test_config_accepts_trace_decay_that_rounds_to_one_in_float32():
+    # A near-one gamma * lamda that rounds to one in float32 is accepted:
+    # the bias corrections run on the float64 decay via expm1, so the first
+    # update stays finite. An exact product of one is still rejected.
     gamma = 0.99999999
     assert gamma < 1.0
     assert float(jnp.asarray(gamma, dtype=jnp.float32)) == 1.0
 
-    with pytest.raises(ValueError, match="float32"):
-        IntentionalTDConfig(gamma=gamma, lamda=1.0)
-
-    safe_gamma = float(
-        np.nextafter(np.float32(1.0), np.float32(0.0))
-    )
-    config = IntentionalTDConfig(gamma=safe_gamma, lamda=1.0)
+    config = IntentionalTDConfig(gamma=gamma, lamda=1.0)
     weights = jnp.zeros(2, dtype=jnp.float32)
     changed, state = intentional_td_update(
         weights,
@@ -36,15 +33,31 @@ def test_config_rejects_trace_decay_that_rounds_to_one_in_float32():
     assert bool(jnp.isfinite(state.sigma))
     assert bool(jnp.all(changed != weights))
 
+    with pytest.raises(ValueError, match="less than 1"):
+        IntentionalTDConfig(gamma=1.0, lamda=1.0)
+
 
 @pytest.mark.parametrize("field", ["beta2", "beta_clip"])
-def test_config_rejects_ema_decay_that_rounds_to_one_in_float32(field):
+def test_config_accepts_ema_decay_that_rounds_to_one_in_float32(field):
     decay = 0.99999999
     assert decay < 1.0
     assert float(jnp.asarray(decay, dtype=jnp.float32)) == 1.0
 
-    with pytest.raises(ValueError, match=field):
-        IntentionalTDConfig(**{field: decay})
+    config = IntentionalTDConfig(**{field: decay})
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    changed, state = intentional_td_update(
+        weights,
+        init_intentional_td(weights),
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        config,
+    )
+    assert bool(jnp.all(jnp.isfinite(changed)))
+    assert bool(jnp.all(jnp.isfinite(state.squared_gradient)))
+    assert bool(jnp.all(changed != weights))
+
+    with pytest.raises(ValueError, match="EMA decays"):
+        IntentionalTDConfig(**{field: 1.0})
 
 
 @pytest.mark.parametrize("field", ["eta", "clip_mult"])

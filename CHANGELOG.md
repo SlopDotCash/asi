@@ -87,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stopped `IntentionalTDConfig` rejecting near-one EMA/trace decays that round
+  to one in float32 (`beta2`, `beta_clip`, `gamma * lamda`). The bias
+  corrections run on the float64 decay via `expm1`, so such decays yield exact
+  finite updates; the rejection contradicted the retained near-one test and
+  left six tests failing. Exact `1.0` decays are still rejected.
 - Required every merged screening arm's recorded `base_learner` to match its
   registered arm. `load_shard` cross-checks the registered arm only for
   source-bound v2/v3 shards and the campaign's live format is v1, so a v1 arm
