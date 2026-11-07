@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import permutations
 
 import numpy as np
 import pytest
@@ -51,6 +52,45 @@ def test_compare_learners_preserves_finite_cumulative_cancellation() -> None:
     )
 
     assert summary["learner"]["cumulative"] == 0.0
+
+
+@pytest.mark.parametrize("values", list(permutations([1e16, 1.0, -1e16])))
+def test_signed_metric_means_preserve_cancellation(values: tuple[float, ...]) -> None:
+    """A signed reward's small residual must survive reduction order."""
+    expected = 1.0 / 3.0
+    assert compute_prequential_performance(list(values)) == pytest.approx(expected)
+    summary = compare_learners(
+        {"learner": [{"reward": value} for value in values]}, metric="reward"
+    )["learner"]
+    assert summary["mean"] == pytest.approx(expected)
+    assert summary["final_100_mean"] == pytest.approx(expected)
+    assert summary["mean"] == pytest.approx(summary["cumulative"] / len(values))
+
+
+def test_signed_metric_mean_keeps_nan_and_wide_finite_controls() -> None:
+    assert compute_prequential_performance([np.nan, 1e16, 1.0, -1e16]) == pytest.approx(
+        1.0 / 3.0
+    )
+    assert compute_prequential_performance([1e308, 1e308]) == 1e308
+    assert compute_prequential_performance([0.0, 0.0]) == 0.0
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [1e308, 1e-100, -1e308],
+        [1e308, 1e308, -1e308, -1e308, 1e-100],
+    ],
+)
+def test_signed_metric_means_keep_tiny_remainder_across_full_range(values: list[float]) -> None:
+    expected = 1e-100 / len(values)
+    assert compute_prequential_performance(values) == pytest.approx(expected, abs=0.0)
+    summary = compare_learners(
+        {"learner": [{"reward": value} for value in values]}, metric="reward"
+    )["learner"]
+    assert summary["mean"] == pytest.approx(expected, abs=0.0)
+    assert summary["final_100_mean"] == pytest.approx(expected, abs=0.0)
+    assert summary["cumulative"] == pytest.approx(1e-100, abs=0.0)
 
 
 def test_compare_learners_rejects_unrepresentable_cumulative_value() -> None:

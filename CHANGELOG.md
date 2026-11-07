@@ -87,6 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The average-reward Horde actor uses centered temperature-scaled logits so
+  compiled softmax stays finite for extreme logits. Subnormal temperatures
+  are rescaled before device division to preserve the configured policy scale.
 - `ipmnist_screening.load_shard` now rejects a non-string `schema` and a legacy
   v1 shard without a `config` object as `ValueError`s. Testing an unhashable
   JSON array/object schema against the supported-schema set raised

@@ -291,6 +291,49 @@ def test_step6_facade_config_roundtrip_one_step_and_smoke() -> None:
     assert smoke.agent_config["type"] == "DifferentialSARSAAgent"
 
 
+def test_step6_init_keeps_host_clocks() -> None:
+    agent = make_step6_differential_sarsa_agent(Step6DifferentialSARSAConfig())
+    key = jr.key(0, impl="threefry2x32")
+    fresh = agent.init(2, key)
+    state = init_step6_state(
+        agent,
+        feature_dim=2,
+        key=key,
+        initial_features=jnp.array([1.0, 0.0], dtype=jnp.float32),
+    )
+
+    assert type(state.birth_timestamp) is float
+    assert type(state.uptime_s) is float
+    # A float32 wall-clock birth time is off by up to 64 seconds.
+    assert abs(state.birth_timestamp - fresh.birth_timestamp) < 1.0
+    assert state.uptime_s == 0.0
+
+
+def test_step6_update_keeps_host_clocks() -> None:
+    agent = make_step6_differential_sarsa_agent(Step6DifferentialSARSAConfig())
+    state = init_step6_state(
+        agent,
+        feature_dim=2,
+        key=jr.key(1, impl="threefry2x32"),
+        initial_features=jnp.array([1.0, 0.0], dtype=jnp.float32),
+    )
+    state = state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=1793500000.123, uptime_s=100000.123
+    )
+    result = step6_update(
+        agent,
+        state,
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.array([0.0, 1.0], dtype=jnp.float32),
+    )
+
+    assert bool(result.update_applied)
+    assert type(result.state.birth_timestamp) is float
+    assert result.state.birth_timestamp == 1793500000.123
+    assert type(result.state.uptime_s) is float
+    assert result.state.uptime_s == 100000.123
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (("steps", True), ("steps", 1.5), ("feature_dim", False), ("feature_dim", 1.5)),

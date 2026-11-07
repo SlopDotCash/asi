@@ -664,10 +664,12 @@ def test_controller_resource_preflight_formulas_match_deployed_state(n_demons: i
     budgets = condition_controller_budgets(ContinualIAConfig(n_demons=n_demons))
     recommendation = budgets["recommendation_p05"]
     augmented = budgets["augmented_predictions"]
-    assert recommendation.state_scalars == 113 + 2 * n_demons
-    assert recommendation.state_bytes == 468 + 8 * n_demons
-    assert augmented.state_scalars == 103 + 7 * n_demons
-    assert augmented.state_bytes == 428 + 28 * n_demons
+    # Measured from the deployed state trees. The partner's differential-SARSA
+    # state carries one float32 previous_discount scalar.
+    assert recommendation.state_scalars == 115 + 2 * n_demons
+    assert recommendation.state_bytes == 476 + 8 * n_demons
+    assert augmented.state_scalars == 105 + 7 * n_demons
+    assert augmented.state_bytes == 436 + 28 * n_demons
 
 
 @pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
