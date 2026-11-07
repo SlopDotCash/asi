@@ -1240,6 +1240,7 @@ def step7_update(
                 step_words=control_after_real.step_words,
                 q_trace_weights=carry_state.q_trace_weights,
                 q_trace_bias=carry_state.q_trace_bias,
+                previous_discount=carry_state.previous_discount,
             ),
         )
         corrected_state = jax.lax.cond(
