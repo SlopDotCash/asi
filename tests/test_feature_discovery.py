@@ -3214,6 +3214,56 @@ class TestFixedBudgetInteractionLearner:
         chex.assert_shape(result.metrics, (10, 7))
         chex.assert_tree_all_finite(result.metrics)
 
+    def test_probe_candidate_head_stays_bounded_on_large_inputs(self) -> None:
+        """A probe candidate head must not diverge on large feature values.
+
+        The independent-probe candidate delta is the only candidate update
+        in the file with neither the scale-robust normalization nor the
+        ObGD bound, so plain LMS ``w += alpha * (e - w*phi) * phi`` is
+        unstable once ``alpha * phi**2 > 2``. With ``phi = 100 * 100`` the
+        weight alternates sign and grows ~3000x per step until it overflows
+        to ``inf``; the fail-closed transaction then refuses every later
+        update and the learner is stuck forever. Routing the delta through
+        the normalized candidate update keeps the step scale-free.
+        """
+        learner = FixedBudgetInteractionLearner(
+            n_features=1,
+            n_tasks=1,
+            step_size_output=0.03,
+            candidate_count=3,
+            candidate_strategy="all_pairs",
+            include_squares=True,
+            replacement_interval=100000,
+            independent_relevance_probe=True,
+            evidence_gated_active_output_memory=True,
+            utility_retention_grace_steps=8,
+            utility_evidence_threshold=0.1,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0)).replace(
+            feature_left=jnp.array([0], dtype=jnp.int32),
+            feature_right=jnp.array([1], dtype=jnp.int32),
+        )
+        # The (1, 1) candidate is index 2 of the all-pairs bank.
+        assert int(state.candidate_left[2]) == 1
+        assert int(state.candidate_right[2]) == 1
+        observation = jnp.array([0.0, 100.0], dtype=jnp.float32)
+        target = jnp.array([1.0], dtype=jnp.float32)
+        for _ in range(8):
+            result = learner.update(
+                state,
+                observation,
+                target,
+                jnp.ones((1,), dtype=jnp.bool_),
+            )
+            state = result.state
+        # Every update must be accepted: on the buggy path the 7th update
+        # already overflows to inf and is refused, freezing step_count at 6.
+        assert int(state.step_count) == 8
+        assert bool(jnp.all(jnp.isfinite(state.candidate_output_weights)))
+        # The correct weight is ~1e-4 (1.0 / 10000); anything near that
+        # order is converged, while the buggy path is at ~-7e34 by step 6.
+        assert abs(float(state.candidate_output_weights[0, 2])) < 1.0
+
 
 class TestReplaceFractionRemoval:
     """The vestigial replace_fraction knob is gone but legacy configs load."""
