@@ -1,6 +1,6 @@
 # IPMNIST campaign index
 
-Last reconciled: 2026-08-18.
+Last reconciled 2026-11-07.
 
 This is the mutable index for the active IPMNIST development-screening and
 development-confirmation campaign. It is **permanently nonpromoting**. It
@@ -15,20 +15,20 @@ records and are not the maintained implementation.
 
 ## Current stored record
 
-The latest stored paired confirmation names
-`rls_head_resid_l1_preset005` as the current development leader over the paired
-`sigma0_shiftnorm_d099` control. Read the means, uncertainty, seed coverage, and
-per-seed differences directly from
-[`summary_rls_head_confirm.json`](../../outputs/ipmnist_screening/summary_rls_head_confirm.json).
-The [mechanistic synthesis](ipmnist-theory.md) explains the arm and its bounded
-interpretation.
+The lead candidate is
+`rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0`. It uses a
+constant body step of 0.02 and zero weight decay. In the retained 200-task
+confirmation it gained **0.007665** mean paired online accuracy over the
+annealed zero-decay arm on **20/20** seeds (95% CI [0.007588, 0.007741]).
+The comparator, per-seed results, and predeclared gates are in the
+[200-task analysis](../../outputs/ipmnist_screening/wd0_const_step_200task/ANALYSIS.txt).
 
-This is a descriptive same-runner comparison. The summary declares
-`development_only=true` and `scientific_promotion_allowed=false`; it is not
-bound to the current source/runtime or an independently authenticated execution
-lifecycle. Any new A/B must capture its current implementation identity and
-remeasure its control in the same runner instead of treating the stored control
-mean as a live guarantee.
+The [constant-step 0.005625 arm](../../outputs/ipmnist_screening/wd0_const200/ANALYSIS.txt)
+also beat the annealed zero-decay comparator in a separate 200-task cohort.
+The retained analyses use different seeds, so the next full-length comparison
+must remeasure step 0.02 against this stronger constant-step arm on the same
+workload and seed set. Bind the current implementation, runtime, dataset, and
+resource accounting before collecting those results.
 
 The older cross-runner
 [`proxy_validation.json`](../../outputs/ipmnist_screening/proxy_validation.json)
@@ -46,7 +46,7 @@ superseded their status language.
 
 | Record | How to read it now |
 |---|---|
-| [`summary_rls_head_confirm.json`](../../outputs/ipmnist_screening/summary_rls_head_confirm.json) | Current paired development confirmation |
+| [`summary_rls_head_confirm.json`](../../outputs/ipmnist_screening/summary_rls_head_confirm.json) | Earlier paired RLS confirmation against the UPGD-derived control |
 | [`summary_rls_head.json`](../../outputs/ipmnist_screening/summary_rls_head.json) | RLS screening record that selected the confirmed arm |
 | [`RUNBOOK.md`](../../outputs/ipmnist_screening/RUNBOOK.md) | Chronological operations log; earlier “queued” states can be superseded by later sections |
 | [`FINAL_REPORT.md`](../../outputs/ipmnist_screening/FINAL_REPORT.md) | Historical accumulated report; its “final best” language predates RLS confirmation |
@@ -55,7 +55,7 @@ superseded their status language.
 | [`SOTA_LANDSCAPE_2026.md`](../../outputs/ipmnist_screening/SOTA_LANDSCAPE_2026.md) | Bounded 2026-08-02 web survey, not a systematic or current external ranking; its BiMU sentence omits the higher MESU entry from the same paper table |
 | [`AUDIT.md`](../../outputs/ipmnist_screening/AUDIT.md) | Historical audit of the then-existing campaign records and cross-runner proxy discrepancy |
 
-Use “current development leader” for the latest arm and “local reproduced
+Use “lead development candidate” for the 0.02 arm and “local reproduced
 UPGD-W reference” for the stored published-configuration comparator. Historical
 `BEATS-SOTA` labels mean only that an arm cleared that local reference; they are
 not external SOTA findings.

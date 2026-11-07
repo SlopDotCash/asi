@@ -57,13 +57,16 @@ program; it is not a claim about the current software's level of intelligence.
 
 ## Current status
 
-**Progress snapshot — 2026-10-30:** the primitive Prototype reference-life runner, matched
-SwitchingTwoState/RiverSwim development scorecard, and quiescent exact-resume checkpoints are
-implemented at L0. The retained scorecard completed all 144 lives and independently recomputed
-its aggregate, but ended in `valid_baseline_failure`: RiverSwim controls did not qualify and no
-candidate was selected. The immediate hillclimb is therefore control calibration and a measured
-candidate/control retry, alongside the active IPMNIST plasticity lane—not a claim of a new
-performance leader.
+**Progress snapshot (2026-11-07).** The completed 144-life development scorecard recorded
+`valid_baseline_failure` because its RiverSwim controls did not qualify. Follow-up probes
+identified two RiverSwim controls for a fresh matched run, discounted SARSA with initial
+Q = 10 and differential SARSA with initial average reward = 1. On SwitchingTwoState,
+Prototype's step 0.20 led step 0.10 on the reused development seeds. The
+[hillclimb status](docs/status.md#reference-life-hillclimb) tracks the scope and next comparison.
+
+In the [IPMNIST development lane](docs/research/ipmnist-campaign-index.md), the zero-decay,
+constant-step 0.02 arm is the leading candidate. Its retained 200-task confirmation cleared the
+annealed zero-decay comparator on all 20 seeds. All of these runs are permanently nonpromoting.
 
 Individual mechanisms range from contract-tested kernels to narrow historical evidence
 packages. The retained `PrototypeAgent` is a candidate composition surface, not a completed

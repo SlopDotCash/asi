@@ -340,6 +340,22 @@ automatic proof of ASI's broader application target.
 
 ## Active development campaigns
 
+### Reference-life hillclimb
+
+The [original 144-life scorecard](../outputs/reference_life_scorecard_development/run2-2026-10-09/README.md)
+remains `valid_baseline_failure`. The following probes guide a separately planned development retry.
+
+| Lane | Retained result | Comparison to carry forward |
+|---|---|---|
+| RiverSwim controls | Discounted SARSA with Q₀ = 10 reached mean normalized return 0.8910. Differential SARSA with initial average reward 1.0 reached 0.8888. Each cleared its own gate over 20,000 events and 12 seeds. | Run both on the same seeds and normalizers. The retained results use different seed sets. |
+| SwitchingTwoState Prototype | Step 0.20 beat step 0.10 by +0.0926 normalized return on all 12 reused development seeds over 4,000 events. | Compare the steps on fresh development seeds and keep the strongest qualifying SARSA control in the next scorecard. |
+
+See the retained [discounted SARSA calibration](../outputs/reference_life_control_calibration/riverswim-q0-full-2026-11-01/RESULTS.md),
+[differential SARSA calibration](../outputs/reference_life_control_calibration/riverswim-diffsarsa-rbar0-2026-11-01/RESULTS.md),
+and [SwitchingTwoState step probe](../outputs/reference_life_control_calibration/switching-prototype-step020-2026-11-02/RESULTS.md).
+The follow-up runs are permanently nonpromoting and the whole-life candidate
+selection remains open.
+
 ### IPMNIST development screening and development confirmation
 
 IPMNIST is the current measured optimization/plasticity subsystem campaign,
