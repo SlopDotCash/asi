@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 import numpy as np
+import pytest
 
 from alberta_framework.core.options import (
     STOMPAgent,
@@ -60,7 +61,8 @@ def _transition_stream(key, num_steps: int):
 class TestSemiMDPDegeneracy:
     """One-step options with gamma_o=1 must equal primitive Q-learning."""
 
-    def test_base_q_trajectory_matches_primitive_learner(self):
+    @pytest.mark.parametrize("base_trace_decay", [0.0, 0.5])
+    def test_base_q_trajectory_matches_primitive_learner(self, base_trace_decay):
         """Trajectory of base-Q updates equals a primitive differential learner.
 
         With ``max_option_steps=1``, unreachable thresholds, and
@@ -71,7 +73,7 @@ class TestSemiMDPDegeneracy:
         sequence, same final weights.
         """
         num_steps = 80
-        config = _degenerate_config()
+        config = _degenerate_config(base_trace_decay=base_trace_decay)
         agent = STOMPAgent(config)
         learner = agent.base_learner
         n_total = config.n_total_actions
@@ -112,7 +114,19 @@ class TestSemiMDPDegeneracy:
             upd = learner.update(ref_learner_state, ref_last_obs, targets)
             td = upd.errors[ref_last_action]
             ref_avg_reward = ref_avg_reward + beta * td
-            ref_learner_state = upd.state
+            # The multihead update only advances the selected action. The
+            # primitive reference clock also decays every inactive trace
+            # once per transition without adding a gradient to that trace.
+            active_head = int(ref_last_action)
+            ref_traces = tuple(
+                updated if head == active_head else (
+                    base_trace_decay * previous[0], base_trace_decay * previous[1]
+                )
+                for head, (previous, updated) in enumerate(zip(
+                    ref_learner_state.head_traces, upd.state.head_traces, strict=True,
+                ))
+            )
+            ref_learner_state = upd.state.replace(head_traces=ref_traces)
             # Mirror the agent's per-step split (intra_key is unused here).
             ref_key, ext_key, _intra_key = jr.split(ref_key, 3)
             q_vals = learner.predict(ref_learner_state, obs)
