@@ -5921,6 +5921,16 @@ def _validate_batch_artifact(
     return runs
 
 
+_SUMMARY_OVERFLOW_ERRORS = frozenset(
+    {
+        *(f"{name} must be finite" for name in ("mean", "ci_low", "ci_high")),
+        # inf + -inf in the cross-seed sum leaves a NaN mean that cannot match
+        # the recomputed one.
+        "mean must reconstruct from the selected run metric",
+    }
+)
+
+
 def _summary_payload(
     runs: Sequence[ForagerRunResult],
     *,
@@ -5944,13 +5954,41 @@ def _summary_payload(
         normalized_runs.append(
             dataclasses.replace(run, agent_metadata=metadata)
         )
-    summary = summarize_forager_runs(
-        normalized_runs,
-        metric=cast(Any, rule.metric),
-        confidence=rule.confidence,
-        bootstrap_resamples=rule.bootstrap_resamples,
-        bootstrap_seed=rule.bootstrap_seed,
+    # Finite per-seed metrics whose mean or bootstrap interval overflows
+    # float64 are a matrix state failure, not a malformed run. NaN per-seed
+    # metrics stay the historical "unavailable" marker and are not judged here.
+    metric_values: list[object] = [
+        getattr(run, rule.metric, None) for run in normalized_runs
+    ]
+    finite_inputs = all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        for value in metric_values
     )
+    try:
+        summary = summarize_forager_runs(
+            normalized_runs,
+            metric=cast(Any, rule.metric),
+            confidence=rule.confidence,
+            bootstrap_resamples=rule.bootstrap_resamples,
+            bootstrap_seed=rule.bootstrap_seed,
+        )
+    except ValueError as exc:
+        if finite_inputs and str(exc) in _SUMMARY_OVERFLOW_ERRORS:
+            raise ForagerMatrixStateError(
+                "variant runs cannot produce a finite benchmark summary"
+            ) from exc
+        raise
+    # A resample mean can overflow while the point estimate stays finite:
+    # np.quantile then interpolates between infinities and yields NaN, which
+    # ForagerBenchmarkSummary accepts as "unavailable".
+    if finite_inputs and not all(
+        math.isfinite(value) for value in (summary.mean, summary.ci_low, summary.ci_high)
+    ):
+        raise ForagerMatrixStateError(
+            "variant runs cannot produce a finite benchmark summary"
+        )
     return {
         "agent": summary.agent,
         "privileged": summary.privileged,
@@ -6084,7 +6122,19 @@ def _report_payload(
     batch_payloads: Mapping[str, Mapping[str, Any]],
     runs_by_variant: Mapping[str, Sequence[ForagerRunResult]],
 ) -> dict[str, Any]:
-    batch_wall_time = sum(float(payload["wall_time_s"]) for payload in batch_payloads.values())
+    try:
+        batch_wall_time = math.fsum(
+            float(payload["wall_time_s"]) for payload in batch_payloads.values()
+        )
+    except OverflowError as exc:
+        batch_wall_time = math.inf
+        overflow: OverflowError | None = exc
+    else:
+        overflow = None
+    if not math.isfinite(batch_wall_time):
+        raise ForagerMatrixStateError(
+            "batch wall_time_s values produce a non-finite benchmark_wall_time_s"
+        ) from overflow
     variants = _variant_report_payload(
         manifest=manifest,
         plan=plan,
