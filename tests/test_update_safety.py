@@ -149,6 +149,36 @@ def test_fractional_float64_action_above_float32_mantissa_stays_invalid() -> Non
     assert int(safe) == 0
 
 
+@pytest.mark.parametrize(
+    "action",
+    [1.00000001, np.float64(1.00000001), -0.99999999],
+)
+def test_fractional_host_float_action_cannot_round_to_integer(action: object) -> None:
+    safe, valid = safe_discrete_action(
+        action, 2**24 + 2, allow_unset=True  # type: ignore[arg-type]
+    )
+    assert not bool(valid)
+    assert int(safe) == -1
+
+
+@pytest.mark.parametrize(
+    "code, expected, accepted",
+    [(2**24 + 1.0, 2**24 + 1, True), (1.00000001, 0, False)],
+)
+def test_float64_array_action_keeps_its_original_precision(
+    code: float, expected: int, accepted: bool
+) -> None:
+    with jax.enable_x64():
+        action = jnp.asarray(code, dtype=jnp.float64)
+        eager = safe_discrete_action(action, 2**24 + 2)
+        compiled = jax.jit(lambda value: safe_discrete_action(value, 2**24 + 2))(action)
+    disabled = safe_discrete_action(action, 2**24 + 2)
+
+    for safe, valid in (eager, compiled, disabled):
+        assert bool(valid) is accepted
+        assert int(safe) == expected
+
+
 def test_wide_unsigned_integer_action_is_rejected_not_wrapped() -> None:
     safe, valid = safe_discrete_action(jnp.asarray(2**32 - 1, dtype=jnp.uint32), 3)
     assert not bool(valid)
