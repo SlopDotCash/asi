@@ -95,9 +95,15 @@ def _frontier_arms(value: object, *, base: str) -> tuple[str, ...]:
 def across_seed_spread(values: Sequence[float] | np.ndarray[Any, Any]) -> float:
     """Return sample standard deviation, or zero below two observations."""
     array = np.asarray(values, dtype=np.float64).ravel()
+    if not bool(np.all(np.isfinite(array))):
+        raise ValueError("values must be finite")
     if array.size < 2:
         return 0.0
-    return float(array.std(ddof=1))
+    with np.errstate(over="ignore", invalid="ignore"):
+        spread = float(array.std(ddof=1))
+    if not math.isfinite(spread):
+        raise ValueError("across-seed spread must be finite")
+    return spread
 
 
 def _json_object(path: Path) -> dict[str, Any]:
