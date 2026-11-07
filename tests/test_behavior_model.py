@@ -166,6 +166,58 @@ def test_behavior_model_rejects_wrong_shaped_observations(
             getattr(model, entrypoint)(state, observation, action)
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    (
+        "predict_logits",
+        "predict_probabilities",
+        "action_probability",
+        "action_log_likelihood",
+        "input_loss_gradient",
+        "update",
+        "sample_action",
+        "importance_ratio",
+    ),
+)
+def test_behavior_model_rejects_complex_observations(entrypoint: str) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observation = jnp.array([1.0 + 5.0j, 0.0], dtype=jnp.complex64)
+    action = jnp.array(1, dtype=jnp.int32)
+
+    with pytest.raises(ValueError, match="observation must be real"):
+        if entrypoint in {"predict_logits", "predict_probabilities", "sample_action"}:
+            getattr(model, entrypoint)(state, observation)
+        elif entrypoint == "importance_ratio":
+            model.importance_ratio(
+                state,
+                observation,
+                action,
+                jnp.full((3,), 1.0 / 3.0, dtype=jnp.float32),
+            )
+        else:
+            getattr(model, entrypoint)(state, observation, action)
+
+
+def test_run_behavior_model_from_arrays_rejects_complex_observations() -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observations = jnp.full((2, 2), 1.0 + 5.0j, dtype=jnp.complex64)
+    actions = jnp.zeros((2,), dtype=jnp.int32)
+
+    with pytest.raises(ValueError, match="observation must be real"):
+        run_behavior_model_from_arrays(model, state, observations, actions)
+
+
+def test_integer_observations_still_predict() -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+
+    logits = model.predict_logits(state, jnp.ones((2,), dtype=jnp.int32))
+
+    chex.assert_shape(logits, (3,))
+
+
 def test_infinite_observation_does_not_poison_weights() -> None:
     """Inf obs makes softmax NaN and logit_error * x = 0*inf on a silent feature."""
     model = BehaviorModel(BehaviorModelConfig(n_actions=2, step_size=0.1))
