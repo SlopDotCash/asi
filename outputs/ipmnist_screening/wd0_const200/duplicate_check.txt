@@ -1,0 +1,48 @@
+HEAD c8028d3a506d29e649ffdea4d09a2351632b025f
+checked 2026-10-31 09:10:41 GMT, gh search, SlopDotCash/asi, open+closed
+-- prs: f1t1000
+-- issues: f1t1000
+-- prs: constant step wd0
+-- issues: constant step wd0
+-- prs: constant step 200-task
+-- issues: constant step 200-task
+-- prs: wd0 200-task
+-- issues: wd0 200-task
+-- prs: wd0 const
+-- issues: wd0 const
+-- prs: anneal floor wd0
+-- issues: anneal floor wd0
+-- prs: f1t1000_wd0
+-- issues: f1t1000_wd0
+-- prs: no anneal weight_decay 0
+-- issues: no anneal weight_decay 0
+-- prs: seeds 81-100
+-- issues: seeds 81-100
+-- prs: weight_decay 200-task
+-- issues: weight_decay 200-task
+-- prs: anneal_f2t1000 200-task
+-- issues: anneal_f2t1000 200-task
+-- prs: constant step
+#3585 [open] w3-bounty: IPMNIST: anneal_f2t1000 holdout on unseen seeds 20-29 (60 tasks), thin pass
+#3126 [open] lumix5: Screen rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead: 0.45005 vs 0.94859 parent (matched-gradient control collapses 3/3 seeds, head's rapid exact fit is load-bearing, negative #26, development)
+-- issues: constant step
+-- prs: weight_decay = 0
+#3626 [open] w3-bounty: IPMNIST: weight_decay = 0 on anneal_f2t1000 holds over the full 200-task life: +0.020114 paired (20/20 unseen seeds 50-69, 95% CI [+0.020010, +0.020218]) (development, nonpromoting)
+#3610 [open] w3-bounty: IPMNIST: dropping the body weight_decay to 0 on anneal_f2t1000 gives +0.013667 paired (10/10 unseen seeds, 95% CI [+0.013334, +0.014000]) (development, nonpromoting)
+#3596 [open] w3-bounty: IPMNIST: the decay-only gain is amount-only. A plain constant weight_decay of 0.0084 beats the shift-timed decay clock on fresh seeds (development, nonpromoting)
+#3589 [open] w3-bounty: IPMNIST: partial anneal reset on anneal_f2t1000: consistent but small (+0.000613 paired, 10/10 seeds), FAILS the +0.002 bar (nonpromoting)
+#3587 [open] w3-bounty: IPMNIST: raising the post-shift anneal starting step on anneal_f2t1000 is negative (stops at the preregistered tune gate)
+#3126 [open] lumix5: Screen rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead: 0.45005 vs 0.94859 parent (matched-gradient control collapses 3/3 seeds, head's rapid exact fit is load-bearing, negative #26, development)
+#3507 [merged] hermesagent270-commits: fix(optimizers): reject incomplete serialized configs
+#1048 [merged] Svector-anu: fix(benchmarks): validate registered arm contract on micro shard load
+#2024 [closed] Synxneuos: research(plasticity): add NaP normalization-and-projection control (#1564)
+#979 [closed] Svector-anu: fix(benchmarks): validate v2 shard hyperparameters against learner domain
+#109 [merged] nothingxnowhere: fix(micro): refuse to merge cross-seed hyperparameter/mechanism drift
+#904 [merged] ss251: fix(baseline-optimizers): reject non-finite constructor scalars
+-- issues: weight_decay = 0
+#1047 [closed] Svector-anu: load_micro_shard: forged mechanism/hyperparameters accepted under a registered arm_name
+#361 [closed] Prabhat1308: micro_shard_payload records the registry's hyperparameters, not the spec that ran, so cross-seed drift can never be detected
+#106 [closed] nothingxnowhere: merge_micro_shards silently merges shards with mismatched hyperparameters and mechanism under one arm_name
+#978 [closed] Svector-anu: upgd_ipmnist.py merge_partial_results accepts shard hyperparameters outside the learner's valid domain
+#96 [closed] Svector-anu: merge_shards silently merges shards with mismatched hyperparameters under one config_name
+#46 [closed] kenjohnscreates: sigma0 ext reduction pin: plasticity metric reassociates ~1 ulp under jax 0.11.0 while accuracy/loss stay bitwise
