@@ -7868,6 +7868,16 @@ class TestRLSHeadIdentMap:
                         "rls_ridge_init": 0.03,
                     },
                 ),
+                (
+                    "50_r_idet003_s0031640625_r02_sgdhead",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                        "rls_head_sgd": 1.0,
+                        "rls_head_sgd_step": 0.1,
+                    },
+                ),
             )
         })
         registered = {

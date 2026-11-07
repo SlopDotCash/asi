@@ -358,6 +358,15 @@ records a mean paired difference of −0.01117 online accuracy against the
 ordinary weight-decay arm. The RLS update and identifier were held fixed.
 See the [retained wave](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_l2init/README.md).
 
+### Historical identmap decayed SGD readout screen
+
+The gated r02 body with a decayed SGD readout averaged 0.45005 online
+accuracy on three matched 60-task development seeds. The original
+recursive least-squares readout averaged 0.94859. Both used the same
+one-hot squared loss. The SGD comparator also applied decay to the
+readout weights, so this comparison covers the two complete update rules.
+See the [retained wave](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_sgdhead/README.md).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
