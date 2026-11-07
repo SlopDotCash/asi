@@ -1085,7 +1085,14 @@ def test_horde_loop_finishes_device_work_before_stopping_uptime_clock(
 
     import alberta_framework.core.horde as module
 
-    horde, state = _shape_contract_horde()
+    # LMS step size 1.0 diverges on this stream within 100 steps.
+    horde = HordeLearner(
+        horde_spec=create_horde_spec(_make_all_gamma0_spec(3)),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+        step_size=0.1,
+    )
+    state = horde.init(5, jr.key(0))
     observations = jnp.full((1024, 5), 0.1, dtype=jnp.float32)
     cumulants = jnp.full((1024, 3), 0.2, dtype=jnp.float32)
     scan_outputs: list[object] = []

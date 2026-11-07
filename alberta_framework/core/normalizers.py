@@ -1046,7 +1046,7 @@ def migrate_legacy_normalizer_state(
     fields = _legacy_state_mapping(legacy_state)
     current_names = {
         field.name
-        for field in dataclasses.fields(state_class)
+        for field in dataclasses.fields(state_class)  # type: ignore[arg-type]
     }
     legacy_names = current_names - {"sample_count_words"}
     supplied_names = set(fields)

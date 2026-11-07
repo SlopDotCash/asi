@@ -1854,7 +1854,8 @@ def test_multi_head_loop_finishes_device_work_before_stopping_uptime_clock(
 
     import alberta_framework.core.multi_head_learner as module
 
-    learner = MultiHeadMLPLearner(n_heads=3, hidden_sizes=(4,), sparsity=0.0)
+    # LMS step size 1.0 diverges on this stream within 100 steps.
+    learner = MultiHeadMLPLearner(n_heads=3, hidden_sizes=(4,), sparsity=0.0, step_size=0.1)
     state = learner.init(5, jr.key(0))
     observations = jnp.full((1024, 5), 0.1, dtype=jnp.float32)
     targets = jnp.full((1024, 3), 0.2, dtype=jnp.float32)

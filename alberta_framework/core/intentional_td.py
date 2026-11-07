@@ -87,7 +87,7 @@ def init_intentional_td(weights: Array) -> IntentionalTDState:
     """Allocate optimizer state matching a float32 parameter array."""
     if weights.dtype != jnp.float32 or weights.size == 0:
         raise ValueError("weights must be a nonempty float32 array")
-    return IntentionalTDState(
+    return IntentionalTDState(  # type: ignore[call-arg]
         trace=jnp.zeros_like(weights),
         squared_gradient=jnp.zeros_like(weights),
         sigma=jnp.array(0.0, dtype=jnp.float32),
@@ -151,7 +151,7 @@ def intentional_td_update(
     )
     safe_error = jnp.clip(td_error, -cap, cap)
     changed = weights + (safe_error * step_size) * (trace / divisor)
-    return changed, IntentionalTDState(
+    return changed, IntentionalTDState(  # type: ignore[call-arg]
         trace=jnp.where(terminated, jnp.zeros_like(trace), trace),
         squared_gradient=second,
         sigma=sigma,

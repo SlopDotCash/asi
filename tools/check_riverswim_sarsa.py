@@ -166,7 +166,12 @@ def check_record(record: dict[str, Any]) -> dict[str, Any]:
     for flag in ("scientific_promotion_allowed", "reference_dev_population_allowed"):
         _require(record.get(flag) is False, f"{flag} must be false")
     config, env = record.get("config"), record.get("environment")
-    _require(type(config) is dict and set(config) == CONFIG_FIELDS, "unsupported config fields")
+    # initial_q_value was added to to_config() by PR #3308; older records omit it.
+    _require(
+        type(config) is dict
+        and set(config) in (CONFIG_FIELDS, CONFIG_FIELDS | {"initial_q_value"}),
+        "unsupported config fields",
+    )
     _require(type(env) is dict, "environment must be an object")
     config = cast(dict[str, Any], config)
     env = cast(dict[str, Any], env)
@@ -194,6 +199,9 @@ def check_record(record: dict[str, Any]) -> dict[str, Any]:
     for name in ("epsilon_start", "epsilon_end", "leaky_relu_slope"):
         _number(config[name], f"config {name}", lower=0, upper=1)
     _number(config["sparsity"], "config sparsity", lower=0, upper=0)
+    if config.get("initial_q_value") is not None:
+        upper = float(np.finfo(np.float32).max)
+        _number(config["initial_q_value"], "config initial_q_value", lower=0, upper=upper)
     alpha = np.float32(_number(config["step_size"], "config step_size", lower=0, upper=1))
     gamma = np.float32(_number(config["gamma"], "config gamma", lower=0, upper=1))
     lamda = np.float32(_number(config["lamda"], "config lamda", lower=0, upper=1))
