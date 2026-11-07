@@ -1703,10 +1703,10 @@ def run_multi_head_learning_loop(
     # lax.scan narrows the host-only Python-float birth_timestamp to float32
     # (at current epoch values this shifts it by tens of seconds), just as
     # the horde/average-reward array loops restore host clocks. Restore the
-    # incoming value; uptime still advances from the scanned state.
+    # incoming value and advance uptime from the original host clock.
     final_state = final_state.replace(  # type: ignore[attr-defined]
         birth_timestamp=state.birth_timestamp,
-        uptime_s=final_state.uptime_s + elapsed,
+        uptime_s=state.uptime_s + elapsed,
     )
 
     return MultiHeadLearningResult(
