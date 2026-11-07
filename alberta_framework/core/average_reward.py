@@ -1054,7 +1054,7 @@ class AverageRewardHordeActorCriticAgent:
         if temperature < _FLOAT32_MIN_NORMAL:
             # Keep XLA from reassociating the scales into the original
             # overflowing reciprocal before multiplying a zero score.
-            score_numerator = jax.lax.optimization_barrier(
+            score_numerator = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]
                 score_numerator * _SUBNORMAL_TEMPERATURE_SCALE
             )
             temperature *= _SUBNORMAL_TEMPERATURE_SCALE
