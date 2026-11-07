@@ -1258,8 +1258,10 @@ class AssociativeMemoryLearner:
             ],
             dtype=jnp.float32,
         )
+        context_valid = jnp.all((context >= 0) & (context < self._config.vocab_size))
         update_applied = (
             label_valid
+            & context_valid
             & self._state_is_valid(state)
             & floating_tree_is_finite(prediction)
             & jnp.isfinite(loss)
