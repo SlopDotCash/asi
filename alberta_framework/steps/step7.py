@@ -1483,7 +1483,7 @@ def run_step7_smoke(
     ):
         raise ValueError("derived Step 7 smoke resources exceed signed-int32 bounds")
     agent, model = make_step7_components(cfg)
-    data_key, state_key = jr.split(jr.key(seed))
+    data_key, state_key = jr.split(jr.key(seed, impl="threefry2x32"))
     observations = jr.normal(
         data_key,
         (steps + 1, cfg.world_model.observation_dim),

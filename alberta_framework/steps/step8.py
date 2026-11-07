@@ -530,7 +530,7 @@ def run_step8_smoke(
         raise ValueError("run_step8_smoke currently expects discrete actions")
 
     model = make_step8_world_model(cfg)
-    key = jr.key(seed)
+    key = jr.key(seed, impl="threefry2x32")
     data_key, state_key = jr.split(key)
     observations = jr.normal(data_key, (steps, cfg.observation_dim), dtype=jnp.float32)
     actions = jnp.arange(steps, dtype=jnp.int32) % cfg.n_actions

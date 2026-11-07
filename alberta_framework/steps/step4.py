@@ -476,7 +476,7 @@ def run_step4_smoke(
 
     cfg = config or Step4SARSAConfig()
     agent = make_step4_sarsa_agent(cfg)
-    data_key, state_key = jr.split(jr.key(seed))
+    data_key, state_key = jr.split(jr.key(seed, impl="threefry2x32"))
     observations = jr.normal(data_key, (steps + 1, feature_dim), dtype=jnp.float32)
     rewards = jnp.tanh(observations[1:, 0])
     terminated = jnp.zeros(steps, dtype=jnp.float32)

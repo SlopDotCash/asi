@@ -907,7 +907,7 @@ def run_step3_smoke(
         constructed_dim=constructed_feature_dim,
         n_demons=cfg.n_demons,
     )
-    data_key, learner_key = jr.split(jr.key(seed))
+    data_key, learner_key = jr.split(jr.key(seed, impl="threefry2x32"))
     raw_observations = jr.normal(data_key, (steps, raw_feature_dim))
     constructed_features = _synthetic_step2_features(
         raw_observations, constructed_feature_dim
