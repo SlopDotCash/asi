@@ -77,6 +77,7 @@ jobs:
           gh label create needs-human-review   --repo "$REPO" --color FBCA04 --description "Claude triage: controversial, needs a human" || true
 
       - name: Fetch PR data (as data, not code)
+        id: review_data
         run: |
           mkdir -p "$WORKDIR"
           # One transient GitHub API 5xx (observed 2026-10-12: a graphql 504)
@@ -111,11 +112,16 @@ jobs:
           BASE_SHA=$(git rev-parse HEAD)
           git diff --no-ext-diff --no-textconv --no-renames --name-only -z \
             "$BASE_SHA...$REVIEWED_HEAD" > "$WORKDIR/changed_files.z"
+          PROTECTED=false
           while IFS= read -r -d '' changed_file; do
             if [[ "$changed_file" == *$'\n'* || "$changed_file" == *$'\r'* ]]; then
               echo "::error::Unexpected newline in a changed path"
               exit 1
             fi
+            case "$changed_file" in
+              .github/*|outputs/*|CLAUDE.md|AGENTS.md|VENDORING.md|pyproject.toml|alberta_framework/evaluation/evidence_manifest.py)
+                PROTECTED=true ;;
+            esac
             printf '%s\n' "$changed_file"
           done < "$WORKDIR/changed_files.z" > "$WORKDIR/changed_files.txt"
           git diff --no-ext-diff --no-textconv --no-renames \
@@ -130,8 +136,13 @@ jobs:
             echo "::error::PR head changed during data fetch"
             exit 1
           fi
-          echo "REVIEWED_HEAD=$REVIEWED_HEAD" >> "$GITHUB_ENV"
-          echo "AUTHOR=$(jq -r '.author.login' "$WORKDIR/metadata.json")" >> "$GITHUB_ENV"
+          # Only this step can set these outputs. The review action can write
+          # its reports, so its copies of the metadata and paths are untrusted.
+          {
+            echo "reviewed_head=$REVIEWED_HEAD"
+            echo "protected=$PROTECTED"
+            echo "author=$(jq -r '.author.login' "$WORKDIR/metadata.json")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Claude triage classification
         id: claude_triage
@@ -172,6 +183,7 @@ jobs:
         if: steps.verdict.outputs.verdict == 'malicious'
         env:
           ADMIN_TOKEN: ${{ secrets.PR_TRIAGE_ADMIN_TOKEN }}
+          AUTHOR: ${{ steps.review_data.outputs.author }}
         run: |
           REASON=$(jq -r '.reasons // "Automated review flagged this pull request as malicious."' "$WORKDIR/verdict.json" 2>/dev/null || echo "Automated review flagged this pull request as malicious.")
           gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label flagged-malicious || true
@@ -187,19 +199,12 @@ jobs:
           fi
 
       # --------------------------------------------------------- auto merge
-      - name: Protected-path gate
-        id: pathgate
-        if: steps.verdict.outputs.verdict == 'auto_merge'
-        run: |
-          BLOCKED=false
-          if grep -Eq '^(\.github/|outputs/|CLAUDE\.md$|AGENTS\.md$|VENDORING\.md$|pyproject\.toml$|alberta_framework/evaluation/evidence_manifest\.py$)' "$WORKDIR/changed_files.txt"; then
-            BLOCKED=true
-            echo "::warning::PR touches protected paths; downgrading auto_merge to needs-human-review"
-          fi
-          echo "blocked=$BLOCKED" >> "$GITHUB_OUTPUT"
-
       - name: Merge obviously-correct PR
-        if: steps.verdict.outputs.verdict == 'auto_merge' && steps.pathgate.outputs.blocked == 'false'
+        if: steps.verdict.outputs.verdict == 'auto_merge' && steps.review_data.outputs.protected == 'false'
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          REVIEWED_HEAD: ${{ steps.review_data.outputs.reviewed_head }}
         run: |
           REVIEWED_HEAD=${REVIEWED_HEAD:?Missing reviewed PR head}
           # The REST endpoint requires this exact SHA at the moment of
@@ -211,7 +216,7 @@ jobs:
           fi
 
       - name: Downgrade blocked auto-merge to human review
-        if: steps.verdict.outputs.verdict == 'auto_merge' && steps.pathgate.outputs.blocked == 'true'
+        if: steps.verdict.outputs.verdict == 'auto_merge' && steps.review_data.outputs.protected == 'true'
         run: |
           gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
@@ -241,6 +246,10 @@ jobs:
       - name: Post review and act on research verdict
         if: steps.verdict.outputs.verdict == 'needs_research'
         env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          REVIEWED_HEAD: ${{ steps.review_data.outputs.reviewed_head }}
+          PROTECTED_PATHS: ${{ steps.review_data.outputs.protected }}
           RESEARCH_OUTCOME: ${{ steps.claude_research.outcome }}
         run: |
           REVIEWED_HEAD=${REVIEWED_HEAD:?Missing reviewed PR head}
@@ -257,8 +266,7 @@ jobs:
           fi
           gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file "$WORKDIR/review.md"
 
-          if [ "$FINAL" = "merge" ] &&
-            ! grep -Eq '^(\.github/|outputs/|CLAUDE\.md$|AGENTS\.md$|VENDORING\.md$|pyproject\.toml$|alberta_framework/evaluation/evidence_manifest\.py$)' "$WORKDIR/changed_files.txt"; then
+          if [ "$FINAL" = "merge" ] && [ "$PROTECTED_PATHS" = false ]; then
             if [ "$(gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/merge" \
               -f sha="$REVIEWED_HEAD" -f merge_method=squash --jq '.merged')" = true ]; then
               exit 0

@@ -85,7 +85,7 @@ class TriageHeadTests(unittest.TestCase):
                 }),
                 "research_verdict.json": json.dumps({"verdict": "merge"}),
                 "review.md": review,
-                "changed_files.txt": ".github/fixture\n" if protected else "README.md\n",
+                "changed_files.txt": "README.md\n",
             }
             for filename, contents in fixtures.items():
                 (root / filename).write_text(contents, encoding="utf-8")
@@ -96,12 +96,13 @@ class TriageHeadTests(unittest.TestCase):
                 "PATH": os.pathsep.join((str(Path(jq).parent), str(Path(bash).parent),
                                          "/usr/bin", "/bin")),
                 "WORKDIR": root.as_posix(),
-                "GITHUB_ENV": (root / "github-env").as_posix(),
+                "GITHUB_OUTPUT": (root / "github-output").as_posix(),
                 "LIVE_HEAD": live, "METADATA_HEAD": metadata or "", "BASE_SHA": BASE_SHA,
                 "DEFAULT_BRANCH": "main", "DIFF_PATH": diff_path,
                 "OVERSIZED": "1" if oversized else "0",
                 "DIRECT_FAILURE": "1" if direct_failure else "0",
                 "RESEARCH_OUTCOME": research_outcome,
+                "PROTECTED_PATHS": "true" if protected else "false",
                 "PR_NUMBER": "1", "REPO": "fixture/repo", "MSYS_NO_PATHCONV": "1",
             })
             if reviewed is not None:
@@ -121,9 +122,15 @@ class TriageHeadTests(unittest.TestCase):
         run, files = self.run_step("Fetch PR data (as data, not code)")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(files["fetch-args"], f"fetch --no-tags origin {SHA}\n")
-        self.assertIn(f"REVIEWED_HEAD={SHA}\n", files["github-env"])
+        self.assertIn(f"reviewed_head={SHA}\n", files["github-output"])
         self.assertEqual(files["changed_files.txt"], "README.md\n")
         self.assertEqual(files["diff.patch"], "fixture diff\n")
+        self.assertIn("protected=false", files["github-output"])
+        run, files = self.run_step(
+            "Fetch PR data (as data, not code)", diff_path=".github/workflows/fixture.yml"
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("protected=true", files["github-output"])
 
     def test_fetch_fails_closed_on_unsafe_inputs(self):
         for opts in (
@@ -134,7 +141,7 @@ class TriageHeadTests(unittest.TestCase):
             with self.subTest(opts=opts):
                 run, files = self.run_step("Fetch PR data (as data, not code)", **opts)
                 self.assertNotEqual(run.returncode, 0)
-                self.assertNotIn("github-env", files)
+                self.assertNotIn("github-output", files)
 
     def test_same_head_uses_one_exact_direct_merge(self):
         for name in MERGE_STEPS:
