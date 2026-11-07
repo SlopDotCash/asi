@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
@@ -934,3 +935,72 @@ def test_json_export_accepts_real_aggregate_metrics_output(trace_seed: int, tmp_
     export_to_json({"c": ex.aggregate_metrics(runs)}, output)
 
     assert output.is_file()
+
+
+@pytest.mark.parametrize(
+    ("experiment", "caption"),
+    [
+        ("trial_1", r"trial\_1"),
+        ("trial%1", r"trial\%1"),
+        ("trial{1}", r"trial\{1\}"),
+        ("trial1", "trial1"),
+        ("t_" * 100, r"t\_" * 100),
+    ],
+)
+def test_report_caption_treats_experiment_name_as_text(
+    tmp_path: Path, experiment: str, caption: str
+) -> None:
+    paths = save_experiment_report({"learner": _constant_result("learner")}, tmp_path, experiment)
+    latex = paths["latex_table"].read_text()
+    assert r"\caption{" + caption + " Results}" in latex
+    if experiment in {"trial_1", "trial1", "t_" * 100}:
+        assert r"\label{tab:" + experiment + "}" in latex
+    else:
+        assert (
+            r"\label{tab:experiment-" + hashlib.sha256(experiment.encode("utf-8")).hexdigest() + "}"
+            in latex
+        )
+    assert json.loads(paths["json"].read_text())["learner"]["summary"][_METRIC]["mean"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("metric", "markdown_label", "latex_label"),
+    [
+        ("accuracy", "accuracy", "accuracy"),
+        ("reward", "reward", "reward"),
+        ("score_rate|heldout", r"score_rate\|heldout", r"score\_rate|heldout"),
+        ("squared_error", "Error", "Error"),
+        ("x_" * 128, "x_" * 128, r"x\_" * 128),
+    ],
+)
+def test_report_tables_name_the_selected_metric(
+    tmp_path: Path, metric: str, markdown_label: str, latex_label: str
+) -> None:
+    original = _constant_result("learner", 0.75)
+    result = original._replace(
+        metric_arrays={metric: original.metric_arrays[_METRIC]},
+        summary={metric: original.summary[_METRIC]},
+    )
+    paths = save_experiment_report({"learner": result}, tmp_path, "trial1", metric=metric)
+    assert paths["markdown_table"].read_text().splitlines()[0] == (
+        f"| Method | {markdown_label} (mean \u00b1 std) | Seeds |"
+    )
+    assert "Method & " + latex_label + " & Seeds" in paths["latex_table"].read_text()
+    saved = json.loads(paths["json"].read_text())["learner"]["summary"]
+    assert set(saved) == {metric}
+    assert saved[metric]["mean"] == 0.75
+
+
+def test_selected_metric_default_preserves_explicit_display_labels() -> None:
+    original = _constant_result("learner", 0.75)
+    result = original._replace(
+        metric_arrays={"accuracy": original.metric_arrays[_METRIC]},
+        summary={"accuracy": original.summary[_METRIC]},
+    )
+    raw_latex = r"\textbf{Accuracy}"
+    latex = generate_latex_table({"learner": result}, metric="accuracy", metric_label=raw_latex)
+    assert "Method & " + raw_latex + " & Seeds" in latex
+    markdown = generate_markdown_table(
+        {"learner": result}, metric="accuracy", metric_label="Custom accuracy"
+    )
+    assert markdown.splitlines()[0] == "| Method | Custom accuracy (mean \u00b1 std) | Seeds |"
