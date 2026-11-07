@@ -753,13 +753,16 @@ class ActorCriticAgent:
         observation = self._observation(state, observation)
         return jnp.dot(state.critic_weights, observation) + state.critic_bias
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def select_action(
         self,
         state: ActorCriticState,
         observation: Array,
     ) -> tuple[Int[Array, ""], Array, Float[Array, " n_actions"]]:
         """Sample one action from the current softmax policy.
+
+        A concrete non-finite distribution is rejected: categorical sampling
+        would otherwise return an arbitrary action from it. Traced values
+        pass through to the update-side runtime gates.
 
         Args:
             state: Current agent state.
@@ -768,6 +771,17 @@ class ActorCriticAgent:
         Returns:
             Tuple ``(action, new_rng_key, probabilities)``.
         """
+        result = self._select_action(state, observation)
+        _require_concrete_finite_tree("actor-critic action selection", result)
+        return result  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _select_action(
+        self,
+        state: ActorCriticState,
+        observation: Array,
+    ) -> tuple[Int[Array, ""], Array, Float[Array, " n_actions"]]:
+        """Jitted implementation of one softmax action draw."""
         observation = self._observation(state, observation)
         key, sample_key = jr.split(state.rng_key)
         probs = self.policy(state, observation)
@@ -1601,7 +1615,6 @@ class ContinuousActorCriticAgent:
         high = jnp.inf if cfg.action_high is None else cfg.action_high
         return jnp.clip(action, low, high)
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def select_action(
         self,
         state: ContinuousActorCriticState,
@@ -1614,6 +1627,10 @@ class ContinuousActorCriticAgent:
     ]:
         """Sample one action from the current Gaussian policy.
 
+        A concrete non-finite policy is rejected: action clipping would
+        otherwise hide an infinite mean or sample behind a finite action.
+        Traced values pass through to the update-side runtime gates.
+
         Args:
             state: Current agent state.
             observation: Input feature vector.
@@ -1622,9 +1639,13 @@ class ContinuousActorCriticAgent:
             Tuple ``(action, new_rng_key, mean, sigma)`` where ``action`` is
             optionally clipped to the configured action bounds.
         """
-        action, _sample, key, mean, sigma = self._sample_action(state, observation)
+        action, sample, key, mean, sigma = self._sample_action(state, observation)
+        _require_concrete_finite_tree(
+            "continuous actor-critic action selection", (action, sample, mean, sigma)
+        )
         return action, key, mean, sigma
 
+    @functools.partial(jax.jit, static_argnums=(0,))
     def _sample_action(
         self,
         state: ContinuousActorCriticState,
