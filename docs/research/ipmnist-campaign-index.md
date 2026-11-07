@@ -95,7 +95,15 @@ protocol. The historical waves do not change the lead development candidate.
 | #3124 | [Gated rls ridge 0.03 with head reset fraction 0.03](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_preset003/summary.json) |
 | #3125 | [Gated r02 body L2-to-initialization](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_l2init/summary.json) |
 | #3126 | [Gated r02 decayed SGD readout](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_sgdhead/summary.json) |
+| #3127 | [Historical per-coordinate diagonal head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_diaghead/summary.json) |
+| #3129 | [Historical pooled diagonal head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_gdiag/summary.json) |
 | #3144 | [Gradual transitions with a 64-step ramp](../../outputs/ipmnist_screening/gradual64_r2/summary.json) |
+
+The original `diaghead` and `gdiag` arm IDs are available for artifact replay
+with their bound source commits. New runs use the `diaghead_stable` and
+`gdiag_stable` suffixes. These controls update the diagonal covariance with
+positive terms and use scaled excitation to avoid float32 overflow. Both
+stable variants are unmeasured and require fresh matched runs.
 
 ## Artifact-schema boundary
 

@@ -4733,6 +4733,11 @@ class RLSHeadMomentumState(RLSHeadState):
     momentum: dict[str, Array]
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadDiagonalState(RLSHeadState):
+    """RLS carry storing only the diagonal vector of the covariance."""
+
+
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
 _WHITEN_NORM_FLOOR = 1e-12
 _NEWTON_RIDGE_REL = 1e-3
@@ -4933,6 +4938,41 @@ def _rls_head_forward(
     return wout.T @ phi, phi
 
 
+def _diagonal_rls_gain(
+    p: Array, phi: Array, *, pooled: bool,
+) -> tuple[Array, Array]:
+    """Return gain and the diagonal covariance update for lambda one."""
+    # Ridge 0.03 and lambda one bound sqrt(p) below eight. Divide phi
+    # before multiplying so even the largest finite feature stays finite.
+    root = jnp.sqrt(p)
+    weighted = root * (phi * 0.125)
+    magnitude = jnp.max(jnp.abs(weighted)) if pooled else jnp.abs(weighted)
+    scale = jnp.maximum(1.0, magnitude)
+    scaled = (weighted / scale) * 8.0
+    prior = (1.0 / scale) / scale
+    projected = root * scaled
+    excitation = scaled * scaled
+    remaining = prior
+    if pooled:
+        # Each diagonal keeps the other coordinates' excitation. Exclusive
+        # scans avoid subtracting the largest coordinate from the pooled sum.
+        zero = jnp.zeros_like(excitation[:1])
+        before = jnp.concatenate([zero, jnp.cumsum(excitation[:-1])])
+        after = jnp.concatenate([jnp.cumsum(excitation[:0:-1])[::-1], zero])
+        remaining = prior + before + after
+        denominator = prior + jnp.sum(excitation)
+    else:
+        denominator = prior + excitation
+    # A previously underflowed covariance can yield zero scaled excitation.
+    denominator = jnp.where(denominator > 0.0, denominator, 1.0)
+    gain = (projected / denominator) / scale
+    # Multiply before dividing by a denominator above one to avoid a
+    # representable covariance passing through a subnormal ratio.
+    numerator = p * (remaining / jnp.minimum(denominator, 1.0))
+    covariance = jnp.minimum(p, numerator / jnp.maximum(denominator, 1.0))
+    return gain, covariance
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -5100,6 +5140,27 @@ def _make_rls_head_learner(
     ):
         raise ValueError("body momentum requires the plain fixed-step gated residual body")
 
+    head_diag = hp.get("rls_head_diag", 0.0)
+    head_gdiag = hp.get("rls_head_gdiag", 0.0)
+    if any(value not in (0.0, 1.0) for value in (head_diag, head_gdiag)):
+        raise ValueError("rls_head_diag and rls_head_gdiag must be 0.0 or 1.0")
+    diagonal_enabled = head_diag == 1.0 or head_gdiag == 1.0
+    if diagonal_enabled:
+        if (
+            sgd_head or (head_diag == 1.0 and head_gdiag == 1.0)
+            or any(hp.get(name, 0.0) != 0.0 for name in ("rls_head_block", "rls_head_rank"))
+        ):
+            raise ValueError("RLS head selectors are mutually exclusive")
+        if rls_lambda != 1.0 or ridge_init != 0.03 or cap_enabled:
+            raise ValueError("diagonal RLS requires lambda 1, ridge 0.03, and no trace cap")
+        if (
+            not resid or not gate_enabled or whiten_enabled or sm_enabled or as_enabled
+            or _decay_to_init or wclip_on or momentum_enabled
+            or any(name.startswith(("anneal_", "polyak_", "snp_")) for name in hp)
+        ):
+            raise ValueError("diagonal RLS requires the plain fixed-step gated residual body")
+    state_type = RLSHeadDiagonalState if diagonal_enabled else RLSHeadState
+
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
     ) -> tuple[Array, EMANormState, Array, Array]:
@@ -5173,7 +5234,7 @@ def _make_rls_head_learner(
                 wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
                 init_params={name: params[name] for name in _RLS_HEAD_BODY},
             )
-        state = RLSHeadState(  # type: ignore[call-arg]
+        state = state_type(  # type: ignore[call-arg]
             utility={name: jnp.zeros_like(value) for name, value in params.items()},
             step=jnp.array(0, dtype=jnp.int32),
             norm=EMANormState(  # type: ignore[call-arg]
@@ -5182,7 +5243,10 @@ def _make_rls_head_learner(
                 count=jnp.zeros(input_dim, dtype=jnp.float32),
             ),
             fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
-            p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
+            p=(
+                jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32)
+                if diagonal_enabled else jnp.eye(m, dtype=jnp.float32) / ridge_init
+            ),
             wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
         )
         if momentum_enabled:
@@ -5285,6 +5349,10 @@ def _make_rls_head_learner(
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
+        if diagonal_enabled and (
+            lr is not None or decay_lr is not None or pred_body is not None or pred_head_avg
+        ):
+            raise ValueError("diagonal RLS requires fixed steps and the live predictor")
         if momentum_enabled and (lr is not None or decay_lr is not None):
             raise ValueError("body momentum requires a fixed step and decay")
         new_momentum = None
@@ -5505,6 +5573,14 @@ def _make_rls_head_learner(
                 state.wout * head_param_decay + head_sgd_step * jnp.outer(phi, err)
             )
             new_p = state.p
+        elif diagonal_enabled:
+            if not isinstance(state, RLSHeadDiagonalState):
+                raise TypeError("diagonal RLS requires RLSHeadDiagonalState")
+            gain, new_p = _diagonal_rls_gain(state.p, phi, pooled=head_gdiag == 1.0)
+            new_wout = state.wout + jnp.outer(gain, err)
+            if reset_enabled:
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(trigger, jnp.full_like(new_p, 1.0 / ridge_init), new_p)
         else:
             pp = state.p @ phi
             gain = pp / (rls_lambda + phi @ pp)
@@ -5568,7 +5644,7 @@ def _make_rls_head_learner(
                 wout=new_wout,
                 momentum=new_momentum,
             ), (accuracy, loss, plasticity)
-        return new_params, RLSHeadState(  # type: ignore[call-arg]
+        return new_params, state_type(  # type: ignore[call-arg]
             utility=new_utility,
             step=count,
             norm=new_norm,
@@ -5725,6 +5801,8 @@ def _make_rls_head_identmap_learner(
     if "polyak_window" in hp:
         if hp.get("body_momentum", 0.0) != 0.0:
             raise ValueError("body momentum requires the fixed-step gated residual body")
+        if any(hp.get(name, 0.0) != 0.0 for name in ("rls_head_diag", "rls_head_gdiag")):
+            raise ValueError("diagonal RLS requires the plain fixed-step gated residual body")
         if _decay_to_init:
             raise ValueError("polyak averaging is not composed with L2-Init")
         return _make_rls_head_identmap_polyak_learner(hp)
@@ -9353,6 +9431,23 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             )
             for tag, kappa in (("2", 2.0), ("4", 4.0), ("8", 8.0))
         ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s0031640625_r02_{suffix}_stable",
+                {
+                    "rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                    selector: 1.0,
+                },
+                f"Unmeasured stable diagonal covariance with {description} excitation",
+            )
+            for suffix, selector, description in (
+                ("diaghead", "rls_head_diag", "per-coordinate"),
+                ("gdiag", "rls_head_gdiag", "globally pooled"),
+            )
+        ),
         # Historical screens retain their exact constants for shard replay.
         *(
             (
@@ -10108,6 +10203,35 @@ def _build_registry() -> dict[str, ScreeningSpec]:
 
 
 SCREENING_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType(_build_registry())
+
+
+_ARCHIVED_RLS_DIAGONAL_COMMITS = MappingProxyType({
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead":
+        "e562e60ba7e886da7de0603b232305b3ee24d1aa",
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag":
+        "4d648e0b0b5d858b0e0061e237d19e01f914d644",
+})
+
+
+def _archived_rls_diagonal_factory(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    del hp
+    raise ValueError("historical diagonal RLS is replay only; use the _stable arm for new runs")
+
+
+_SHARD_SCREENING_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType({
+    **SCREENING_REGISTRY,
+    **{
+        name: replace(
+            SCREENING_REGISTRY[name + "_stable"],
+            name=name,
+            factory=_archived_rls_diagonal_factory,
+            description="Historical diagonal RLS archive",
+        )
+        for name in _ARCHIVED_RLS_DIAGONAL_COMMITS
+    },
+})
 
 
 def screening_spec(name: str) -> ScreeningSpec:
@@ -13034,7 +13158,7 @@ def load_shard(
     spec_registry: Mapping[str, ScreeningSpec] | None = None,
 ) -> dict[str, Any]:
     """Load legacy v1 or strictly validate a source-bound v2/v3 screening shard."""
-    registry = SCREENING_REGISTRY if spec_registry is None else spec_registry
+    registry = _SHARD_SCREENING_REGISTRY if spec_registry is None else spec_registry
     payload = load_strict_json_object(path)
     schema = payload.get("schema")
     if type(schema) is not str or schema not in {
@@ -13121,6 +13245,11 @@ def load_shard(
     )
     if config_name not in registry:
         raise ValueError(f"{path}: unknown config_name")
+    archived_commit = _ARCHIVED_RLS_DIAGONAL_COMMITS.get(config_name)
+    if archived_commit is not None and (
+        schema != SHARD_SCHEMA or payload["source_provenance"]["git_commit"] != archived_commit
+    ):
+        raise ValueError(f"{path}: historical diagonal RLS requires its original source commit")
     spec = registry[config_name]
     base_learner = _required_nonempty_string(
         payload.get("base_learner"), context=f"{path}: base_learner"
@@ -13591,7 +13720,7 @@ def merge_shards(
             f"(present: {sorted(by_config)}); a summary without its control "
             "would silently carry no paired_vs_control blocks"
         )
-    registry = SCREENING_REGISTRY if spec_registry is None else spec_registry
+    registry = _SHARD_SCREENING_REGISTRY if spec_registry is None else spec_registry
     for name, per_seed in sorted(by_config.items()):
         _validate_screening_arm_contract(name, per_seed)
         _require_registered_base_learner(name, per_seed, registry)
