@@ -19,8 +19,10 @@ the critic-form x actor-form design space:
 
 All actors implement AC(lambda), ``theta += alpha * delta * e``, with an
 eligibility trace over log-policy gradients (Sutton & Barto 2018, Ch. 13).
-The critic update is always delegated unchanged to ``HordeLearner.update()``,
-preserving per-head trace decay and auxiliary demons.
+The critic update is always delegated to ``HordeLearner.update()``,
+preserving per-head trace decay and auxiliary demons. A zero value-head
+discount ends the episode for the value head: the state-value agents clear
+its critic trace after the update, as they clear the actor traces.
 
 References:
     Sutton & Barto (2018). "Reinforcement Learning: An Introduction,"
@@ -339,6 +341,37 @@ def _rollback_critic_result(
         ),
         head_updates_applied=head_updates_applied,
         update_applied=result.update_applied & outer_update_applied,
+    )
+
+
+def _clear_terminal_value_trace(
+    critic: HordeLearner,
+    result: HordeUpdateResult,
+    value_head_index: int,
+    value_discount: Array,
+) -> HordeUpdateResult:
+    """End the value head's critic eligibility after a zero-discount update.
+
+    The terminal update has already credited the finished episode along this
+    trace. Clearing it afterwards keeps that eligibility out of the next
+    episode, as the actor traces are cleared. Auxiliary demons keep their
+    configured gammas and traces. ``HordeLearner`` itself stays unchanged
+    because SARSA passes it zero discounts on continuing transitions.
+    """
+    demon = critic.horde_spec.demons[value_head_index]
+    if np.float32(demon.gamma) * np.float32(demon.lamda) == 0.0:
+        # The next update rebuilds this trace from the gradient alone.
+        return result
+    terminal = value_discount == 0.0
+    head_traces = list(result.state.head_traces)
+    head_traces[value_head_index] = tuple(
+        jnp.where(terminal, jnp.zeros_like(trace), trace) for trace in head_traces[value_head_index]
+    )
+    return cast(
+        HordeUpdateResult,
+        result.replace(  # type: ignore[attr-defined]
+            state=result.state.replace(head_traces=tuple(head_traces)),  # type: ignore[attr-defined]
+        ),
     )
 
 
@@ -898,7 +931,8 @@ class HordeActorCriticAgent:
     ``theta += alpha * delta * e``. The advantage ``delta`` is supplied by the
     configured Horde value head. The critic update is delegated entirely to
     ``HordeLearner.update()``, preserving per-head trace decay and auxiliary
-    prediction demons.
+    prediction demons. After a zero value-head discount the value head's
+    critic trace is cleared, as the actor traces are.
     """
 
     def __init__(
@@ -1125,6 +1159,9 @@ class HordeActorCriticAgent:
                 observation,
                 discounts,
             )
+        critic_result = _clear_terminal_value_trace(
+            self._critic, critic_result, cfg.value_head_index, value_discount
+        )
         td_error = critic_result.td_errors[cfg.value_head_index]
         actor_td_error = (
             td_error
@@ -1709,8 +1746,10 @@ class NonlinearHordeActorCriticAgent:
 
     This is the canonical nonlinear Step 4 agent.  The actor is an MLP whose
     policy gradient is computed by ``jax.grad`` through the full softmax
-    forward pass.  The critic is delegated unchanged to a
-    :class:`~alberta_framework.core.horde.HordeLearner`.
+    forward pass.  The critic is delegated to a
+    :class:`~alberta_framework.core.horde.HordeLearner`; after a zero
+    value-head discount the value head's critic trace is cleared, as the
+    actor traces are.
 
     The update rule is AC(lambda) with MLP actor:
 
@@ -1994,6 +2033,9 @@ class NonlinearHordeActorCriticAgent:
             critic_result = self._critic.update_with_discounts(
                 state.critic_state, prev_obs, cumulants, observation, discounts
             )
+        critic_result = _clear_terminal_value_trace(
+            self._critic, critic_result, idx, value_discount
+        )
         td_error = critic_result.td_errors[idx]
         actor_td_error = (
             td_error
