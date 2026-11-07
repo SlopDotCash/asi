@@ -8490,8 +8490,14 @@ class TestRLSHeadIdentMapWd0ConstStepExtendRegistry(TestRLSHeadIdentMapWd0ConstS
 
 def _load_step200_analyze():
     import importlib.util
-    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
-            / "wd0_const_step_200task" / "analyze.py")
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "outputs"
+        / "ipmnist_screening"
+        / "wd0_const_step_200task"
+        / "analyze.py"
+    )
     spec = importlib.util.spec_from_file_location("step200_analyze", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -8499,7 +8505,7 @@ def _load_step200_analyze():
 
 
 class TestWd0ConstStep200TaskConfirm:
-    """Development-plan rules of wd0_const_step_200task/analyze.py (adapted from our own earlier 60-task screen)."""
+    """Development rules for the 200-task constant-step confirmation."""
 
     A = _load_step200_analyze()
     OK = [0.95] * 200
@@ -8510,7 +8516,12 @@ class TestWd0ConstStep200TaskConfirm:
         assert self.A.CAND in reg and self.A.INC in reg
 
     def test_constants(self):
-        assert self.A.FLOOR == 0.5 and self.A.T19 == 2.093 and self.A.NTASK == 200 and self.A.BLOCK == 50
+        assert (
+            self.A.FLOOR == 0.5
+            and self.A.T19 == 2.093
+            and self.A.NTASK == 200
+            and self.A.BLOCK == 50
+        )
         assert list(self.A.SEEDS) == list(range(134, 154))
 
     def test_healthy_shard_passes(self):
@@ -8521,25 +8532,29 @@ class TestWd0ConstStep200TaskConfirm:
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_accuracy_diverged(self, bad):
-        acc = list(self.OK); acc[117] = bad
+        acc = list(self.OK)
+        acc[117] = bad
         assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
     def test_non_finite_loss_diverged(self, bad):
-        loss = list(self.LOSS); loss[199] = bad
+        loss = list(self.LOSS)
+        loss[199] = bad
         assert "non-finite loss" in self.A.classify(self.OK, loss)
 
     def test_missing_loss_diverged(self):
         assert "non-finite loss" in self.A.classify(self.OK, None)
 
     def test_floor(self):
-        acc = list(self.OK); acc[3] = 0.4999
+        acc = list(self.OK)
+        acc[3] = 0.4999
         assert "tasks [3]" in self.A.classify(acc, self.LOSS)
         acc[3] = 0.5
         assert self.A.classify(acc, self.LOSS) is None
 
     def test_out_of_range_accuracy_diverged(self):
-        acc = list(self.OK); acc[0] = 1.5
+        acc = list(self.OK)
+        acc[0] = 1.5
         assert "outside" in self.A.classify(acc, self.LOSS)
 
     def test_pass(self):
@@ -8561,18 +8576,26 @@ class TestWd0ConstStep200TaskConfirm:
 
     def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
         import json
-        d = tmp_path / "confirm"; d.mkdir()
+
+        d = tmp_path / "confirm"
+        d.mkdir()
         for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 199), (self.A.CAND, self.OK)):
-            (d / f"{c}_seed134.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            (d / f"{c}_seed134.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         with pytest.raises(self.A.VoidRun):
             self.A.diff("confirm", self.A.CAND, 134)
 
     def test_candidate_divergence_scored_not_void(self, tmp_path, monkeypatch):
         import json
-        d = tmp_path / "confirm"; d.mkdir()
+
+        d = tmp_path / "confirm"
+        d.mkdir()
         for c, acc in ((self.A.INC, self.OK), (self.A.CAND, [0.3] + [0.9] * 199)):
-            (d / f"{c}_seed134.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            (d / f"{c}_seed134.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         assert self.A.diff("confirm", self.A.CAND, 134) is None
 
