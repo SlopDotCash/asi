@@ -134,6 +134,30 @@ def test_layer_normalize_preserves_large_finite_signals(*, compiled: bool) -> No
     np.testing.assert_allclose(centered, jnp.asarray([-1.0, 1.0], dtype=jnp.float32))
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+def test_layer_normalize_keeps_relative_magnitudes_at_huge_scale(
+    *, compiled: bool
+) -> None:
+    # The fallback path rescales by the maximum magnitude before
+    # normalizing. Past ~8.5e37 the rescale divides by a scale whose
+    # reciprocal is subnormal, and XLA:CPU flushes it to zero, so every
+    # non-maximum entry collapses to 0 and the fallback normalizes
+    # [+-1, 0, 0, ...] instead of the input. The reference is the float64
+    # layer norm of the same values.
+    normalize = jax.jit(_layer_normalize) if compiled else _layer_normalize
+    for raw in ([2e38, 1e38, 5e37, -1e38], [2e38, 1e38, 5e37]):
+        values = jnp.asarray(raw, dtype=jnp.float32)
+        reference = np.asarray(raw, dtype=np.float64)
+        centered = reference - reference.mean()
+        expected = centered / np.sqrt(np.mean(centered**2) + 1e-5)
+        np.testing.assert_allclose(
+            np.asarray(normalize(values), dtype=np.float64),
+            expected,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+
 def test_mechanism_off_removes_only_controlled_forgetting() -> None:
     state = jnp.asarray([0.5, -0.25], dtype=jnp.float32)
     gradient = jnp.asarray([0.2, -0.1], dtype=jnp.float32)
