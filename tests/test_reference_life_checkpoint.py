@@ -266,6 +266,30 @@ def saved_case(
     return runner, state, barrier_state, checkpoint
 
 
+@requires_renameat2
+@pytest.mark.parametrize("saved_disable_jit", [False, True])
+def test_checkpoint_rejects_changed_jit_execution_mode(
+    tmp_path: Path,
+    saved_disable_jit: bool,
+) -> None:
+    with jax.disable_jit(saved_disable_jit):
+        runner = _runner()
+        state, _ = _advance(runner, runner.init(), 2)
+        barrier, checkpoint = save_reference_life_checkpoint(runner, state, tmp_path)
+
+    with jax.disable_jit(not saved_disable_jit):
+        with pytest.raises(ValueError, match="manifest.runtime_identity"):
+            load_reference_life_checkpoint(checkpoint)
+
+    # Rejecting the changed runtime must leave the original bundle usable.
+    with jax.disable_jit(saved_disable_jit):
+        restored_runner, restored = load_reference_life_checkpoint(checkpoint)
+        original_final, original_steps = _advance(runner, barrier, 2)
+        restored_final, restored_steps = _advance(restored_runner, restored, 2)
+        _assert_typed_exact(restored_steps, original_steps, path="steps")
+        _assert_semantic_state_exact(restored_final, original_final)
+
+
 def test_quiescent_checkpoint_restores_exact_continuation(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
 ) -> None:
