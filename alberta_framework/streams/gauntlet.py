@@ -795,8 +795,8 @@ class LifetimeGauntletStream:
     def resource_budget(self) -> LifetimeGauntletResourceBudget:
         """Return exact persistent-state and clock accounting."""
         return LifetimeGauntletResourceBudget(
-            state_nbytes=measure_lifetime_gauntlet_state_nbytes(
-                self.init(jr.key(0, impl=_LIFETIME_GAUNTLET_PRNG_IMPLEMENTATION))
+            state_nbytes=_configured_lifetime_gauntlet_state_nbytes(
+                self._config, key_nbytes=8
             ),
             exact_clock_nbytes=LIFETIME_GAUNTLET_CLOCK_NBYTES,
             exact_clock_delta_nbytes=LIFETIME_GAUNTLET_CLOCK_DELTA_NBYTES,
