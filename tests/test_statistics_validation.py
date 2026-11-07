@@ -629,6 +629,26 @@ class TestBootstrapCI:
         with pytest.raises(ValueError, match="n_bootstrap.*positive integer"):
             bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=HostileInt(10))
 
+    @pytest.mark.parametrize(
+        "seed",
+        [None, True, False, 1.0, -1, [1], (1,), "1"],
+        ids=repr,
+    )
+    def test_bootstrap_seed_must_be_one_reproducible_integer(self, seed: object) -> None:
+        with pytest.raises(ValueError, match="seed must be a non-negative integer"):
+            bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=10, seed=seed)  # type: ignore[arg-type]
+
+    def test_bootstrap_seed_rejects_a_stateful_generator(self) -> None:
+        generator = np.random.default_rng(0)
+        state = generator.bit_generator.state
+        with pytest.raises(ValueError, match="seed must be a non-negative integer"):
+            bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=10, seed=generator)  # type: ignore[arg-type]
+        assert generator.bit_generator.state == state
+
+    def test_bootstrap_numpy_integer_seed_keeps_its_stream(self) -> None:
+        expected = bootstrap_ci([1.0, 2.0, 9.0], n_bootstrap=20, seed=7)
+        assert bootstrap_ci([1.0, 2.0, 9.0], n_bootstrap=20, seed=np.int64(7)) == expected
+
     @pytest.mark.parametrize("confidence_level", [0.0, 1.0, -0.1, 1.1, float("nan")])
     def test_invalid_confidence_level_rejected_without_warnings(
         self,
