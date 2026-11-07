@@ -230,6 +230,14 @@ def test_historical_manifests_migrate_with_a_unit_previous_discount(v2: bool) ->
     )
 
 
+def test_migration_rejects_inconsistent_v2_clock() -> None:
+    state = _tabular_agent().init(4, jr.key(0))
+    legacy = _historical_payload(state, v2=True)
+    legacy["step_words"] = jnp.asarray((0, 1), dtype=jnp.uint32)
+    with pytest.raises(ValueError, match="clock words do not match step_count"):
+        migrate_legacy_differential_sarsa_state(legacy)
+
+
 def test_current_and_mixed_manifests_are_not_legacy() -> None:
     agent = _tabular_agent()
     state = agent.init(4, jr.key(0))

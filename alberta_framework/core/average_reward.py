@@ -2826,22 +2826,27 @@ def migrate_legacy_differential_sarsa_state(
     else:
         raise TypeError("legacy differential SARSA state must be a mapping or dataclass")
     supplied_names = set(fields)
-    if supplied_names == _DIFFERENTIAL_SARSA_V1_FIELDS:
-        step_count = jnp.asarray(fields["step_count"])
-        if step_count.shape != () or step_count.dtype != jnp.dtype(jnp.int32):
-            raise TypeError("legacy differential SARSA step_count must be scalar int32")
-        step = int(step_count)
-        if step < 0:
-            raise ValueError("negative legacy differential SARSA step_count indicates wrap")
-        if step >= _INT32_MAX:
-            raise ValueError("saturated legacy differential SARSA step_count is ambiguous")
-        fields["step_words"] = jnp.asarray((0, step), dtype=jnp.uint32)
-    elif supplied_names != _DIFFERENTIAL_SARSA_V2_FIELDS:
+    if supplied_names not in (_DIFFERENTIAL_SARSA_V1_FIELDS, _DIFFERENTIAL_SARSA_V2_FIELDS):
         missing = sorted(_DIFFERENTIAL_SARSA_V2_FIELDS - supplied_names)
         extra = sorted(supplied_names - _DIFFERENTIAL_SARSA_V2_FIELDS)
         raise ValueError(
             "legacy differential SARSA field manifest is not exact v1 or v2; "
             f"missing={missing}, extra={extra}"
         )
+    step_count = jnp.asarray(fields["step_count"])
+    if step_count.shape != () or step_count.dtype != jnp.dtype(jnp.int32):
+        raise TypeError("legacy differential SARSA step_count must be scalar int32")
+    if supplied_names == _DIFFERENTIAL_SARSA_V1_FIELDS:
+        step = int(step_count)
+        if step < 0:
+            raise ValueError("negative legacy differential SARSA step_count indicates wrap")
+        if step >= _INT32_MAX:
+            raise ValueError("saturated legacy differential SARSA step_count is ambiguous")
+        fields["step_words"] = jnp.asarray((0, step), dtype=jnp.uint32)
+    else:
+        words = fields["step_words"]
+        _checked_lifetime_words_increment(words)
+        if not bool(_lifetime_counter_valid(words, step_count)):
+            raise ValueError("legacy differential SARSA clock words do not match step_count")
     fields["previous_discount"] = jnp.asarray(1.0, dtype=jnp.float32)
     return DifferentialSARSAState(**fields)

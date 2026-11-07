@@ -1234,11 +1234,12 @@ _RIVER_SCORECARD_DIFFERENTIAL = {
     "trace_decay": 0.0,
     "use_bias": True,
 }
-# Values reproduced on the base commit before the knob existed (scorecard RiverSwim
-# environment, scorecard differential-SARSA arm config).
-_DEFAULT_DIFFERENTIAL_MANIFEST = "ff32825cbdfc9acd7198028dc91b45dfddae5cae9d2773d8e47cd3305d8d5378"
+# Values for the scorecard RiverSwim environment with the preview2 control state.
+# Preview2 binds the carried discount into the manifest and transcript identity.
+# The reward stays equal to the preview1 result because this schedule uses unit discounts.
+_DEFAULT_DIFFERENTIAL_MANIFEST = "2e8381a8e3353b0cfe81f8dc82eae8ec91aac7d0da3dcc4c407272dc58c543c0"
 _DEFAULT_DIFFERENTIAL_300_TRANSCRIPT = (
-    "e35180013c0beabc86f900753c31e4c17593df24c6097c1f4b885c8f80d7dcc6"
+    "2154a2a708d63221259f8ffaf4eb7287dc969ae0d994f860a6bcd09901b1c004"
 )
 _DEFAULT_DIFFERENTIAL_300_REWARD = 1.0349999768659472
 
