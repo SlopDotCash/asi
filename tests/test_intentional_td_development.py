@@ -37,6 +37,17 @@ def test_plan_and_environment_share_riverswim_size(monkeypatch):
         campaign.run_arm("riverswim", "intentional", 0)
 
 
+@pytest.mark.parametrize("environment", ["bogus", "Switching", "", 0, None, ["switching"]])
+def test_run_arm_rejects_unknown_environments_before_any_workload(monkeypatch, environment):
+    def forbidden(config):
+        pytest.fail(f"environment {environment!r} was run as an existing MDP")
+
+    monkeypatch.setattr(campaign, "RiverSwimMDP", forbidden)
+    monkeypatch.setattr(campaign, "SwitchingTwoStateMDP", forbidden)
+    with pytest.raises(ValueError, match="unknown development environment"):
+        campaign.run_arm(environment, "intentional", 0)
+
+
 @pytest.fixture
 def output_cli(monkeypatch, tmp_path):
     output = tmp_path / "result.json"
