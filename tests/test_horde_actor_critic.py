@@ -2264,9 +2264,7 @@ def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
     chex.assert_trees_all_equal(result.state, state)
 
 
-# ====================================================================
-
-
+# ===========================================================================
 # Terminal critic eligibility
 # ===========================================================================
 
@@ -2418,7 +2416,8 @@ def test_array_runner_keeps_terminal_critic_eligibility_out_of_the_next_episode(
     assert float(both_episodes.state.critic_state.head_params.weights[0][0, 0]) == float(
         weight_after_episode_1
     )
-=======
+
+
 _AGENT_FACTORIES: dict[str, Callable[[], Any]] = {
     "horde": _make_agent,
     "q-horde": _make_qhorde_agent,
