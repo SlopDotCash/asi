@@ -597,6 +597,13 @@ def learn_from_trajectory(
                 f"learner_state.weights shape {learner_state.weights.shape} does not match "
                 f"feature_dim={feature_dim}"
             )
+        if learner_state.bias.ndim != 0:
+            raise ValueError("learner_state.bias must be a scalar")
+        # A learner skips non-finite updates, so a poisoned start would otherwise
+        # report zero error for the whole trajectory without learning anything.
+        for field, value in (("weights", learner_state.weights), ("bias", learner_state.bias)):
+            if not isinstance(value, jax.core.Tracer) and not bool(jnp.all(jnp.isfinite(value))):
+                raise ValueError(f"learner_state.{field} must be finite")
     else:
         learner_state = learner.init(feature_dim)
 
