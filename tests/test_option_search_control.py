@@ -389,6 +389,50 @@ def test_highest_supported_bellman_residual_is_applied_to_its_option_head() -> N
     )
 
 
+def test_rejected_base_learner_update_is_not_logged_as_applied() -> None:
+    """A backup whose base-learner transaction rejects must not be applied.
+
+    Option-head weights of 1e20 and option-model returns of 1e38 keep every
+    planner-side check finite, but the trunk cotangent (error * head weight)
+    overflows, so the learner rejects and returns its input state. The
+    planner must report that backup as not applied instead of logging a
+    phantom success with a neutralized zero TD error.
+    """
+    agent = STOMPAgent(_stomp_config(hidden_sizes=(2,)))
+    state = _supported_state(agent, targets=(1.0e38, 1.0e38))
+    head_weights = list(state.base_learner_state.head_params.weights)
+    head_weights[2] = jnp.full_like(head_weights[2], 1.0e20)
+    head_weights[3] = jnp.full_like(head_weights[3], 1.0e20)
+    state = cast(
+        STOMPState,
+        state.replace(
+            base_learner_state=state.base_learner_state.replace(
+                head_params=state.base_learner_state.head_params.replace(
+                    weights=tuple(head_weights),
+                ),
+            ),
+        ),
+    )
+    before = state.base_learner_state
+    controller = OptionSearchControl(
+        agent,
+        OptionSearchControlConfig(backup_budget=1),
+    )
+
+    result = controller.apply(state, ANCHOR)
+
+    diagnostics = result.diagnostics
+    assert bool(diagnostics.candidate_valid[0, 0])
+    assert int(diagnostics.selected_option_indices[0]) == 0
+    assert not bool(diagnostics.applied[0])
+    assert int(diagnostics.applied_count) == 0
+    assert int(diagnostics.selected_extended_action_indices[0]) == -1
+    assert not bool(
+        diagnostics.value_effect_deferred_to_next_extended_action_selection
+    )
+    chex.assert_trees_all_equal(result.state.base_learner_state, before)
+
+
 def test_residuals_are_recomputed_after_each_backup() -> None:
     agent = STOMPAgent(_stomp_config(base_step_size=0.25))
     state = _supported_state(agent, targets=(1.0, 0.9))
