@@ -1179,6 +1179,28 @@ def _finite_cancelled_td(
     return jnp.where(jnp.isfinite(direct_partial), direct_td, recovered_td)
 
 
+def _finite_cancelled_target(
+    reward: Array,
+    baseline: Array,
+    bootstrap: Array,
+) -> Array:
+    """Keep the historical target unless that partial sum overflows.
+
+    ``reward - baseline + bootstrap`` is the ordinary association. When
+    ``reward - baseline`` overflows float32 but the baseline and bootstrap
+    cancel, the rearranged ``reward - (baseline - bootstrap)`` can still be
+    finite. A target that remains outside float32 stays non-finite so the
+    caller rejects the update.
+    """
+    direct_target = reward - baseline + bootstrap
+    recovered_target = reward - (baseline - bootstrap)
+    return jnp.where(
+        jnp.isfinite(direct_target) | ~jnp.isfinite(recovered_target),
+        direct_target,
+        recovered_target,
+    )
+
+
 def _differential_q_update(
     q_weights: Array,
     traces: Array,
@@ -2246,12 +2268,12 @@ class STOMPAgent:
                     next_q,
                     -jnp.inf,
                 )
-                target = (
-                    models.env_return_ema[model_idx]
-                    - average_reward * models.baseline_mass_ema[model_idx]
-                    + _discounted_bootstrap(
+                target = _finite_cancelled_target(
+                    models.env_return_ema[model_idx],
+                    average_reward * models.baseline_mass_ema[model_idx],
+                    _discounted_bootstrap(
                         models.discount_ema[model_idx], jnp.max(eligible_next_q)
-                    )
+                    ),
                 )
                 targets = (
                     jnp.full(cfg.n_total_actions, jnp.nan, dtype=jnp.float32)
@@ -2429,10 +2451,10 @@ class STOMPAgent:
             bootstrap_obs,
         )
         eligible_next_q = jnp.where(action_mask, next_q_values, -jnp.inf)
-        td_target = (
-            reward
-            - state.base_average_reward
-            + _discounted_bootstrap(primitive_discount, jnp.max(eligible_next_q))
+        td_target = _finite_cancelled_target(
+            reward,
+            state.base_average_reward,
+            _discounted_bootstrap(primitive_discount, jnp.max(eligible_next_q)),
         )
         targets = (
             jnp.full(
@@ -2940,7 +2962,11 @@ class STOMPAgent:
             next_q_vals = self._base_learner.predict(state.base_learner_state, bootstrap_obs)
             eligible_next_q = jnp.where(action_mask, next_q_vals, -jnp.inf)
             max_next_q = _discounted_bootstrap(base_discount, jnp.max(eligible_next_q))
-            td_target = base_reward - state.base_average_reward * base_baseline_mass + max_next_q
+            td_target = _finite_cancelled_target(
+                base_reward,
+                state.base_average_reward * base_baseline_mass,
+                max_next_q,
+            )
             targets = (
                 jnp.full(n_total, jnp.nan, dtype=jnp.float32)
                 .at[state.base_last_action]
