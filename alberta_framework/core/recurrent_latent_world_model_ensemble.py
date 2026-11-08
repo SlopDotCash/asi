@@ -261,8 +261,21 @@ def _scale_safe_mean_and_variance(values: Array, *, axis: int) -> tuple[Array, A
     exponent = jnp.where(peak > 0.0, exponent, 0)
     scaled = jnp.ldexp(values, -exponent)
     scaled_mean = jnp.mean(scaled, axis=axis)
-    expanded_mean = jnp.expand_dims(scaled_mean, axis=axis)
-    scaled_variance = jnp.mean(jnp.square(scaled - expanded_mean), axis=axis)
+    # Center on one scaled member before squaring: the rounded scaled mean
+    # can sit one ulp away from identical inputs, and restoring that ulp by
+    # ``2 ** (2 * exponent)`` overflows float32 once the peak is large
+    # (identical 1e30 members reported an infinite variance).  Variance is
+    # translation-invariant, so shift by one member and correct with the
+    # already computed scaled mean.  The result is clamped at zero: for
+    # identical inputs the shifted squares are exactly zero while the
+    # correction is the squared one-ulp rounding of the mean.
+    reference = jnp.take(scaled, 0, axis=axis)
+    shifted = scaled - jnp.expand_dims(reference, axis=axis)
+    mean_offset = scaled_mean - reference
+    scaled_variance = jnp.maximum(
+        jnp.mean(jnp.square(shifted), axis=axis) - jnp.square(mean_offset),
+        0.0,
+    )
     reduced_exponent = jnp.squeeze(exponent, axis=axis)
     return (
         jnp.ldexp(scaled_mean, reduced_exponent),
