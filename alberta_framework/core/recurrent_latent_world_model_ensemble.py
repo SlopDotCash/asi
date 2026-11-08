@@ -261,8 +261,15 @@ def _scale_safe_mean_and_variance(values: Array, *, axis: int) -> tuple[Array, A
     exponent = jnp.where(peak > 0.0, exponent, 0)
     scaled = jnp.ldexp(values, -exponent)
     scaled_mean = jnp.mean(scaled, axis=axis)
-    expanded_mean = jnp.expand_dims(scaled_mean, axis=axis)
-    scaled_variance = jnp.mean(jnp.square(scaled - expanded_mean), axis=axis)
+    # Shift by one member before reducing so identical values have exactly
+    # zero deviations. Compute the center from these offsets to retain
+    # disagreements smaller than one ulp of the rounded ensemble mean.
+    # Center again before squaring to avoid cancellation between moments.
+    reference = jnp.take(scaled, 0, axis=axis)
+    shifted = scaled - jnp.expand_dims(reference, axis=axis)
+    mean_offset = jnp.mean(shifted, axis=axis)
+    centered = shifted - jnp.expand_dims(mean_offset, axis=axis)
+    scaled_variance = jnp.mean(jnp.square(centered), axis=axis)
     reduced_exponent = jnp.squeeze(exponent, axis=axis)
     return (
         jnp.ldexp(scaled_mean, reduced_exponent),
