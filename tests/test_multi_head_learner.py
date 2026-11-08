@@ -11,6 +11,7 @@ import pytest
 
 from alberta_framework import (
     LMS,
+    Adam,
     AGCBounding,
     Autostep,
     AutostepGTDLambda,
@@ -909,6 +910,42 @@ class TestMultiHeadUpdateNoneActive:
                 result.state.head_params.biases[i],
                 state.head_params.biases[i],
             )
+
+    def test_trunk_params_unchanged_with_stateful_optimizer(self):
+        """All-NaN targets must not move the shared trunk under Adam.
+
+        Inactive heads are frozen (params, traces, optimizer state), but the
+        trunk optimizer was stepped unconditionally. With a stateful optimizer
+        the stale momentum moves the trunk even though the step carried zero
+        error signal. LMS masks this because a zero gradient yields a zero
+        step, so the test warms up Adam with one active update first.
+        """
+        learner = MultiHeadMLPLearner(
+            n_heads=2, hidden_sizes=(16,), sparsity=0.0,
+            optimizer=Adam(step_size=0.01),
+        )
+        state = learner.init(feature_dim=5, key=jr.key(42))
+
+        obs = jnp.ones(5)
+        warmed = learner.update(
+            state, obs, jnp.array([1.0, -1.0])
+        ).state
+
+        result = learner.update(warmed, obs, jnp.array([jnp.nan, jnp.nan]))
+
+        for i in range(len(warmed.trunk_params.weights)):
+            chex.assert_trees_all_close(
+                result.state.trunk_params.weights[i],
+                warmed.trunk_params.weights[i],
+            )
+            chex.assert_trees_all_close(
+                result.state.trunk_params.biases[i],
+                warmed.trunk_params.biases[i],
+            )
+        chex.assert_trees_all_close(
+            result.state.trunk_optimizer_states,
+            warmed.trunk_optimizer_states,
+        )
 
     def test_normalizer_still_updates(self):
         """Normalizer should update even when no heads are active."""

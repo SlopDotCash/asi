@@ -1136,6 +1136,7 @@ class MultiHeadMLPLearner:
 
         # 1. Handle NaN targets
         active_mask = ~jnp.isnan(targets)  # (n_heads,)
+        any_active = jnp.any(active_mask)
         safe_targets = jnp.where(active_mask, targets, 0.0)
 
         # 2. Normalize observation if needed
@@ -1285,6 +1286,23 @@ class MultiHeadMLPLearner:
             new_trunk_opt_states.append(new_b_opt)
             optimizer_updates_applied.append(b_update_applied)
 
+        # Freeze the shared trunk when no head is active. The step carries
+        # zero error signal, and inactive heads are frozen in section 7;
+        # without this guard a stateful optimizer (e.g. Adam) steps the
+        # trunk on stale momentum. Mirrors the inactive-head freeze below.
+        new_trunk_traces = [
+            jnp.where(any_active, new_trace, old_trace)
+            for new_trace, old_trace in zip(new_trunk_traces, state.trunk_traces)
+        ]
+        new_trunk_opt_states = [
+            jax.tree.map(
+                lambda new, old: jnp.where(any_active, new, old),
+                new_opt,
+                old_opt,
+            )
+            for new_opt, old_opt in zip(new_trunk_opt_states, state.trunk_optimizer_states)
+        ]
+
         # Trunk bounding (pseudo_error=1.0 since error is in gradient)
         trunk_bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._bounder is not None:
@@ -1309,6 +1327,16 @@ class MultiHeadMLPLearner:
             new_trunk_biases.append(
                 state.trunk_params.biases[i] + trunk_steps[2 * i + 1]
             )
+
+        # Freeze trunk params when no head is active (see above).
+        new_trunk_weights = [
+            jnp.where(any_active, new_w, old_w)
+            for new_w, old_w in zip(new_trunk_weights, state.trunk_params.weights)
+        ]
+        new_trunk_biases = [
+            jnp.where(any_active, new_b, old_b)
+            for new_b, old_b in zip(new_trunk_biases, state.trunk_params.biases)
+        ]
 
         new_trunk_params = MLPParams(
             weights=tuple(new_trunk_weights),
