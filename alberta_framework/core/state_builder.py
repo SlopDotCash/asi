@@ -2275,6 +2275,24 @@ def _state_builder_config_digest(config: dict[str, Any]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        right_dict = cast(dict[str, object], right)
+        return left.keys() == right_dict.keys() and all(
+            _exact_json_equal(value, right_dict[key]) for key, value in left.items()
+        )
+    if type(left) is list:
+        right_list = cast(list[object], right)
+        return len(left) == len(right_list) and all(
+            _exact_json_equal(item, other)
+            for item, other in zip(left, right_list, strict=True)
+        )
+    return left == right
+
+
 def save_state_builder_checkpoint(
     builder: StateBuilder[Any],
     state: Any,
@@ -2315,9 +2333,12 @@ def load_state_builder_checkpoint(
     key = jr.key(0) if template_key is None else template_key
     template = builder.init(key)
     state, restored_metadata = load_checkpoint(template, path)
-    if restored_metadata != metadata:
+    if not _exact_json_equal(restored_metadata, metadata):
         raise ValueError("state-builder checkpoint metadata changed between reads")
-    if restored_metadata.get("resource_budget") != builder.resource_budget().to_config():
+    if not _exact_json_equal(
+        restored_metadata.get("resource_budget"),
+        builder.resource_budget().to_config(),
+    ):
         raise ValueError("state-builder checkpoint resource budget does not match config")
     return builder, state
 
