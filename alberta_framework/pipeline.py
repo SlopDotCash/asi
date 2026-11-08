@@ -1631,7 +1631,7 @@ class AlbertaPipeline:
             horde_predictions = horde_result.predictions
             horde_td_errors = horde_result.td_errors
             horde_td_targets = horde_result.td_targets
-            components_applied = horde_result.update_applied & (control_result.action >= 0)
+            components_applied = horde_result.update_applied & control_result.update_applied
 
         proposed_state = AlbertaPipelineState(
             feature_state=new_feature_state,
