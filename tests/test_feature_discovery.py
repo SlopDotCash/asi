@@ -1389,6 +1389,44 @@ def test_probe_mode_config_and_checkpoint_round_trip_fail_closed(
         load_interaction_feature_checkpoint(invalid_path)
 
 
+def test_interaction_feature_checkpoint_rejects_float_aliased_accounting(
+    tmp_path: Path,
+) -> None:
+    """A float-aliased memory-accounting scalar must not load as an int."""
+    learner = FixedBudgetInteractionLearner(
+        n_features=2,
+        n_tasks=1,
+        candidate_count=1,
+        utility_retention_grace_steps=8,
+        utility_evidence_threshold=0.1,
+        evidence_gated_active_output_memory=True,
+        independent_relevance_probe=True,
+        relevance_probe_mode=RELEVANCE_PROBE_MODE_TARGET_ONLY_V1,
+        scale_robust=True,
+    )
+    state = learner.init(feature_dim=3, key=jr.key(706))
+    updated = learner.update(
+        state,
+        jnp.asarray((0.5, -1.0, 2.0), dtype=jnp.float32),
+        jnp.asarray((0.75,), dtype=jnp.float32),
+    ).state
+    original_path = tmp_path / "original"
+    save_interaction_feature_checkpoint(learner, updated, original_path, feature_dim=3)
+    metadata = load_checkpoint_metadata(original_path)
+
+    tampered_accounting = dict(metadata["memory_accounting"])
+    tampered_accounting["persistent_array_bytes"] = float(
+        tampered_accounting["persistent_array_bytes"]
+    )
+    tampered_metadata = dict(metadata)
+    tampered_metadata["memory_accounting"] = tampered_accounting
+    tampered_path = tmp_path / "tampered"
+    save_checkpoint(updated, tampered_path, metadata=tampered_metadata)
+
+    with pytest.raises(ValueError, match="resource contract"):
+        load_interaction_feature_checkpoint(tampered_path)
+
+
 def test_target_only_probe_runs_under_jit_and_scan() -> None:
     learner = FixedBudgetInteractionLearner(
         n_features=2,

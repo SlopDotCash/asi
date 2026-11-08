@@ -53,6 +53,30 @@ _UINT32_MAX = 2**32 - 1
 # README / package-init public scan last-fit. Origin handed ``10**12`` to
 # ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
 _INTERACTION_FEATURE_LOOP_MAX_STEPS = 10_000
+
+
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases.
+
+    Local copy of ``model_replay_rehearsal._exact_json_equal`` (added
+    upstream after this fork base): use the shared helper once the fork
+    syncs past it.
+    """
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        right_dict = cast(dict[str, object], right)
+        return left.keys() == right_dict.keys() and all(
+            _exact_json_equal(value, right_dict[key]) for key, value in left.items()
+        )
+    if type(left) is list:
+        right_list = cast(list[object], right)
+        return len(left) == len(right_list) and all(
+            _exact_json_equal(item, other) for item, other in zip(left, right_list, strict=True)
+        )
+    return left == right
+
+
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -3945,7 +3969,7 @@ def load_interaction_feature_checkpoint(
         key=jr.key(0, impl="threefry2x32"),
     )
     restored, restored_metadata = load_checkpoint(template, path)
-    if restored_metadata != metadata:
+    if not _exact_json_equal(restored_metadata, metadata):
         raise ValueError("interaction-feature checkpoint metadata changed between reads")
     learner._require_state_contract(restored, feature_dim=feature_dim)
     if not bool(_lifetime_counter_valid(restored.step_words, restored.step_count)):
@@ -3959,7 +3983,9 @@ def load_interaction_feature_checkpoint(
         raise ValueError("interaction-feature checkpoint replacement phase is invalid")
     if not bool(learner._state_values_valid(restored, feature_dim=feature_dim)):
         raise ValueError("interaction-feature checkpoint state values are invalid")
-    if learner.memory_accounting(restored) != metadata.get("memory_accounting"):
+    if not _exact_json_equal(
+        learner.memory_accounting(restored), metadata.get("memory_accounting")
+    ):
         raise ValueError("interaction-feature checkpoint resource contract does not match")
     return learner, cast(InteractionFeatureState, restored)
 
