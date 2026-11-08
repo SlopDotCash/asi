@@ -1093,7 +1093,12 @@ class FixedBudgetFeatureLearner:
         random_w = self._init_scale * noise / dim_scale
         random_b = jnp.array(0.0, dtype=jnp.float32)
 
-        parent_logits = jnp.log(utilities + 1e-3)
+        # Utilities are a non-negative EMA on the public path, but a restored
+        # or hand-built state can carry negative values; log() of those is
+        # NaN and categorical sampling over NaN logits silently collapses
+        # to slot 0 for every key. Clamp first, matching the compositional
+        # learner's log(maximum(utility_scores, 1e-6)) parent logits.
+        parent_logits = jnp.log(jnp.maximum(utilities, 0.0) + 1e-3)
         parent_idx = jr.categorical(key_parent, parent_logits).astype(jnp.int32)
         parent_w = active_weights[parent_idx]
         parent_b = active_biases[parent_idx]
