@@ -21,6 +21,20 @@ from alberta_framework.core._float32_scalars import validated_float32_scalar
 _INT32_MAX = 2**31 - 1
 
 
+def _stable_weighted_square_ema(previous: Array, value: Array, decay: float) -> Array:
+    """Preserve a finite EMA when only the unweighted square overflows."""
+
+    increment = 1.0 - decay
+    direct_innovation = increment * value**2
+    scaled_value = math.sqrt(increment) * value
+    innovation = jnp.where(jnp.isfinite(direct_innovation), direct_innovation, scaled_value**2)
+    if float(np.float32(decay)) == 1.0:
+        # Apply the exact configured decrement together with the innovation.
+        # Multiplying by the narrowed decay would discard it on every step.
+        return previous + (innovation - increment * previous)
+    return decay * previous + innovation
+
+
 @dataclasses.dataclass(frozen=True)
 class IntentionalTDConfig:
     """Value-optimizer controls; defaults match the pinned reference code.
@@ -60,15 +74,8 @@ class IntentionalTDConfig:
             raise ValueError("gamma and lamda must be in [0, 1]")
         if self.gamma * self.lamda >= 1:
             raise ValueError("gamma * lamda must be less than 1 for sigma correction")
-        if float(np.float32(self.gamma * self.lamda)) >= 1.0:
-            raise ValueError(
-                "gamma * lamda must remain less than 1 in float32 for sigma correction"
-            )
         if not 0 <= self.beta2 < 1 or not 0 <= self.beta_clip < 1:
             raise ValueError("EMA decays must be in [0, 1)")
-        for name in ("beta2", "beta_clip"):
-            if float(np.float32(getattr(self, name))) >= 1.0:
-                raise ValueError(f"{name} must remain less than 1 in float32")
         for name in ("use_rmsprop", "use_adaptive_clip", "enabled"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a bool")
@@ -125,7 +132,18 @@ def intentional_td_update(
     if gradient.shape != weights.shape or gradient.dtype != weights.dtype:
         raise ValueError("gradient must match weights")
     decay = config.gamma * config.lamda
-    trace = decay * state.trace + gradient
+    if float(np.float32(decay)) == 1.0:
+        decrement = (1.0 - decay) * state.trace
+        # Opposite signs cancel safely before the small decrement. With the
+        # same sign, subtract the decrement before the potentially large sum.
+        opposite_sign = (state.trace < 0.0) != (gradient < 0.0)
+        trace = jnp.where(
+            opposite_sign,
+            (state.trace + gradient) - decrement,
+            state.trace + (gradient - decrement),
+        )
+    else:
+        trace = decay * state.trace + gradient
     maximum_step = jnp.array(_INT32_MAX, dtype=jnp.int32)
     step = jnp.minimum(state.step, maximum_step - 1) + jnp.array(
         1, dtype=jnp.int32
@@ -136,24 +154,49 @@ def intentional_td_update(
             trace=jnp.where(terminated, jnp.zeros_like(trace), trace), step=step
         )
 
-    second = config.beta2 * state.squared_gradient + (1 - config.beta2) * gradient**2
-    count = step.astype(jnp.float32)
-    divisor = (
-        jnp.sqrt(second / _bias_correction(config.beta2, count)) + 1e-8
-        if config.use_rmsprop
-        else jnp.ones_like(weights)
+    gradient_squared = gradient**2
+    # Weight before squaring when the direct square overflows.  The weighted
+    # moment can still be representable even when a finite float32 value
+    # squared is not.
+    second = _stable_weighted_square_ema(
+        state.squared_gradient,
+        gradient,
+        config.beta2,
     )
-    norm_gradient = jnp.sum(gradient**2 / divisor)
+    count = step.astype(jnp.float32)
+    if config.use_rmsprop:
+        second_bias = _bias_correction(config.beta2, count)
+        direct_rms = jnp.sqrt(second / second_bias)
+        stable_rms = jnp.sqrt(second) / jnp.sqrt(second_bias)
+        divisor = jnp.where(jnp.isfinite(direct_rms), direct_rms, stable_rms) + 1e-8
+    else:
+        divisor = jnp.ones_like(weights)
+    direct_norm_gradient = jnp.sum(gradient_squared / divisor)
+    stable_norm_gradient = jnp.sum((gradient / divisor) * gradient)
+    norm_gradient = jnp.where(
+        jnp.isfinite(direct_norm_gradient), direct_norm_gradient, stable_norm_gradient
+    )
     sigma = state.sigma + (1 - decay) * (norm_gradient - state.sigma)
     sigma_corrected = sigma / _bias_correction(decay, count)
-    norm_trace = jnp.sum(trace**2 / divisor)
-    step_size = config.eta / jnp.maximum(jnp.sqrt(sigma_corrected * norm_trace), 1e-8)
-    clip_second = config.beta_clip * state.clip_squared_error + (1 - config.beta_clip) * td_error**2
-    cap = (
-        config.clip_mult * jnp.sqrt(clip_second / _bias_correction(config.beta_clip, count))
-        if config.use_adaptive_clip
-        else jnp.array(1.0, dtype=jnp.float32)
+    direct_norm_trace = jnp.sum(trace**2 / divisor)
+    stable_norm_trace = jnp.sum((trace / divisor) * trace)
+    norm_trace = jnp.where(jnp.isfinite(direct_norm_trace), direct_norm_trace, stable_norm_trace)
+    direct_normalizer = jnp.sqrt(sigma_corrected * norm_trace)
+    stable_normalizer = jnp.sqrt(sigma_corrected) * jnp.sqrt(norm_trace)
+    normalizer = jnp.where(jnp.isfinite(direct_normalizer), direct_normalizer, stable_normalizer)
+    step_size = config.eta / jnp.maximum(normalizer, 1e-8)
+    clip_second = _stable_weighted_square_ema(
+        state.clip_squared_error,
+        td_error,
+        config.beta_clip,
     )
+    if config.use_adaptive_clip:
+        clip_bias = _bias_correction(config.beta_clip, count)
+        direct_cap = config.clip_mult * jnp.sqrt(clip_second / clip_bias)
+        stable_cap = config.clip_mult * jnp.sqrt(clip_second) / jnp.sqrt(clip_bias)
+        cap = jnp.where(jnp.isfinite(direct_cap), direct_cap, stable_cap)
+    else:
+        cap = jnp.array(1.0, dtype=jnp.float32)
     safe_error = jnp.clip(td_error, -cap, cap)
     changed = weights + (safe_error * step_size) * (trace / divisor)
     return changed, IntentionalTDState(  # type: ignore[call-arg]

@@ -327,6 +327,7 @@ class HordeLearner:
             float(np.float32(d.gamma) * np.float32(d.lamda))
             for d in horde_spec.demons
         )
+        self._per_head_trace_decay = per_head_gl
 
         self._learner = MultiHeadMLPLearner(
             n_heads=len(horde_spec.demons),
@@ -635,6 +636,45 @@ class HordeLearner:
             ),
             head_updates_applied=head_updates_applied,
             update_applied=update_applied,
+        )
+
+    def drop_eligibility_after_zero_discount(
+        self,
+        state: MultiHeadMLPState,
+        discounts: Array,
+        update_applied: Array,
+    ) -> MultiHeadMLPState:
+        """Clear stored head traces after a genuine zero continuation.
+
+        ``update_with_discounts`` keeps each demon's configured
+        ``gamma * lambda``. Control adapters rely on that: they zero the
+        bootstrap discount because the target already contains it, and the
+        trace must still decay by the demon's own horizon. A transition
+        discount of zero is different. The terminating step has already
+        applied the trace it carried in. The next state's trace is
+        ``e = (gamma * lambda) * e_prev + grad``, so leaving the terminal
+        trace in place credits the following episode with the previous one.
+        Demons whose configured trace decay is zero replace their trace on
+        every step and are left unchanged.
+        """
+
+        applied = jnp.asarray(update_applied, dtype=jnp.bool_)
+        discount_vector = jnp.asarray(discounts, dtype=jnp.float32)
+        new_traces = []
+        for index, (weight_trace, bias_trace) in enumerate(state.head_traces):
+            if self._per_head_trace_decay[index] == 0.0:
+                new_traces.append((weight_trace, bias_trace))
+                continue
+            clear = applied & (discount_vector[index] == 0.0)
+            new_traces.append(
+                (
+                    jnp.where(clear, jnp.zeros_like(weight_trace), weight_trace),
+                    jnp.where(clear, jnp.zeros_like(bias_trace), bias_trace),
+                )
+            )
+        return cast(
+            MultiHeadMLPState,
+            state.replace(head_traces=tuple(new_traces)),  # type: ignore[attr-defined]
         )
 
 

@@ -409,6 +409,188 @@ def test_legacy_prototype_wrapper_retains_split_discount_behavior() -> None:
     np.testing.assert_allclose(result.state.oak_state.stomp_state.option_discount, 0.8)
 
 
+def _horde_trace_abs_sum(state: PrototypeAgentState) -> jax.Array:
+    assert state.horde_state is not None
+    total = jnp.asarray(0.0, dtype=jnp.float32)
+    for weight_trace, bias_trace in state.horde_state.head_traces:
+        total = total + jnp.sum(jnp.abs(weight_trace)) + jnp.sum(jnp.abs(bias_trace))
+    return total
+
+
+def _zero_horde_traces(state: PrototypeAgentState) -> PrototypeAgentState:
+    assert state.horde_state is not None
+    cleared = tuple(
+        (jnp.zeros_like(weight_trace), jnp.zeros_like(bias_trace))
+        for weight_trace, bias_trace in state.horde_state.head_traces
+    )
+    return state.replace(horde_state=state.horde_state.replace(head_traces=cleared))
+
+
+def test_terminal_horde_discount_drops_carried_eligibility() -> None:
+    """A zero continuation must not leave eligibility for the next episode.
+
+    The terminating update still applies the trace it carried in. Only the
+    stored trace is cleared, so the following episode starts from the new
+    observation instead of ``gamma * lambda`` times the previous life.
+    """
+
+    agent = PrototypeAgent(
+        PrototypeAgentConfig(
+            oak=OaKConfig(stomp=_stomp_config()),
+            horde_spec=create_horde_spec(
+                (
+                    GVFSpec(
+                        name="traced",
+                        demon_type=DemonType.PREDICTION,
+                        gamma=0.5,
+                        lamda=0.8,
+                        cumulant_index=-1,
+                    ),
+                )
+            ),
+            horde_hidden_sizes=(),
+            horde_step_size=0.1,
+        )
+    )
+    first = jnp.array([0.4, -0.2], dtype=jnp.float32)
+    second = jnp.array([0.1, 0.3], dtype=jnp.float32)
+    third = jnp.array([-0.7, 0.2], dtype=jnp.float32)
+    cumulants = jnp.array([1.0], dtype=jnp.float32)
+    carried = agent.update_transition(
+        agent.start(agent.init(jr.key(4)), first),
+        _explicit_transition(
+            agent.start(agent.init(jr.key(4)), first),
+            reward=0.0,
+            next_observation=second,
+            discount=0.5,
+            horde_cumulants=cumulants,
+        ),
+    ).state
+    assert float(_horde_trace_abs_sum(carried)) > 0.0
+
+    terminal = agent.update_transition(
+        carried,
+        _explicit_transition(
+            carried,
+            reward=0.0,
+            next_observation=third,
+            discount=0.0,
+            horde_cumulants=cumulants,
+        ),
+    )
+    assert bool(terminal.transition_diagnostics.valid)
+    chex.assert_trees_all_close(
+        _horde_trace_abs_sum(terminal.state),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+
+    from_fresh_trace = agent.update_transition(
+        _zero_horde_traces(carried),
+        _explicit_transition(
+            carried,
+            reward=0.0,
+            next_observation=third,
+            discount=0.0,
+            horde_cumulants=cumulants,
+        ),
+    )
+    # The terminating step must still learn from the eligibility it carried
+    # in. Clearing that trace before the weight update would match a life
+    # that had no memory of the previous observation.
+    weight_gap = jnp.max(
+        jnp.abs(
+            terminal.state.horde_state.head_params.weights[0]
+            - from_fresh_trace.state.horde_state.head_params.weights[0]
+        )
+    )
+    assert float(weight_gap) > 1.0e-4
+
+    resumed = agent.update_transition(
+        terminal.state,
+        _explicit_transition(
+            terminal.state,
+            reward=0.0,
+            next_observation=jnp.array([0.2, 0.2], dtype=jnp.float32),
+            discount=0.5,
+            horde_cumulants=cumulants,
+        ),
+    )
+    fresh_agent = PrototypeAgent(agent.config)
+    fresh = fresh_agent.update_transition(
+        fresh_agent.start(fresh_agent.init(jr.key(4)), third),
+        _explicit_transition(
+            fresh_agent.start(fresh_agent.init(jr.key(4)), third),
+            reward=0.0,
+            next_observation=jnp.array([0.2, 0.2], dtype=jnp.float32),
+            discount=0.5,
+            horde_cumulants=cumulants,
+        ),
+    )
+    chex.assert_trees_all_close(
+        resumed.state.horde_state.head_traces,
+        fresh.state.horde_state.head_traces,
+        atol=1e-6,
+    )
+
+
+def test_explicit_zero_horde_discount_clears_only_that_demon() -> None:
+    agent = PrototypeAgent(
+        PrototypeAgentConfig(
+            oak=OaKConfig(stomp=_stomp_config()),
+            horde_spec=create_horde_spec(
+                (
+                    GVFSpec(
+                        name="ending",
+                        demon_type=DemonType.PREDICTION,
+                        gamma=0.9,
+                        lamda=0.8,
+                        cumulant_index=-1,
+                    ),
+                    GVFSpec(
+                        name="continuing",
+                        demon_type=DemonType.PREDICTION,
+                        gamma=0.9,
+                        lamda=0.8,
+                        cumulant_index=-1,
+                    ),
+                )
+            ),
+            horde_hidden_sizes=(),
+            horde_step_size=0.1,
+        )
+    )
+    first = jnp.array([0.4, -0.2], dtype=jnp.float32)
+    second = jnp.array([0.1, 0.3], dtype=jnp.float32)
+    cumulants = jnp.array([1.0, -0.5], dtype=jnp.float32)
+    started = agent.start(agent.init(jr.key(5)), first)
+    carried = agent.update_transition(
+        started,
+        _explicit_transition(
+            started,
+            reward=0.0,
+            next_observation=second,
+            discount=0.5,
+            horde_cumulants=cumulants,
+        ),
+    ).state
+    continued = agent.update_transition(
+        carried,
+        _explicit_transition(
+            carried,
+            reward=0.0,
+            next_observation=jnp.array([-0.7, 0.2], dtype=jnp.float32),
+            discount=0.5,
+            horde_cumulants=cumulants,
+            horde_discounts=jnp.array([0.0, 0.9], dtype=jnp.float32),
+        ),
+    )
+    ending_weight, ending_bias = continued.state.horde_state.head_traces[0]
+    kept_weight, kept_bias = continued.state.horde_state.head_traces[1]
+    chex.assert_trees_all_close(ending_weight, jnp.zeros_like(ending_weight))
+    chex.assert_trees_all_close(ending_bias, jnp.zeros_like(ending_bias))
+    assert float(jnp.sum(jnp.abs(kept_weight)) + jnp.sum(jnp.abs(kept_bias))) > 0.0
+
+
 def test_horde_explicit_discounts_and_default_horizons() -> None:
     agent = PrototypeAgent(_prototype_config(horde=True))
     last_obs = jnp.array([0.4, -0.2], dtype=jnp.float32)

@@ -385,6 +385,13 @@ Use the mutable index to identify the current record rather than copying
 rankings or means here. Output documents are append-only chronological records;
 their historical superlatives and run-status language may have been superseded.
 
+The historical diagonal and block covariance screens replay under their original
+source identities. The repaired `diaghead_stable`, `gdiag_stable`, and
+`blockhead_stable` configurations await fresh matched development runs. The block
+variant uses a global innovation denominator and square-root covariance updates,
+with O(G*b^3) arithmetic per step for G blocks of width b. The low-rank experiment
+is archived with an invalid covariance recurrence that requires redesign.
+
 - [current campaign index](research/ipmnist-campaign-index.md);
 - [theory and forward hypotheses](research/ipmnist-theory.md);
 - `outputs/ipmnist_screening/summary_*.json` for stored measurement records;

@@ -452,8 +452,29 @@ def init_rule_state(params: dict[str, Array]) -> RuleState:
 
 
 def _rms_mix(hidden: Array, f_rms: Array) -> Array:
-    rms = jnp.sqrt(jnp.mean(hidden * hidden) + _EPS)
-    return f_rms * (hidden / rms) + (1.0 - f_rms) * hidden
+    """Scale hidden units by their root-mean-square when the flag is on.
+
+    If the mean of squares overflows for finite inputs, normalize the scaled
+    activations directly to preserve their relative values and gradients.
+    """
+    use_fallback = jnp.all(jnp.isfinite(hidden)) & ~jnp.isfinite(jnp.mean(hidden * hidden))
+
+    def scaled_direction(values: Array) -> Array:
+        _, exponent = jnp.frexp(jnp.max(jnp.abs(values)))
+        scaled = jnp.ldexp(values, -exponent)
+        epsilon = jnp.ldexp(jnp.asarray(_EPS, dtype=values.dtype), -2 * exponent)
+        return scaled / jnp.sqrt(jnp.mean(scaled * scaled) + epsilon)
+
+    direction = cast(
+        Array,
+        jax.lax.cond(
+            use_fallback,
+            scaled_direction,
+            lambda values: values / jnp.sqrt(jnp.mean(values * values) + _EPS),
+            hidden,
+        ),
+    )
+    return f_rms * direction + (1.0 - f_rms) * hidden
 
 
 def _loss_logits(

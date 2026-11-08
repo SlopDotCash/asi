@@ -558,6 +558,11 @@ class FixedBudgetInteractionLearner:
     per active feature and candidate plus one per task; this fixed cost is
     exposed by :meth:`memory_accounting`.
 
+    ``candidate_residual_feedback=True`` subtracts each candidate's own
+    prediction when training it on the active bank's residual. This option
+    applies to the unnormalized, non-probe path. Its default preserves the
+    historical candidate recurrence used by the frozen evidence protocols.
+
     ``use_obgd=True`` (default, LMS path only) applies ObGD-style overshoot
     bounding (Observation-bounded Gradient Descent; Elsayed et al. 2024,
     "Streaming Deep Reinforcement Learning Finally Works"): the aggregate
@@ -638,6 +643,8 @@ class FixedBudgetInteractionLearner:
         scale_normalizer_decay: float = 0.99,
         scale_normalizer_epsilon: float = 1e-6,
         task_utility_weights: tuple[float, ...] | None = None,
+        *,
+        candidate_residual_feedback: bool = False,
     ):
         n_features = _require_int32("n_features", n_features, minimum=1)
         n_tasks = _require_int32("n_tasks", n_tasks, minimum=1)
@@ -691,6 +698,7 @@ class FixedBudgetInteractionLearner:
             ("include_squares", include_squares),
             ("use_obgd", use_obgd),
             ("scale_robust", scale_robust),
+            ("candidate_residual_feedback", candidate_residual_feedback),
         ):
             if type(value) is not bool:
                 raise ValueError(f"{name} must be boolean")
@@ -982,6 +990,7 @@ class FixedBudgetInteractionLearner:
         self._scale_robust = scale_robust
         self._scale_normalizer_decay = scale_normalizer_decay
         self._scale_normalizer_epsilon = scale_normalizer_epsilon
+        self._candidate_residual_feedback = candidate_residual_feedback
 
     @property
     def n_features(self) -> int:
@@ -1310,8 +1319,8 @@ class FixedBudgetInteractionLearner:
         }
 
     def to_config(self) -> dict[str, Any]:
-        """Serialize learner configuration."""
-        return {
+        """Serialize learner configuration, omitting dormant residual feedback."""
+        config = {
             "type": "FixedBudgetInteractionLearner",
             "state_schema": INTERACTION_FEATURE_STATE_SCHEMA,
             "n_features": self._n_features,
@@ -1360,6 +1369,9 @@ class FixedBudgetInteractionLearner:
             "scale_normalizer_decay": self._scale_normalizer_decay,
             "scale_normalizer_epsilon": self._scale_normalizer_epsilon,
         }
+        if self._candidate_residual_feedback:
+            config["candidate_residual_feedback"] = True
+        return config
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> "FixedBudgetInteractionLearner":
@@ -1390,6 +1402,7 @@ class FixedBudgetInteractionLearner:
             payload["relevance_probe_mode"] = RELEVANCE_PROBE_MODE_CONDITIONAL_V1
         payload.setdefault("task_utility_weights", None)
         payload.setdefault("stale_retirement_interval", None)
+        payload.setdefault("candidate_residual_feedback", False)
         expected = set(inspect.signature(cls).parameters)
         if set(payload) != expected:
             raise ValueError("interaction-feature config fields do not match its schema")
@@ -2572,16 +2585,30 @@ class FixedBudgetInteractionLearner:
                         - (state.candidate_output_weights * candidate_features[None, :]),
                         0.0,
                     )
+                    # The non-robust path keeps no causal second moments, so
+                    # use a unit floor: plain LMS diverges once
+                    # ``step_size * phi**2 > 2`` and phi is a product of two
+                    # observation channels. Unit moments keep the delta
+                    # identical to the plain LMS step for a unit-bounded bank
+                    # and scale-free above that, mirroring the robust path.
+                    candidate_output_delta = self._normalized_candidate_delta(
+                        candidate_errors,
+                        candidate_features,
+                        jnp.ones_like(candidate_features),
+                        active_count,
+                    )
+                else:
+                    candidate_errors = errors[:, None]
+                    if self._candidate_residual_feedback:
+                        candidate_errors = jnp.where(
+                            active_mask[:, None],
+                            candidate_errors
+                            - (state.candidate_output_weights * candidate_features[None, :]),
+                            0.0,
+                        )
                     candidate_output_delta = (
                         self._step_size_output
                         * candidate_errors
-                        * candidate_features[None, :]
-                        / active_count
-                    )
-                else:
-                    candidate_output_delta = (
-                        self._step_size_output
-                        * errors[:, None]
                         * candidate_features[None, :]
                         / active_count
                     )

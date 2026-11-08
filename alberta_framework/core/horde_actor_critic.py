@@ -840,11 +840,22 @@ class QHordeActorCriticAgent:
         cumulants = cumulants.at[safe_last_action].set(target)
         if prediction_cumulants is not None:
             cumulants = cumulants.at[cfg.n_actions :].set(prediction_cumulants)
-        critic_result = self._critic.update(
+        # A terminal transition must not bootstrap any demon: in continuing
+        # mode the observation is already the next episode's reset
+        # observation, so every discount is zero and a prediction target is
+        # its cumulant plus the demon's terminal reward. Action heads already
+        # use gamma=0, so only the prediction demons change.
+        critic_discounts = jnp.where(
+            terminated,
+            jnp.zeros_like(self._critic.horde_spec.gammas),
+            self._critic.horde_spec.gammas,
+        )
+        critic_result = self._critic.update_with_discounts(
             state.critic_state,
             prev_obs,
             cumulants,
             observation,
+            critic_discounts,
         )
         # A terminal transition ends the episode for the prediction demons
         # too: their traces decay by the spec gamma * lamda, so the stored
@@ -2841,11 +2852,22 @@ class NonlinearQHordeActorCriticAgent:
         cumulants = cumulants.at[safe_last_action].set(target)
         if prediction_cumulants is not None:
             cumulants = cumulants.at[cfg.n_actions :].set(prediction_cumulants)
-        critic_result = self._critic.update(
+        # A terminal transition must not bootstrap any demon: in continuing
+        # mode the observation is already the next episode's reset
+        # observation, so every discount is zero and a prediction target is
+        # its cumulant plus the demon's terminal reward. Action heads already
+        # use gamma=0, so only the prediction demons change.
+        critic_discounts = jnp.where(
+            terminated,
+            jnp.zeros_like(self._critic.horde_spec.gammas),
+            self._critic.horde_spec.gammas,
+        )
+        critic_result = self._critic.update_with_discounts(
             state.critic_state,
             prev_obs,
             cumulants,
             observation,
+            critic_discounts,
         )
         # A terminal transition ends the episode for the prediction demons
         # too: their traces decay by the spec gamma * lamda, so the stored

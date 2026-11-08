@@ -51,6 +51,7 @@ _WILSON_95_Z_SCORE = float.fromhex("0x1.f5c0331eeff82p+0")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_PATHS = (
+    Path("alberta_framework/evaluation/_measurement_validation.py"),
     Path("alberta_framework/evaluation/continual_multiagent.py"),
     Path("alberta_framework/evaluation/continual_multiagent_artifact.py"),
     Path("alberta_framework/evaluation/continual_multiagent_cli.py"),

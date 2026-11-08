@@ -148,6 +148,11 @@ def test_rejects_bool_gate_without_repr() -> None:
     assert "EvilStr" not in str(exc3.value)
 
 
+def test_rejects_rising_epsilon_schedule() -> None:
+    with pytest.raises(ValueError, match="epsilon_end must not exceed epsilon_start"):
+        Step6DifferentialSARSAConfig(epsilon_start=0.1, epsilon_end=0.5, epsilon_decay_steps=4)
+
+
 def test_valid_configs_still_pass() -> None:
     cfg = Step6DifferentialSARSAConfig(n_actions=2, q_step_size=0.05)
     assert cfg.n_actions == 2

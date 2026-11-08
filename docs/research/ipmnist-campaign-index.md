@@ -69,16 +69,68 @@ not external SOTA findings.
 Use the mutable [protocol-aware comparison landscape](sota-landscape.md) for
 the current external review and the correction to the dated output survey.
 
+## Historical identmap development waves
+
+These retained 60-task waves use seeds 0–2. The original shard and summary
+bytes carry their historical source and dataset identities. The current
+registry can validate their configurations and recompute their summaries.
+Any new experiment must measure the current control under its own matched
+protocol. The historical waves do not change the lead development candidate.
+
+| PR | Retained summary |
+|---|---|
+| #3106 | [Ungated body with rematches at 50/200/2000](../../outputs/ipmnist_screening/wave_identmap50_nogate/summary.json) |
+| #3107 | [Ungated body with rematches at 200/500/2000](../../outputs/ipmnist_screening/wave_identmap200_nogate/summary.json) |
+| #3109 | [Ungated body with a 0.03 identifier trigger](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003/summary.json) |
+| #3110 | [Ungated 0.03 identifier trigger and body step 0.0075](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s0075/summary.json) |
+| #3111 | [Ungated 0.03 identifier trigger and body step 0.005625](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s005625/summary.json) |
+| #3114 | [Gated body momentum 0.9](../../outputs/ipmnist_screening/wave_identmap50_r_mom9/summary.json) and [0.99](../../outputs/ipmnist_screening/wave_identmap50_r_mom99/summary.json) |
+| #3116 | [Gated body with a 0.02 identifier trigger](../../outputs/ipmnist_screening/wave_identmap50_r_idet002/summary.json) |
+| #3118 | [Gated body with a 0.03 identifier trigger and body step 0.00421875](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s00421875/summary.json) |
+| #3119 | [Gated body with a 0.04 identifier trigger and body step 0.00421875](../../outputs/ipmnist_screening/wave_identmap50_r_idet004_s00421875/summary.json) |
+| #3120 | [Gated body with a 0.03 identifier trigger and body step 0.0031640625](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625/summary.json) |
+| #3121 | [Gated body with a 0.03 identifier trigger and body step 0.002373046875](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s002373046875/summary.json) |
+| #3122 | [Gated body step 0.0031640625 and rls ridge 0.1](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r01/summary.json) |
+| #3123 | [Gated body step 0.0031640625 and rls ridge 0.03](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02/summary.json) |
+| #3124 | [Gated rls ridge 0.03 with head reset fraction 0.03](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_preset003/summary.json) |
+| #3125 | [Gated r02 body L2-to-initialization](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_l2init/summary.json) |
+| #3126 | [Gated r02 decayed SGD readout](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_sgdhead/summary.json) |
+| #3127 | [Historical per-coordinate diagonal head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_diaghead/summary.json) |
+| #3128 | [Historical block-local head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_blockhead/summary.json) |
+| #3129 | [Historical pooled diagonal head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_gdiag/summary.json) |
+| #3131 | [Historical low-rank experiment with an indefinite covariance recurrence](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_lowrank/summary.json) |
+| #3144 | [Gradual transitions with a 64-step ramp](../../outputs/ipmnist_screening/gradual64_r2/summary.json) |
+
+The original `diaghead` and `gdiag` arm IDs are available for artifact replay
+with their bound source commits. New runs use the `diaghead_stable` and
+`gdiag_stable` suffixes. These controls update the diagonal covariance with
+positive terms and use scaled excitation to avoid float32 overflow. Both
+stable variants are unmeasured and require fresh matched runs.
+
+The archived `blockhead` ID uses block-local innovation denominators. Its
+new `blockhead_stable` control projects the dense update onto four covariance
+blocks using one global innovation denominator. It stores square root factors
+and updates them with Joseph-form QR, requiring O(G*b^2) state and O(G*b^3)
+arithmetic for G blocks of width b. This variant is unmeasured and needs a
+fresh matched run with resource accounting. Its scores cannot be inferred
+from the archived local-denominator experiment.
+
+The #3131 low-rank records are retained for source-bound artifact replay. Dropping
+an old downdate's off-diagonal entries while retaining its diagonal can make the
+covariance indefinite. With ridge 0.03 and eight stored directions, an eleven-step
+nonnegative-feature witness gives innovation −680.828 before a square root. The
+historical accuracy comparison therefore cannot support its claimed conclusion
+about low-rank head capacity. A live low-rank control requires a covariance design
+that preserves positive semidefiniteness and a fresh matched experiment.
+
 ## Artifact-schema boundary
 
-Every stored screening shard and summary in this append-only campaign is a v1
-record. New `run` invocations write `alberta.ipmnist_screening.shard.v2`.
-The live merge command accepts v1 or v2 inputs, never a mixture, and recomputes
-the derived summary from the supplied shards. It requires the declared control
-and exactly the same observed seed set for every arm, but it does not accept a
-separately declared expected-seed universe. A v1 merge remains a legacy,
-non-source-bound description; only a v2 merge carries the current strict
-source, dataset, runtime, arm, and input-shard bindings.
+The append-only campaign contains v1, v2, and v3 records. New `run` invocations
+write v2 shards for step and pool noise and v3 shards for gradual transitions.
+The live merge command recomputes summaries within a single shard schema. It
+requires the declared control and the same observed seed set for every arm.
+A v1 merge carries a legacy description. V2 and v3 add source, dataset,
+runtime, arm, and input-shard bindings.
 
 V2 binds the exact post-cast array bytes, arm fields and callback descriptors,
 a package-wide Python disk snapshot plus available checkout lock documents,

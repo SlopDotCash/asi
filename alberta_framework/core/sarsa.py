@@ -233,7 +233,16 @@ def _preflight_sarsa_direct_state(
     )
     final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
     head_parameters = n_heads * (final_width + 1)
-    horde_direct_scalars = 2 * (trunk_parameters + head_parameters) + sum(hidden_sizes) + 3
+    # Params and traces are one copy each (2x); the LMS optimizer state adds
+    # one scalar step size per (weight, bias) pair: two per trunk layer and
+    # two per head. The +3 covers step_count plus the two step_words.
+    horde_direct_scalars = (
+        2 * (trunk_parameters + head_parameters)
+        + sum(hidden_sizes)
+        + 2 * len(hidden_sizes)
+        + 2 * n_heads
+        + 3
+    )
     # last_observation, last_action, epsilon, step_count, and the two-word
     # Threefry key are all four-byte public-state leaves.
     aggregate_scalars = horde_direct_scalars + feature_dim + 5
@@ -346,7 +355,8 @@ class SARSAUpdateResult:
 
     Attributes:
         state: Updated SARSA state (includes new action a_{t+1})
-        action: Next action a_{t+1} selected for the new state
+        action: Next action a_{t+1} selected for the new state; the prior
+            action when the update is rejected and the state rolls back
         q_values: Q-values for all actions at s_{t+1}
         td_error: TD error for the taken action
         reward: Reward received
@@ -1159,7 +1169,11 @@ class SARSAAgent:
 
         return SARSAUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(transaction_applied, safe_next_action, -1),
+            # A rejected update rolls the state back, so the state keeps its
+            # prior action: report it instead of the -1 refusal sentinel,
+            # or the recorded action diverges from the action the state
+            # credits in learning. Only a missing prior action keeps -1.
+            action=jnp.where(transaction_applied, safe_next_action, state.last_action),
             q_values=jnp.where(transaction_applied, q_next, jnp.zeros_like(q_next)),
             td_error=jnp.where(diagnostic_valid, td_error, 0.0),
             reward=jnp.where(jnp.isfinite(raw_reward), raw_reward, 0.0),
@@ -1476,9 +1490,11 @@ def run_sarsa_from_arrays(
     )
     elapsed = time.time() - t0
 
-    # Update uptime on the inner learner state
+    # Host-only clocks are narrowed while carried through the traced scan.
+    # Restore the incoming values and advance uptime from the host clock.
     final_learner = final_state.learner_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.learner_state.uptime_s + elapsed,
+        birth_timestamp=state.learner_state.birth_timestamp,
+        uptime_s=state.learner_state.uptime_s + elapsed,
     )
     final_state = final_state.replace(learner_state=final_learner)  # type: ignore[attr-defined]
 
@@ -1544,7 +1560,9 @@ def run_sarsa_from_arrays_final_state(
     )
     jax.block_until_ready(final_state)  # type: ignore[no-untyped-call]
     elapsed = time.time() - t0
+    # Same host-clock restore as run_sarsa_from_arrays.
     final_learner = final_state.learner_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.learner_state.uptime_s + elapsed,
+        birth_timestamp=state.learner_state.birth_timestamp,
+        uptime_s=state.learner_state.uptime_s + elapsed,
     )
     return final_state.replace(learner_state=final_learner)  # type: ignore[no-any-return, attr-defined]

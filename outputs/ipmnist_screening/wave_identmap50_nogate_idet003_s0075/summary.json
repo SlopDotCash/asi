@@ -1,0 +1,181 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "rls_head_resid_identmap50_r_nogate_idet003_s0075",
+ "created_unix": 1791722915.3985713,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "7.0.0-39-generic",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.3"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 3,
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.9341155325555555,
+   "average_online_accuracy_stderr": 6.931639039449491e-05,
+   "average_plasticity_mean": 0.6833752548333334,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_identmap50_r_nogate_idet003_s0075",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 0.0,
+    "head_resid": 1.0,
+    "ident_match2": 200.0,
+    "ident_match3": 2000.0,
+    "ident_match_at": 50.0,
+    "ident_reset_frac": 0.03,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.0075,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.00010738079761904798,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.93412,
+    0.934233,
+    0.933993
+   ],
+   "per_seed_late_window_slope": [
+    -1.929e-05,
+    -0.00010357,
+    -0.00019929
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 292.07
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v2",
+ "shard_manifest": [
+  {
+   "config_name": "rls_head_resid_identmap50_r_nogate_idet003_s0075",
+   "path": "outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s0075/rls_head_resid_identmap50_r_nogate_idet003_s0075_seed0.json",
+   "seed": 0,
+   "sha256": "1af6c49d88e84f6a9e4fafa22b07c07cd19e840f25b93631d09fcf9272b9398a",
+   "size_bytes": 5861
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_nogate_idet003_s0075",
+   "path": "outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s0075/rls_head_resid_identmap50_r_nogate_idet003_s0075_seed1.json",
+   "seed": 1,
+   "sha256": "993bb8c6639dbf310d387f63fe78296783a649e569f409baccefd15acbb02005",
+   "size_bytes": 5866
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_nogate_idet003_s0075",
+   "path": "outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s0075/rls_head_resid_identmap50_r_nogate_idet003_s0075_seed2.json",
+   "seed": 2,
+   "sha256": "cff97539521ea8081145dab6e5b226fcfd1df1fae20a1f2c115f68bbb99ae0ed",
+   "size_bytes": 5848
+  }
+ ],
+ "slope_window": 15,
+ "source_provenance": {
+  "git_commit": "e8bd7e74d96e6e27f50b0007cb9e751b92665530",
+  "git_object_format": "sha1",
+  "git_tree": "9390e1c8dc746e6e51a5175be46b2f13687490cb",
+  "relevant_source_file_count": 232,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "97f6498cfd2205113c1d98f62ae77f4acc800aa7cf1636c10665050f5954e742",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}

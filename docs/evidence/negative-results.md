@@ -341,6 +341,41 @@ postmortem.
     wd0 the body weights do not grow large enough for a norm bound to
     matter. Records: `outputs/ipmnist_screening/s02_wd0_wclip/`.
 
+### Historical identmap momentum screen
+
+Bias-corrected first-moment EMA on the fixed-step gated residual body scored
+0.91113 at momentum 0.9 and 0.90766 at momentum 0.99. The gated parent scored
+0.91142 on the same three development seeds. The variants lost on two of
+three and three of three seeds, respectively.
+See the retained [0.9 wave](../../outputs/ipmnist_screening/wave_identmap50_r_mom9/README.md)
+and [0.99 wave](../../outputs/ipmnist_screening/wave_identmap50_r_mom99/README.md).
+
+### Historical identmap head-reset threshold screen
+
+Reducing the head reset threshold from 0.05 to 0.03 on the gated
+`idet003_s0031640625_r02` arm lost on all three matched development seeds.
+The reported mean difference was −0.00039 online accuracy. The experiment
+kept the identifier trigger at 0.03 and the RLS ridge at 0.03. This
+brackets the head reset threshold under that historical protocol.
+See the [retained wave](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_preset003/README.md).
+
+### Historical identmap L2-to-initialization screen
+
+Pulling the gated r02 arm's four body tensors toward their initialization
+lost on all three matched 60-task development seeds. The retained report
+records a mean paired difference of −0.01117 online accuracy against the
+ordinary weight-decay arm. The RLS update and identifier were held fixed.
+See the [retained wave](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_l2init/README.md).
+
+### Historical identmap decayed SGD readout screen
+
+The gated r02 body with a decayed SGD readout averaged 0.45005 online
+accuracy on three matched 60-task development seeds. The original
+recursive least-squares readout averaged 0.94859. Both used the same
+one-hot squared loss. The SGD comparator also applied decay to the
+readout weights, so this comparison covers the two complete update rules.
+See the [retained wave](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_sgdhead/README.md).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
@@ -680,3 +715,40 @@ Preregistered fresh-seed screen (seeds 30-39, 60 tasks, prereg ccb788d6). It tes
 - The descriptive arm at weight_decay 0.005 gained +0.008022. That is post hoc and nonpromoting; it would need its own preregistered sweep.
 
 Evidence: [decayonly_fresh_screen](../../outputs/ipmnist_screening/decayonly_fresh_screen/RESULTS.md).
+
+## IPMNIST anneal peak on anneal_f2t1000 (2026-10-31)
+
+The preregistered development experiment (b9deafcd) compared three higher
+starting and post-shift steps against the anneal_f2t1000 parent at a fixed
+floor of 0.0028125 and tau of 1000. All three peaks lost at the seed-0 tune
+gate. The screen and confirmation seeds were never run. The historical
+[results](../../outputs/ipmnist_screening/anneal_peak_screen/RESULTS.md)
+retain the paired scores, environment checks, and source bindings.
+
+## Shrink and perturb at the first identmap remap (2026-10-30)
+
+This preregistered development screen tested the residual-body shrink and
+perturb transform at the first remap of each detected task. The selected
+shrink 0.8 and perturbation scale 0.01 lost to the local parent on all three
+60-task seeds. The [retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_snp/README.md)
+records the paired comparison, unsuccessful tune cells, and source bindings.
+
+## Autostep body steps on idet003_s005625 (2026-10-30)
+
+The preregistered development screen compared fixed body steps with
+Autostep's per-weight steps on the gated residual body. The selected meta
+rate lost to its locally measured parent on all three 60-task seeds and
+failed the preregistered gate. The [retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_autostep/README.md)
+documents the paired results and why the historical parent shards were not
+used for that pairing.
+
+## Polyak body averaging on anneal_f2t1000 (2026-10-30)
+
+The preregistered development screen used a window-capped average of the
+body for prediction, with an optional averaged-feature RLS head update.
+The selected window-100 arm using raw head features improved one of three
+seeds and missed the preregistered gain. The historical
+[results](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_anneal_polyak/RESULTS.md)
+retain the original metrics. The current implementation scores accuracy and
+loss on the averaged predictor and measures plasticity using the raw
+learner both before and after the update.

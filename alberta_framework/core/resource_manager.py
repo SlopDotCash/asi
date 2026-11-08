@@ -664,7 +664,14 @@ class LearnedResourceManager:
             _skip_zero_scale(self._discount, old_context_logits) + self._learning_rate * advantages
         )
         # Remove an arbitrary additive constant for numerical stability.
-        new_context_logits = new_context_logits - jnp.mean(new_context_logits)
+        center = jnp.mean(new_context_logits)
+        # Compute a bounded mean when a finite row's sum overflows.
+        peak = jnp.max(jnp.abs(new_context_logits))
+        _, exponent = jnp.frexp(peak)
+        scaled = jnp.ldexp(new_context_logits, -exponent)
+        bounded_center = jnp.clip(jnp.mean(scaled), jnp.min(scaled), jnp.max(scaled))
+        center = jnp.where(jnp.isfinite(center), center, jnp.ldexp(bounded_center, exponent))
+        new_context_logits = new_context_logits - center
         new_log_weights = state.log_weights.at[context].set(new_context_logits)
 
         old_ema = state.loss_ema[context]

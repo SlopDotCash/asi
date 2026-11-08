@@ -596,8 +596,14 @@ def init_step9_state(
     """Initialize and prime the Step 9 state."""
     control_key, model_key, behavior_key = jr.split(key, 3)
     feature_dim = int(jnp.ravel(initial_observation).shape[0])
-    control_state = agent.init(feature_dim, control_key)
-    control_state, _ = agent.start(control_state, initial_observation)
+    control_init = agent.init(feature_dim, control_key)
+    control_state, _ = agent.start(control_init, initial_observation)
+    # agent.start is jitted, so the host-only lifecycle clocks it carries
+    # come back narrowed to float32; restore the exact init values.
+    control_state = control_state.replace(
+        birth_timestamp=control_init.birth_timestamp,
+        uptime_s=control_init.uptime_s,
+    )
     behavior_model = BehaviorModel(
         BehaviorModelConfig(
             n_actions=agent.config.n_actions,
@@ -673,7 +679,6 @@ def _mean_squared_deviation(delta: Array) -> Array:
     return jnp.where(jnp.isfinite(direct), direct, stable)
 
 
-@functools.partial(jax.jit, static_argnums=(0, 1, 2, 3))
 def step9_update(
     config: Step9DreamingConfig,
     agent: DifferentialSARSAAgent,
@@ -692,6 +697,42 @@ def step9_update(
     predicted transition is numerically finite AND every rollout control
     transaction applies.
     """
+    result = _step9_update(config, agent, model, buffer, state, reward, next_observation)
+    # The update is jitted, so the host-only lifecycle clocks come back
+    # narrowed to float32. One foreground transition advances neither clock,
+    # so restore the exact incoming values on the returned state.
+    new_state = result.state
+    return Step9DreamingUpdateResult(
+        state=new_state.replace(
+            control_state=new_state.control_state.replace(
+                birth_timestamp=state.control_state.birth_timestamp,
+                uptime_s=state.control_state.uptime_s,
+            ),
+            world_model_state=new_state.world_model_state.replace(
+                learner_state=new_state.world_model_state.learner_state.replace(
+                    birth_timestamp=state.world_model_state.learner_state.birth_timestamp,
+                    uptime_s=state.world_model_state.learner_state.uptime_s,
+                ),
+            ),
+        ),
+        real_control_result=result.real_control_result,
+        real_model_result=result.real_model_result,
+        dream_td_errors=result.dream_td_errors,
+        dream_accepted=result.dream_accepted,
+    )
+
+
+@functools.partial(jax.jit, static_argnums=(0, 1, 2, 3))
+def _step9_update(
+    config: Step9DreamingConfig,
+    agent: DifferentialSARSAAgent,
+    model: ActionConditionedWorldModel,
+    buffer: RecentObservationBuffer,
+    state: Step9DreamingState,
+    reward: Array,
+    next_observation: Array,
+) -> Step9DreamingUpdateResult:
+    """Jitted body of :func:`step9_update`."""
     real_discount = jnp.asarray(config.model_gamma, dtype=jnp.float32)
     real_model_result = model.update(
         state.world_model_state,
@@ -909,6 +950,7 @@ def step9_update(
             step_words=control_after_real.step_words,
             q_trace_weights=ctrl_state.q_trace_weights,
             q_trace_bias=ctrl_state.q_trace_bias,
+            previous_discount=ctrl_state.previous_discount,
         )
         next_ctrl = cast(
             DifferentialSARSAState,
@@ -1063,8 +1105,14 @@ def run_step9_scan(
     if not isinstance(real_td_errors, jax.core.Tracer):
         jax.block_until_ready(real_td_errors)  # type: ignore[no-untyped-call]
         elapsed = time.time() - t0
-    # Preserve the model's host-only lifecycle clocks at the batch boundary.
+    # Preserve the host-only lifecycle clocks at the batch boundary. Control
+    # uptime is kept exact, not advanced by the scan's wall time, as in
+    # run_step7_scan.
     final_state = final_state.replace(
+        control_state=final_state.control_state.replace(
+            birth_timestamp=state.control_state.birth_timestamp,
+            uptime_s=state.control_state.uptime_s,
+        ),
         world_model_state=final_state.world_model_state.replace(
             learner_state=final_state.world_model_state.learner_state.replace(
                 birth_timestamp=state.world_model_state.learner_state.birth_timestamp,

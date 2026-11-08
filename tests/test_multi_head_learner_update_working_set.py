@@ -11,16 +11,17 @@ from alberta_framework.core.multi_head_learner import (
     _direct_state_bytes,
     _multi_head_update_working_set_bytes,
     _preflight_multi_head_update_working_set,
+    measure_multi_head_mlp_state_nbytes,
 )
 
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
 _OVERFLOW_HIDDEN = 30_000_000
-_LAST_FIT_HIDDEN = 25_565_280
-_FIRST_OVERFLOW_HIDDEN = 25_565_281
+_LAST_FIT_HIDDEN = 25_565_279
+_FIRST_OVERFLOW_HIDDEN = 25_565_280
 _OVERFLOW_FEATURE_DIM = 90_000_000
-_LAST_FIT_FEATURE_DIM = 89_478_480
-_FIRST_OVERFLOW_FEATURE_DIM = 89_478_481
+_LAST_FIT_FEATURE_DIM = 89_478_479
+_FIRST_OVERFLOW_FEATURE_DIM = 89_478_480
 
 
 def _unit_persist_bytes(hidden: int) -> int:
@@ -42,7 +43,7 @@ def test_named_persist_and_width_still_fit_at_overflow() -> None:
         1, (_OVERFLOW_HIDDEN,), 1
     )
     extras_bytes = working_set_bytes - 3 * persist_bytes
-    assert persist_bytes == 840_000_020
+    assert persist_bytes == 840_000_036
     assert persist_bytes <= _INT32_MAX
     assert persist_bytes + extras_bytes <= _INT32_MAX
     assert 4 * _OVERFLOW_HIDDEN <= _INT32_MAX
@@ -81,7 +82,7 @@ def test_init_rejects_linear_feature_dim_working_set_before_allocation() -> None
         1, (), _OVERFLOW_FEATURE_DIM
     )
     extras_bytes = working_set_bytes - 3 * persist_bytes
-    assert persist_bytes == 720_000_020
+    assert persist_bytes == 720_000_028
     assert persist_bytes <= _INT32_MAX
     assert persist_bytes + extras_bytes <= _INT32_MAX
     assert working_set_bytes > _INT32_MAX
@@ -128,7 +129,7 @@ def test_persist_bound_still_fires_before_working_set() -> None:
 
 def test_legal_small_multi_head_learner_still_constructs() -> None:
     persist_bytes = _direct_state_bytes(2, (4,), 3)
-    assert persist_bytes == 236
+    assert persist_bytes == 260
     learner = MultiHeadMLPLearner(
         n_heads=2, hidden_sizes=(4,), sparsity=0.0, use_layer_norm=False
     )
@@ -138,3 +139,25 @@ def test_legal_small_multi_head_learner_still_constructs() -> None:
         jnp.zeros((3,), dtype=jnp.float32),
         jnp.zeros((2,), dtype=jnp.float32),
     )
+
+
+def test_named_persist_matches_measured_state_bytes() -> None:
+    # The named persist count must cover every JAX leaf init allocates,
+    # including the per-(weight, bias) LMS step-size scalars: two per trunk
+    # layer and two per head. Otherwise the int32 persist/working-set
+    # preflight accepts states whose true bytes exceed the bound.
+    for n_heads, hidden_sizes, feature_dim in (
+        (2, (4,), 3),
+        (1, (), 3),
+        (3, (8, 4), 5),
+    ):
+        learner = MultiHeadMLPLearner(
+            n_heads=n_heads,
+            hidden_sizes=hidden_sizes,
+            sparsity=0.0,
+            use_layer_norm=False,
+        )
+        state = learner.init(feature_dim=feature_dim, key=jr.key(0))
+        assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+            n_heads, hidden_sizes, feature_dim
+        )

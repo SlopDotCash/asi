@@ -525,6 +525,8 @@ def _upgd_utility_and_gate(
     utility: dict[str, Array],
     count: Array,
     utility_decay: float,
+    *,
+    guard_zero_max: bool = False,
 ) -> tuple[dict[str, Array], dict[str, Array]]:
     """UPGD utility EMA update + global-max sigmoid gate (lean-step equations)."""
     beta = utility_decay
@@ -534,6 +536,8 @@ def _upgd_utility_and_gate(
         for name in params
     }
     global_max = jnp.max(jnp.stack([jnp.max(new_utility[name]) for name in sorted(params)]))
+    if guard_zero_max:
+        global_max = jnp.where(global_max == 0.0, 1.0, global_max)
     bias_correction = 1.0 - jnp.power(
         jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
     )
@@ -1315,8 +1319,10 @@ def upgd_autostep_update(
     params: dict[str, Array],
     state: UPGDAutostepState,
     grads: dict[str, Array],
-    noise: dict[str, Array],
+    noise: dict[str, Array] | None,
     hp: Mapping[str, float],
+    *,
+    _guard_zero_max: bool = False,
 ) -> tuple[dict[str, Array], UPGDAutostepState]:
     """UPGD-W step with Autostep per-weight step-size adaptation.
 
@@ -1330,7 +1336,7 @@ def upgd_autostep_update(
     tau = hp["tau"]
     count = _next_utility_clock(state.step)
     utility, gate = _upgd_utility_and_gate(
-        params, grads, state.utility, count, hp["utility_decay"]
+        params, grads, state.utility, count, hp["utility_decay"], guard_zero_max=_guard_zero_max,
     )
     z_all = {name: grads[name] * (1.0 - gate[name]) for name in params}
     raw_alpha: dict[str, Array] = {}
@@ -1376,9 +1382,8 @@ def upgd_autostep_update(
         keep = 1.0 - gate[name]
         z = z_all[name]
         alpha = jnp.clip(raw_alpha[name] / m_factor, _AUTOSTEP_ALPHA_MIN, _AUTOSTEP_ALPHA_MAX)
-        new_params[name] = params[name] * (1.0 - alpha * wd) - alpha * (
-            (grads[name] + noise[name]) * keep
-        )
+        direction = z if noise is None else (grads[name] + noise[name]) * keep
+        new_params[name] = params[name] * (1.0 - alpha * wd) - alpha * direction
         new_alpha[name] = alpha
         trace_candidate = state.trace[name] * (1.0 - alpha * z * z) + alpha * z
         new_trace[name] = jnp.where(
@@ -4721,6 +4726,27 @@ class RLSHeadState:
     wout: Array
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadMomentumState(RLSHeadState):
+    """RLS carry with a first moment for the four residual body gradients."""
+
+    momentum: dict[str, Array]
+
+
+@chex.dataclass(frozen=True)
+class RLSHeadDiagonalState(RLSHeadState):
+    """RLS carry storing only the diagonal vector of the covariance."""
+
+
+@chex.dataclass(frozen=True)
+class RLSHeadBlockState(RLSHeadState):
+    """RLS carry with ``p`` storing one square root per covariance block.
+
+    A block's covariance is ``p[b] @ p[b].T``. Its factor is updated with
+    a Joseph-form QR step, including excitation from every other block.
+    """
+
+
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
 _WHITEN_NORM_FLOOR = 1e-12
 _NEWTON_RIDGE_REL = 1e-3
@@ -4763,6 +4789,25 @@ class RLSHeadSMState:
     p: Array
     wout: Array
     sm: dict[str, Array]
+
+
+@chex.dataclass(frozen=True)
+class RLSHeadASState:
+    """RLS readout and normalizer with a body-only Autostep carry."""
+
+    autostep: UPGDAutostepState
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+
+    @property
+    def utility(self) -> dict[str, Array]:
+        return self.autostep.utility
+
+    @property
+    def step(self) -> Array:
+        return self.autostep.step
 
 
 def _rls_head_hp(**overrides: float) -> dict[str, float]:
@@ -4834,6 +4879,62 @@ def _make_rls_head_l2init_learner(
     return _make_rls_head_learner(base_hp, _decay_to_init=True)
 
 
+def _rls_head_identmap_l2init_hp() -> dict[str, float]:
+    """Return the frozen historical r02 L2-Init configuration."""
+    return {
+        **_rls_head_hp(
+            rls_lambda=1.0,
+            rls_reset_frac=0.05,
+            head_resid=1.0,
+            ident_match_at=50.0,
+            ident_match2=200.0,
+            ident_match3=2000.0,
+            ident_reset_frac=0.03,
+            step_size=0.0031640625,
+            rls_ridge_init=0.03,
+        ),
+        "decay_to_init": 1.0,
+    }
+
+
+def _make_rls_head_identmap_l2init_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Build the gated chain's body-only L2-Init cell, failing closed on drift.
+
+    ``decay_to_init = 0.0`` delegates to the incumbent identmap factory so
+    the reduction to the r02 parent stays pinnable bit-for-bit; the
+    registered cell is the frozen ``1.0`` endpoint.
+    """
+    expected = _rls_head_identmap_l2init_hp()
+    if set(hp) != set(expected):
+        raise ValueError(
+            "frozen L2-Init configuration requires exactly the registered keys"
+        )
+    invalid = [
+        name
+        for name, expected_value in expected.items()
+        if name != "decay_to_init"
+        and (
+            type(hp[name]) is not float
+            or not math.isfinite(hp[name])
+            or hp[name].hex() != expected_value.hex()
+        )
+    ]
+    flag = hp["decay_to_init"]
+    if type(flag) is not float or flag not in (0.0, 1.0):
+        invalid.append("decay_to_init")
+    if invalid:
+        raise ValueError(
+            "frozen L2-Init configuration differs at: " + ", ".join(invalid)
+        )
+    base_hp = dict(hp)
+    del base_hp["decay_to_init"]
+    return _make_rls_head_identmap_learner(
+        base_hp, _decay_to_init=flag == 1.0
+    )
+
+
 def _rls_head_forward(
     params: dict[str, Array], wout: Array, normalized: Array,
 ) -> tuple[Array, Array]:
@@ -4844,6 +4945,91 @@ def _rls_head_forward(
     scale = 1.0 / math.sqrt(m)
     phi = jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
     return wout.T @ phi, phi
+
+
+def _diagonal_rls_gain(
+    p: Array, phi: Array, *, pooled: bool,
+) -> tuple[Array, Array]:
+    """Return gain and the diagonal covariance update for lambda one."""
+    # Ridge 0.03 and lambda one bound sqrt(p) below eight. Divide phi
+    # before multiplying so even the largest finite feature stays finite.
+    root = jnp.sqrt(p)
+    weighted = root * (phi * 0.125)
+    magnitude = jnp.max(jnp.abs(weighted)) if pooled else jnp.abs(weighted)
+    scale = jnp.maximum(1.0, magnitude)
+    scaled = (weighted / scale) * 8.0
+    prior = (1.0 / scale) / scale
+    projected = root * scaled
+    excitation = scaled * scaled
+    remaining = prior
+    if pooled:
+        # Each diagonal keeps the other coordinates' excitation. Exclusive
+        # scans avoid subtracting the largest coordinate from the pooled sum.
+        zero = jnp.zeros_like(excitation[:1])
+        before = jnp.concatenate([zero, jnp.cumsum(excitation[:-1])])
+        after = jnp.concatenate([jnp.cumsum(excitation[:0:-1])[::-1], zero])
+        remaining = prior + before + after
+        denominator = prior + jnp.sum(excitation)
+    else:
+        denominator = prior + excitation
+    # A previously underflowed covariance can yield zero scaled excitation.
+    denominator = jnp.where(denominator > 0.0, denominator, 1.0)
+    gain = (projected / denominator) / scale
+    # Multiply before dividing by a denominator above one to avoid a
+    # representable covariance passing through a subnormal ratio.
+    numerator = p * (remaining / jnp.minimum(denominator, 1.0))
+    covariance = jnp.minimum(p, numerator / jnp.maximum(denominator, 1.0))
+    return gain, covariance
+
+
+def _block_rls_gain(roots: Array, phi: Array) -> tuple[Array, Array]:
+    """Globally normalized gain and square roots of projected covariance.
+
+    The updated covariance is the block projection of the dense RLS update
+    from the supplied block-diagonal prior. QR of the Joseph factors keeps
+    the covariance positive semidefinite, with O(G*b^3) work per step.
+    """
+    groups, width, _ = roots.shape
+    padded = groups * width
+    features = jnp.pad(phi, (0, padded - phi.shape[0])).reshape(groups, width)
+    # The prior bounds every root entry by sqrt(1 / 0.03) < 8. Bound dot
+    # products with a safety margin, dividing only near overflow so tiny
+    # features survive. Scale in covariance space, including zero axes.
+    root_magnitude = jnp.max(jnp.abs(roots), axis=2)
+    largest_term = jnp.max(jnp.abs(features) * (root_magnitude * 0.125))
+    dot_divisor = jnp.maximum(
+        1.0, largest_term / (float(np.finfo(np.float32).max) / (16.0 * width)),
+    )
+    transformed = jnp.einsum("gji,gj->gi", roots, features / dot_divisor)
+    scale = jnp.maximum(1.0, jnp.max(jnp.abs(transformed)))
+    transformed = (transformed / scale) * dot_divisor
+    excitation = jnp.sum(transformed * transformed, axis=1)
+    prior = (1.0 / scale) / scale
+    denominator = prior + jnp.sum(excitation)
+    denominator = jnp.where(denominator > 0.0, denominator, 1.0)
+    projected = jnp.einsum("gij,gj->gi", roots, transformed)
+    normalized = projected / denominator
+    gain = (normalized / scale).reshape(padded)[:phi.shape[0]]
+
+    # Hypot retains representable square roots when their squares underflow.
+    # Exclusive scans keep the other blocks' excitation without subtracting
+    # a dominant term from the total innovation.
+    excitation_root = jax.lax.associative_scan(
+        jnp.hypot, jnp.abs(transformed), axis=1,
+    )[:, -1]
+    zero = jnp.zeros_like(excitation_root[:1])
+    before = jnp.concatenate([
+        zero, jax.lax.associative_scan(jnp.hypot, excitation_root)[:-1],
+    ])
+    after = jnp.concatenate([
+        jax.lax.associative_scan(jnp.hypot, excitation_root, reverse=True)[1:], zero,
+    ])
+    remaining_root = jnp.hypot(1.0 / scale, jnp.hypot(before, after))
+    residual = roots - normalized[:, :, None] * transformed[:, None, :]
+    correction = normalized[:, :, None] * remaining_root[:, None, None]
+    factors = jnp.concatenate([residual, correction], axis=2)
+    _, triangular = jnp.linalg.qr(jnp.swapaxes(factors, 1, 2), mode="reduced")
+    return gain, jnp.swapaxes(triangular, 1, 2)
 
 
 def _make_rls_head_learner(
@@ -4958,6 +5144,88 @@ def _make_rls_head_learner(
             raise ValueError("body_sm_step must be positive and finite")
         if sm_eps <= 0.0 or not math.isfinite(sm_eps):
             raise ValueError("body_sm_eps must be positive and finite")
+    as_enabled = "body_as_meta" in hp
+    as_meta = float(hp.get("body_as_meta", 0.0))
+    as_tau = float(hp.get("body_as_tau", 1e4))
+    if "body_as_tau" in hp and not as_enabled:
+        raise ValueError("body_as_tau requires body_as_meta")
+    if as_enabled:
+        if not 0.0 <= as_meta <= 1.0:
+            raise ValueError("body_as_meta must lie in [0, 1]")
+        if not 1.0 <= as_tau <= float(np.finfo(np.float32).max):
+            raise ValueError("body_as_tau must be float32 and >= 1")
+        if not (resid and gate_enabled) or any((
+            whiten_enabled, _decay_to_init, sm_enabled, wclip_on, "anneal_floor" in hp,
+        )):
+            raise ValueError("body Autostep requires the plain fixed-step gated residual body")
+    as_hp = {
+        "weight_decay": weight_decay, "utility_decay": utility_decay,
+        "meta_step_size": as_meta, "tau": as_tau,
+    }
+
+    head_sgd = hp.get("rls_head_sgd", 0.0)
+    if head_sgd not in (0.0, 1.0):
+        raise ValueError("rls_head_sgd must be 0.0 or 1.0")
+    sgd_head = head_sgd == 1.0
+    head_sgd_step = hp.get("rls_head_sgd_step", 0.01)
+    head_param_decay = 1.0 - head_sgd_step * weight_decay
+    if sgd_head:
+        if not (
+            math.isfinite(head_sgd_step)
+            and head_sgd_step >= 0.0
+            and 0.0 <= head_param_decay <= 1.0
+        ):
+            raise ValueError("SGD head requires a finite step and a decay factor in [0, 1]")
+        if (
+            not resid
+            or not gate_enabled
+            or whiten_enabled
+            or newton
+            or sm_enabled
+            or as_enabled
+            or _decay_to_init
+            or wclip_on
+        ):
+            raise ValueError("SGD head is scoped to the plain gated residual body")
+
+    body_momentum = hp.get("body_momentum", 0.0)
+    if not 0.0 <= body_momentum < 1.0 or np.float32(body_momentum) == 1.0:
+        raise ValueError("body_momentum must lie in [0, 1) after float32 rounding")
+    momentum_enabled = body_momentum > 0.0
+    if momentum_enabled and (
+        not resid or not gate_enabled or whiten_enabled or newton or sm_enabled
+        or _decay_to_init or wclip_on or sgd_head
+        or any(name.startswith(("anneal_", "body_as_", "polyak_", "snp_")) for name in hp)
+    ):
+        raise ValueError("body momentum requires the plain fixed-step gated residual body")
+
+    head_diag = hp.get("rls_head_diag", 0.0)
+    head_gdiag = hp.get("rls_head_gdiag", 0.0)
+    if any(value not in (0.0, 1.0) for value in (head_diag, head_gdiag)):
+        raise ValueError("rls_head_diag and rls_head_gdiag must be 0.0 or 1.0")
+    diagonal_enabled = head_diag == 1.0 or head_gdiag == 1.0
+    head_block = hp.get("rls_head_block", 0.0)
+    if not math.isfinite(head_block) or head_block < 0.0 or not float(head_block).is_integer():
+        raise ValueError("rls_head_block must be zero or a positive integer")
+    block_enabled = head_block > 0.0
+    block_count = int(head_block)
+    structured_head = diagonal_enabled or block_enabled
+    if structured_head:
+        if sum((sgd_head, head_diag == 1.0, head_gdiag == 1.0, block_enabled)) > 1 or (
+            hp.get("rls_head_rank", 0.0) != 0.0
+        ):
+            raise ValueError("RLS head selectors are mutually exclusive")
+        if rls_lambda != 1.0 or ridge_init != 0.03 or cap_enabled:
+            raise ValueError("structured RLS requires lambda 1, ridge 0.03, and no trace cap")
+        if (
+            not resid or not gate_enabled or whiten_enabled or sm_enabled or as_enabled
+            or _decay_to_init or wclip_on or momentum_enabled
+            or any(name.startswith(("anneal_", "polyak_", "snp_")) for name in hp)
+        ):
+            raise ValueError("structured RLS requires the plain fixed-step gated residual body")
+    state_type = RLSHeadDiagonalState if diagonal_enabled else RLSHeadState
+    if block_enabled:
+        state_type = RLSHeadBlockState
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -4974,10 +5242,29 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState:
+    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState:
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
+        if as_enabled:
+            zeros = {name: jnp.zeros_like(params[name]) for name in _RLS_HEAD_BODY}
+            return RLSHeadASState(  # type: ignore[call-arg]
+                autostep=UPGDAutostepState(  # type: ignore[call-arg]
+                    utility=zeros,
+                    step=jnp.array(0, dtype=jnp.int32),
+                    alpha={name: jnp.full_like(params[name], step_size) for name in _RLS_HEAD_BODY},
+                    trace=zeros,
+                    normalizer=zeros,
+                ),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+            )
         if sm_enabled:
             return RLSHeadSMState(  # type: ignore[call-arg]
                 utility={
@@ -5013,7 +5300,18 @@ def _make_rls_head_learner(
                 wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
                 init_params={name: params[name] for name in _RLS_HEAD_BODY},
             )
-        return RLSHeadState(  # type: ignore[call-arg]
+        initial_p = jnp.eye(m, dtype=jnp.float32) / ridge_init
+        if diagonal_enabled:
+            initial_p = jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32)
+        if block_enabled:
+            if block_count > m:
+                raise ValueError("rls_head_block must not exceed the head width")
+            width = -(-m // block_count)
+            initial_p = jnp.tile(
+                jnp.eye(width, dtype=jnp.float32) / math.sqrt(ridge_init),
+                (block_count, 1, 1),
+            )
+        state = state_type(  # type: ignore[call-arg]
             utility={name: jnp.zeros_like(value) for name, value in params.items()},
             step=jnp.array(0, dtype=jnp.int32),
             norm=EMANormState(  # type: ignore[call-arg]
@@ -5022,9 +5320,20 @@ def _make_rls_head_learner(
                 count=jnp.zeros(input_dim, dtype=jnp.float32),
             ),
             fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
-            p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
+            p=initial_p,
             wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
         )
+        if momentum_enabled:
+            return RLSHeadMomentumState(  # type: ignore[call-arg]
+                utility=state.utility,
+                step=state.step,
+                norm=state.norm,
+                fast_mean=state.fast_mean,
+                p=state.p,
+                wout=state.wout,
+                momentum={name: jnp.zeros_like(params[name]) for name in _RLS_HEAD_BODY},
+            )
+        return state
 
     def _gated_sgd(
         params: dict[str, Array],
@@ -5036,6 +5345,7 @@ def _make_rls_head_learner(
         init_params: Mapping[str, Array] | None = None,
         lr: Array | None = None,
         decay_lr: Array | None = None,
+        direction: Mapping[str, Array] | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
         """Champion utility-EMA + global-max sigmoid gate + gated decayed SGD
         over ``names``; other tensors pass through with untouched utility."""
@@ -5068,9 +5378,9 @@ def _make_rls_head_learner(
             decay = _runtime_decay(dl, step_size, param_decay, weight_decay)
         for name in names:
             if init_params is None:
-                # Keep the incumbent expression byte-for-byte unchanged.
+                applied_grad = grads[name] if direction is None else direction[name]
                 new_params[name] = params[name] * decay - step * (
-                    grads[name]
+                    applied_grad
                     * (
                         1.0
                         - jax.nn.sigmoid(
@@ -5099,19 +5409,28 @@ def _make_rls_head_learner(
 
     def full_step(
         params: dict[str, Array],
-        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState,
         x: Array,
         y: Array,
         key: Array,
         lr: Array | None = None,
         decay_lr: Array | None = None,
+        pred_body: Mapping[str, Array] | None = None,
+        pred_head_avg: bool = False,
     ) -> tuple[
         dict[str, Array],
-        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
-        if lr is not None and (sm_enabled or not gate_enabled or not resid):
+        if structured_head and (
+            lr is not None or decay_lr is not None or pred_body is not None or pred_head_avg
+        ):
+            raise ValueError("structured RLS requires fixed steps and the live predictor")
+        if momentum_enabled and (lr is not None or decay_lr is not None):
+            raise ValueError("body momentum requires a fixed step and decay")
+        new_momentum = None
+        if lr is not None and (as_enabled or sm_enabled or not gate_enabled or not resid):
             raise ValueError("a runtime step needs the gated residual body")
         if _decay_to_init:
             if not isinstance(state, RLSHeadL2InitState):
@@ -5189,7 +5508,23 @@ def _make_rls_head_learner(
                 (loss, (logits, phi)), body_grads = jax.value_and_grad(
                     head_loss, has_aux=True
                 )(body)
-            if sm_enabled:
+            if as_enabled:
+                assert isinstance(state, RLSHeadASState)
+                if as_meta == 0.0:
+                    new_params, new_utility = _gated_sgd(
+                        params, body_grads, state.utility, count,
+                        _RLS_HEAD_BODY, guard_zero_max=True,
+                    )
+                    new_autostep = UPGDAutostepState(  # type: ignore[call-arg]
+                        utility=new_utility, step=count, alpha=state.autostep.alpha,
+                        trace=state.autostep.trace, normalizer=state.autostep.normalizer,
+                    )
+                else:
+                    updated_body, new_autostep = upgd_autostep_update(
+                        body, state.autostep, body_grads, None, as_hp, _guard_zero_max=True,
+                    )
+                    new_params = {**params, **updated_body}
+            elif sm_enabled:
                 assert isinstance(state, RLSHeadSMState)
                 # Champion utility EMA and sigmoid gate byte-identical to
                 # _gated_sgd; only the step geometry changes: the raw body
@@ -5238,6 +5573,23 @@ def _make_rls_head_learner(
                         )
                     )
             elif gate_enabled:
+                direction = None
+                if momentum_enabled:
+                    if not isinstance(state, RLSHeadMomentumState):
+                        raise TypeError("body momentum requires RLSHeadMomentumState")
+                    new_momentum = {
+                        name: body_momentum * state.momentum[name]
+                        + (1.0 - body_momentum) * body_grads[name]
+                        for name in _RLS_HEAD_BODY
+                    }
+                    correction = 1.0 - jnp.power(
+                        jnp.asarray(body_momentum, dtype=jnp.float32),
+                        count.astype(jnp.float32),
+                    )
+                    direction = {
+                        name: value / correction for name, value in new_momentum.items()
+                    }
+                # Utility tracks the raw gradient, independent of the step direction.
                 new_params, new_utility = _gated_sgd(
                     params,
                     body_grads,
@@ -5247,6 +5599,7 @@ def _make_rls_head_learner(
                     guard_zero_max=True,
                     init_params=init_params,
                     lr=lr,
+                    direction=direction,
                     **({} if decay_lr is None else {"decay_lr": decay_lr}),
                 )
             else:
@@ -5275,32 +5628,77 @@ def _make_rls_head_learner(
             logits, phi = _rls_head_forward(params, state.wout, x_norm)
             err_pre = y_onehot - logits
             loss = 0.5 * jnp.sum(err_pre * err_pre)
-        accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
-        err = y_onehot - logits
-        pp = state.p @ phi
-        gain = pp / (rls_lambda + phi @ pp)
-        new_wout = state.wout + jnp.outer(gain, err)
-        new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
-        new_p = 0.5 * (new_p + new_p.T)
-        if reset_enabled:
-            m = new_p.shape[0]
-            trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
-            new_p = jnp.where(
-                trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+        raw_loss = loss
+        deployed_logits = logits
+        if pred_body is not None:
+            deployed_logits, deployed_phi = _rls_head_forward(
+                {**params, **pred_body}, state.wout, x_norm
             )
-        if cap_enabled:
-            # Covariance wind-up guard: exponential forgetting grows P as
-            # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
-            # float32 overflow and prediction collapse (wave-1 measurement:
-            # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
-            # horizon).  Rescale P to the trace cap whenever it exceeds it;
-            # under the cap the step is bitwise untouched.
-            new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
+            deployed_error = y_onehot - deployed_logits
+            loss = 0.5 * jnp.sum(deployed_error * deployed_error)
+            if pred_head_avg:
+                logits, phi = deployed_logits, deployed_phi
+        accuracy = (jnp.argmax(deployed_logits) == y).astype(jnp.float32)
+        err = y_onehot - logits
+        if sgd_head:
+            # The historical comparator uses the same pre-update residual
+            # with decayed SGD. Its unused covariance stays fixed.
+            new_wout = (
+                state.wout * head_param_decay + head_sgd_step * jnp.outer(phi, err)
+            )
+            new_p = state.p
+        elif diagonal_enabled:
+            if not isinstance(state, RLSHeadDiagonalState):
+                raise TypeError("diagonal RLS requires RLSHeadDiagonalState")
+            gain, new_p = _diagonal_rls_gain(state.p, phi, pooled=head_gdiag == 1.0)
+            new_wout = state.wout + jnp.outer(gain, err)
+            if reset_enabled:
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(trigger, jnp.full_like(new_p, 1.0 / ridge_init), new_p)
+        elif block_enabled:
+            if not isinstance(state, RLSHeadBlockState):
+                raise TypeError("block RLS requires RLSHeadBlockState")
+            gain, new_p = _block_rls_gain(state.p, phi)
+            new_wout = state.wout + jnp.outer(gain, err)
+            if reset_enabled:
+                width = new_p.shape[1]
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger,
+                    jnp.eye(width, dtype=jnp.float32)[None] / math.sqrt(ridge_init),
+                    new_p,
+                )
+        else:
+            pp = state.p @ phi
+            gain = pp / (rls_lambda + phi @ pp)
+            new_wout = state.wout + jnp.outer(gain, err)
+            new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
+            new_p = 0.5 * (new_p + new_p.T)
+            if reset_enabled:
+                m = new_p.shape[0]
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+                )
+            if cap_enabled:
+                # Covariance wind-up guard: exponential forgetting grows P as
+                # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
+                # float32 overflow and prediction collapse (wave-1 measurement:
+                # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
+                # horizon).  Rescale P to the trace cap whenever it exceeds it;
+                # under the cap the step is bitwise untouched.
+                new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
         err_after = y_onehot - _rls_head_forward(new_params, new_wout, x_norm)[0]
         loss_after = 0.5 * jnp.sum(err_after * err_after)
+        # Measure improvement on the raw learner both before and after the
+        # update. Accuracy and reported loss score the deployed predictor.
         plasticity = jnp.clip(
-            1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
+            1.0 - loss_after / jnp.maximum(raw_loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
         )
+        if as_enabled:
+            return new_params, RLSHeadASState(  # type: ignore[call-arg]
+                autostep=new_autostep, norm=new_norm, fast_mean=new_fast, p=new_p, wout=new_wout,
+            ), (accuracy, loss, plasticity)
         if sm_enabled:
             assert isinstance(state, RLSHeadSMState)
             return new_params, RLSHeadSMState(  # type: ignore[call-arg]
@@ -5323,7 +5721,17 @@ def _make_rls_head_learner(
                 wout=new_wout,
                 init_params=state.init_params,
             ), (accuracy, loss, plasticity)
-        return new_params, RLSHeadState(  # type: ignore[call-arg]
+        if new_momentum is not None:
+            return new_params, RLSHeadMomentumState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+                momentum=new_momentum,
+            ), (accuracy, loss, plasticity)
+        return new_params, state_type(  # type: ignore[call-arg]
             utility=new_utility,
             step=count,
             norm=new_norm,
@@ -5349,7 +5757,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState
+    inner: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -5442,8 +5850,25 @@ def _runtime_decay(
     )
 
 
+_SNP_KEY_SALT = 0x5A9D
+
+
+def _shrink_perturb_body(
+    params: dict[str, Array], event: Array, key: Array, shrink: float, sigma: float,
+) -> dict[str, Array]:
+    """Apply the first-remap perturbation using the residual body's init scale."""
+    updated = dict(params)
+    for name, subkey in zip(_RLS_HEAD_BODY, jr.split(key, len(_RLS_HEAD_BODY)), strict=True):
+        bound = _wclip_bound(params, name, 1.0)
+        fresh = jr.uniform(subkey, params[name].shape, jnp.float32, -bound, bound)
+        updated[name] = jnp.where(event, shrink * params[name] + sigma * fresh, params[name])
+    return updated
+
+
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
+    *,
+    _decay_to_init: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Incumbent + online permutation identification and input remap.
 
@@ -5460,9 +5885,35 @@ def _make_rls_head_identmap_learner(
     protocol permits.  ``ident_match_at = 0`` delegates verbatim to
     :func:`_make_rls_head_learner` (bit-exact reduction, pinned).
     """
+    if "polyak_window" in hp:
+        if hp.get("body_momentum", 0.0) != 0.0:
+            raise ValueError("body momentum requires the fixed-step gated residual body")
+        if any(hp.get(name, 0.0) != 0.0 for name in (
+            "rls_head_diag", "rls_head_gdiag", "rls_head_block",
+        )):
+            raise ValueError("structured RLS requires the plain fixed-step gated residual body")
+        if _decay_to_init:
+            raise ValueError("polyak averaging is not composed with L2-Init")
+        return _make_rls_head_identmap_polyak_learner(hp)
+    if "polyak_head_avg" in hp:
+        raise ValueError("polyak_head_avg requires polyak_window")
+    inner_options = {"_decay_to_init": True} if _decay_to_init else {}
     match1 = float(hp["ident_match_at"])
+    if "anneal_peak" in hp and match1 == 0.0:
+        raise ValueError("anneal_peak requires an active identifier")
+    snp_on = "snp_shrink" in hp
+    snp_shrink = float(hp.get("snp_shrink", 1.0))
+    snp_sigma = float(hp.get("snp_sigma", 0.0))
+    if "snp_sigma" in hp and not snp_on:
+        raise ValueError("snp_sigma requires snp_shrink")
+    if snp_on and not (
+        match1 > 0.0 and "body_wclip_kappa" not in hp
+        and 0.0 < snp_shrink <= 1.0 and np.float32(snp_shrink) > 0.0
+        and 0.0 <= snp_sigma <= float(np.finfo(np.float32).max)
+    ):
+        raise ValueError("snp needs an active unclipped identifier and float32 shrink/sigma")
     if match1 == 0.0:
-        return _make_rls_head_learner(hp)
+        return _make_rls_head_learner(hp, **inner_options)
     match2 = float(hp.get("ident_match2", 0.0))
     match3 = float(hp.get("ident_match3", 0.0))
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
@@ -5476,12 +5927,17 @@ def _make_rls_head_identmap_learner(
     anneal_step = float(hp["step_size"])
     anneal_floor = float(hp.get("anneal_floor", anneal_step))
     anneal_tau = float(hp.get("anneal_tau", 1.0))
+    anneal_peak = float(hp.get("anneal_peak", anneal_step))
     if anneal_on and not (
         0.0 < anneal_floor <= anneal_step
         and 0.0 < anneal_tau
         and math.isfinite(anneal_tau)
     ):
         raise ValueError("anneal needs 0 < floor <= step_size and tau > 0")
+    if "anneal_peak" in hp and not (
+        anneal_on and anneal_floor <= anneal_peak <= float(np.finfo(np.float32).max)
+    ):
+        raise ValueError("anneal_peak requires annealing and a float32 peak at least the floor")
     # Partial anneal reset.  Key absent: ``anneal_clock`` mirrors
     # ``since_shift`` exactly and the anneal reads ``since_shift`` (parent
     # verbatim).  Key present: the anneal reads ``anneal_clock``, which on a
@@ -5512,7 +5968,7 @@ def _make_rls_head_identmap_learner(
         raise ValueError(
             "anneal_decay_reset_frac needs anneal_reset_frac and 0 <= f < 1"
         )
-    inner_init, inner_step = _make_rls_head_learner(hp)
+    inner_init, inner_step = _make_rls_head_learner(hp, **inner_options)
 
     def raw_normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -5557,26 +6013,35 @@ def _make_rls_head_identmap_learner(
         x: Array,
         y: Array,
         key: Array,
+        pred_body: Mapping[str, Array] | None = None,
+        pred_head_avg: bool = False,
     ) -> tuple[dict[str, Array], RLSHeadIdentState, StepMetrics]:
         input_dim = x.shape[0]
         n_classes = state.ref_class_sums.shape[0]
         x_r = x[state.remap]
+        prediction = {} if pred_body is None else {
+            "pred_body": pred_body, "pred_head_avg": pred_head_avg,
+        }
         if anneal_on:
             # Pre-step counter; before any detected shift it runs from
             # -2**30, so the offset recovers steps since stream start.
             clock = state.anneal_clock if partial_on else state.since_shift
             s = _decode_anneal_clock(clock).astype(jnp.float32)
-            lr = _anneal_lr(s, anneal_step, anneal_floor, anneal_tau)
+            lr = _anneal_lr(s, anneal_peak, anneal_floor, anneal_tau)
             if decay_on:
                 ds = _decode_anneal_clock(state.decay_clock).astype(jnp.float32)
-                decay_lr = _anneal_lr(ds, anneal_step, anneal_floor, anneal_tau)
+                decay_lr = _anneal_lr(ds, anneal_peak, anneal_floor, anneal_tau)
                 new_params, new_inner, metrics = cast(Any, inner_step)(
-                    params, state.inner, x_r, y, key, lr=lr, decay_lr=decay_lr
+                    params, state.inner, x_r, y, key, lr=lr, decay_lr=decay_lr, **prediction
                 )
             else:
                 new_params, new_inner, metrics = cast(Any, inner_step)(
-                    params, state.inner, x_r, y, key, lr=lr
+                    params, state.inner, x_r, y, key, lr=lr, **prediction
                 )
+        elif prediction:
+            new_params, new_inner, metrics = cast(Any, inner_step)(
+                params, state.inner, x_r, y, key, **prediction
+            )
         else:
             new_params, new_inner, metrics = inner_step(
                 params, state.inner, x_r, y, key
@@ -5689,6 +6154,11 @@ def _make_rls_head_identmap_learner(
             return remap
 
         remap = jax.lax.cond(do_match, matched, unmatched, None)
+        if snp_on:
+            first_remap = ref_frozen & (since == int(match1))
+            new_params = _shrink_perturb_body(
+                new_params, first_remap, jr.fold_in(key, _SNP_KEY_SALT), snp_shrink, snp_sigma,
+            )
         return new_params, RLSHeadIdentState(  # type: ignore[call-arg]
             inner=new_inner,
             raw_norm=new_raw_norm,
@@ -5704,6 +6174,71 @@ def _make_rls_head_identmap_learner(
             remap=remap,
             anneal_clock=new_clock,
             decay_clock=new_dclock,
+        ), metrics
+
+    return init_fn, full_step
+
+
+@chex.dataclass(frozen=True)
+class RLSHeadIdentPolyakState:
+    """Identmap learner and the deployed average of its residual body."""
+
+    ident: RLSHeadIdentState
+    avg: dict[str, Array]
+    avg_n: Array
+
+
+def _make_rls_head_identmap_polyak_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Retain the window-capped average and reset it at shifts and remaps."""
+    window = float(hp["polyak_window"])
+    head_avg = float(hp.get("polyak_head_avg", 0.0))
+    if not (1.0 <= window <= float(np.iinfo(np.int32).max) and window.is_integer()):
+        raise ValueError("polyak_window must be a positive int32 integer")
+    if head_avg not in (0.0, 1.0):
+        raise ValueError("polyak_head_avg must be 0 or 1")
+    if not (
+        hp["ident_match_at"] > 0.0 and hp["head_resid"] == 1.0
+        and hp.get("gate_scale", 1.0) == 1.0
+        and hp.get("rls_head_sgd", 0.0) == 0.0
+        and hp.get("body_momentum", 0.0) == 0.0
+        and hp.get("body_sm_decay", 0.0) == 0.0 and hp.get("resid_whiten", 0.0) == 0.0
+        and not {"body_as_meta", "snp_shrink", "body_wclip_kappa"}.intersection(hp)
+    ):
+        raise ValueError("polyak averaging needs the plain gated identmap residual body")
+    base_hp = {key: value for key, value in hp.items() if not key.startswith("polyak_")}
+    ident_init, ident_step = _make_rls_head_identmap_learner(base_hp)
+    w_cap = np.int32(window)
+
+    def init_fn(params: dict[str, Array]) -> RLSHeadIdentPolyakState:
+        return RLSHeadIdentPolyakState(  # type: ignore[call-arg]
+            ident=ident_init(params),
+            avg={name: params[name] for name in _RLS_HEAD_BODY},
+            avg_n=jnp.array(1, dtype=jnp.int32),
+        )
+
+    def full_step(
+        params: dict[str, Array], state: RLSHeadIdentPolyakState, x: Array, y: Array, key: Array,
+    ) -> tuple[dict[str, Array], RLSHeadIdentPolyakState, StepMetrics]:
+        new_params, new_ident, metrics = cast(Any, ident_step)(
+            params, state.ident, x, y, key, pred_body=state.avg, pred_head_avg=head_avg == 1.0,
+        )
+        reset = (new_ident.since_shift == 1) | jnp.any(new_ident.remap != state.ident.remap)
+        count = jnp.where(
+            reset, jnp.int32(1),
+            jnp.minimum(_saturating_int32_counter_increment(state.avg_n), w_cap),
+        )
+        weight = 1.0 / count.astype(jnp.float32)
+        avg = {
+            name: jnp.where(
+                count == 1, new_params[name],
+                (1.0 - weight) * state.avg[name] + weight * new_params[name],
+            )
+            for name in _RLS_HEAD_BODY
+        }
+        return new_params, RLSHeadIdentPolyakState(  # type: ignore[call-arg]
+            ident=new_ident, avg=avg, avg_n=count,
         ), metrics
 
     return init_fn, full_step
@@ -8734,6 +9269,30 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         ),
         *(
             (
+                f"rls_head_resid_identmap50_r_idet003_s005625_as{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "body_as_meta": meta, "body_as_tau": 1e4},
+                f"Autostep per-weight body steps with meta rate {meta} "
+                "(development screening diagnostic)"
+            )
+            for tag, meta in (("1e3", 1e-3), ("1e2", 1e-2))
+        ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s005625_snp_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "snp_shrink": shrink, "snp_sigma": sigma},
+                f"shrink {shrink} and perturb by {sigma} times the initialization scale "
+                "at the first remap (development screening diagnostic)"
+            )
+            for tag, shrink, sigma in (("l08s001", 0.8, 0.01), ("l05s01", 0.5, 0.1))
+        ),
+        *(
+            (
                 f"rls_head_resid_identmap50_r_idet003_s005625_anneal_{tag}",
                 {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
                  "ident_match_at": 50.0, "ident_match2": 200.0,
@@ -8752,6 +9311,38 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("f4t250", 0.00140625, 250.0),
                 ("f4t1000", 0.00140625, 1000.0),
                 ("f2t2000", 0.0028125, 2000.0),
+            )
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "anneal_peak": peak},
+                f"anneal_f2t1000 with starting and post-shift step {peak} "
+                "(anneal_peak_screen/; development screening diagnostic)"
+            )
+            for tag, peak in (("p75", 0.0075), ("p10", 0.01), ("p15", 0.015))
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_polyak_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "polyak_window": window, "polyak_head_avg": head_avg},
+                f"anneal_f2t1000 with body average window {window} and "
+                f"{'averaged' if head_avg else 'raw'} head features "
+                "(development screening diagnostic)"
+            )
+            for tag, window, head_avg in (
+                ("w100h0", 100.0, 0.0), ("w100h1", 100.0, 1.0),
+                ("w1000h0", 1000.0, 0.0), ("w1000h1", 1000.0, 1.0),
             )
         ),
         *(
@@ -8929,6 +9520,130 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             )
             for tag, kappa in (("2", 2.0), ("4", 4.0), ("8", 8.0))
         ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s0031640625_r02_{suffix}_stable",
+                {
+                    "rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                    selector: value,
+                },
+                f"Unmeasured {description} covariance with stable arithmetic",
+            )
+            for suffix, selector, value, description in (
+                ("diaghead", "rls_head_diag", 1.0, "per-coordinate diagonal"),
+                ("gdiag", "rls_head_gdiag", 1.0, "globally pooled diagonal"),
+                ("blockhead", "rls_head_block", 4.0, "global-innovation block"),
+            )
+        ),
+        # Historical screens retain their exact constants for shard replay.
+        *(
+            (
+                f"rls_head_resid_identmap{suffix}",
+                {
+                    "rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0,
+                    **overrides,
+                },
+                f"historical development screen of {description}",
+            )
+            for suffix, overrides, description in (
+                ("50_r_mom9", {"body_momentum": 0.9}, "gated body momentum 0.9"),
+                ("50_r_mom99", {"body_momentum": 0.99}, "gated body momentum 0.99"),
+                (
+                    "50_r_nogate",
+                    {"gate_scale": 0.0},
+                    "ungated body with rematches at 50/200/2000",
+                ),
+                (
+                    "200_r_nogate",
+                    {"ident_match_at": 200.0, "ident_match2": 500.0, "gate_scale": 0.0},
+                    "ungated body with rematches at 200/500/2000",
+                ),
+                (
+                    "50_r_nogate_idet003",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03},
+                    "ungated body with a 0.03 identifier trigger",
+                ),
+                (
+                    "50_r_nogate_idet003_s0075",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03, "step_size": 0.0075},
+                    "ungated 0.03 identifier trigger and body step 0.0075",
+                ),
+                (
+                    "50_r_nogate_idet003_s005625",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03, "step_size": 0.005625},
+                    "ungated 0.03 identifier trigger and body step 0.005625",
+                ),
+                (
+                    "50_r_idet002",
+                    {"ident_reset_frac": 0.02},
+                    "gated body with a 0.02 identifier trigger",
+                ),
+                (
+                    "50_r_idet003_s00421875",
+                    {"ident_reset_frac": 0.03, "step_size": 0.00421875},
+                    "gated body with a 0.03 identifier trigger and body step 0.00421875",
+                ),
+                (
+                    "50_r_idet004_s00421875",
+                    {"ident_reset_frac": 0.04, "step_size": 0.00421875},
+                    "gated body with a 0.04 identifier trigger and body step 0.00421875",
+                ),
+                (
+                    "50_r_idet003_s0031640625",
+                    {"ident_reset_frac": 0.03, "step_size": 0.0031640625},
+                    "gated body with a 0.03 identifier trigger and body step 0.0031640625",
+                ),
+                (
+                    "50_r_idet003_s002373046875",
+                    {"ident_reset_frac": 0.03, "step_size": 0.002373046875},
+                    "gated body with a 0.03 identifier trigger and body step 0.002373046875",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r01",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.1,
+                    },
+                    "gated body step 0.0031640625 and RLS ridge 0.1",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                    "gated body step 0.0031640625 and RLS ridge 0.03",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02_preset003",
+                    {
+                        "rls_reset_frac": 0.03,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                    "gated RLS ridge 0.03 with head reset fraction 0.03",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02_sgdhead",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                        "rls_head_sgd": 1.0,
+                        "rls_head_sgd_step": 0.1,
+                    },
+                    "gated r02 body with a decayed SGD readout on the same squared loss",
+                ),
+            )
+        ),
     ):
         specs.append(
             ScreeningSpec(
@@ -8945,6 +9660,20 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_identmap_l2init_hp(),
+            factory=_make_rls_head_identmap_l2init_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Historical development screen of the gated r02 arm with "
+                "L2-to-initialization on the four body tensors."
+            ),
+        )
+    )
     # The smprecond_r1 second-moment body-preconditioning arms
     # (rls_head_resid_sm{3e4,1e3}_i50r) failed their preregistered outcome
     # — sm1e3 lost the 60t screen on all seeds and sm3e4 failed the
@@ -9564,6 +10293,53 @@ def _build_registry() -> dict[str, ScreeningSpec]:
 
 
 SCREENING_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType(_build_registry())
+
+
+_ARCHIVED_RLS_HEAD_COMMITS = MappingProxyType({
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead":
+        "5c96b3987bd61ca110edbaef718cf3a7435159c3",
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead":
+        "e562e60ba7e886da7de0603b232305b3ee24d1aa",
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag":
+        "4d648e0b0b5d858b0e0061e237d19e01f914d644",
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank":
+        "d068ddbf55d62ad7bde30e2f4e0e56b1fa774fdd",
+})
+
+
+def _archived_rls_head_factory(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    del hp
+    raise ValueError(
+        "historical RLS heads are replay only. Select a live registered arm for new runs"
+    )
+
+
+_ARCHIVED_RLS_HEAD_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType({
+    **{
+        name: replace(
+            SCREENING_REGISTRY[name + "_stable"],
+            name=name,
+            factory=_archived_rls_head_factory,
+            description="Historical diagonal RLS archive",
+        )
+        for name in _ARCHIVED_RLS_HEAD_COMMITS
+        if not name.endswith("_lowrank")
+    },
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank": replace(
+        SCREENING_REGISTRY["rls_head_resid_identmap50_r_idet003_s0031640625_r02"],
+        name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank",
+        hyperparameters=_rls_head_hp(
+            rls_lambda=1.0, rls_reset_frac=0.05, head_resid=1.0,
+            ident_match_at=50.0, ident_match2=200.0, ident_match3=2000.0,
+            ident_reset_frac=0.03, step_size=0.0031640625,
+            rls_ridge_init=0.03, rls_head_rank=8.0,
+        ),
+        factory=_archived_rls_head_factory,
+        description="Historical low-rank archive with an indefinite covariance recurrence",
+    ),
+})
 
 
 def screening_spec(name: str) -> ScreeningSpec:
@@ -12490,7 +13266,10 @@ def load_shard(
     spec_registry: Mapping[str, ScreeningSpec] | None = None,
 ) -> dict[str, Any]:
     """Load legacy v1 or strictly validate a source-bound v2/v3 screening shard."""
-    registry = SCREENING_REGISTRY if spec_registry is None else spec_registry
+    registry = (
+        {**SCREENING_REGISTRY, **_ARCHIVED_RLS_HEAD_REGISTRY}
+        if spec_registry is None else spec_registry
+    )
     payload = load_strict_json_object(path)
     schema = payload.get("schema")
     if type(schema) is not str or schema not in {
@@ -12577,6 +13356,11 @@ def load_shard(
     )
     if config_name not in registry:
         raise ValueError(f"{path}: unknown config_name")
+    archived_commit = _ARCHIVED_RLS_HEAD_COMMITS.get(config_name)
+    if archived_commit is not None and (
+        schema != SHARD_SCHEMA or payload["source_provenance"]["git_commit"] != archived_commit
+    ):
+        raise ValueError(f"{path}: historical RLS requires its original source commit")
     spec = registry[config_name]
     base_learner = _required_nonempty_string(
         payload.get("base_learner"), context=f"{path}: base_learner"
@@ -13047,7 +13831,10 @@ def merge_shards(
             f"(present: {sorted(by_config)}); a summary without its control "
             "would silently carry no paired_vs_control blocks"
         )
-    registry = SCREENING_REGISTRY if spec_registry is None else spec_registry
+    registry = (
+        {**SCREENING_REGISTRY, **_ARCHIVED_RLS_HEAD_REGISTRY}
+        if spec_registry is None else spec_registry
+    )
     for name, per_seed in sorted(by_config.items()):
         _validate_screening_arm_contract(name, per_seed)
         _require_registered_base_learner(name, per_seed, registry)

@@ -17,6 +17,7 @@ from alberta_framework.core.options import (
     STOMP_STATE_EXPANSION_FIELDS,
     STOMP_STATE_LIFETIME_FIELDS,
     IntraOptionPoliciesState,
+    OptionModelsState,
     STOMPAgent,
     STOMPConfig,
     STOMPSpecArrays,
@@ -573,6 +574,129 @@ def test_unrepresentable_differential_update_still_rejects(
     )
 
 
+def _cancelled_target_state(agent: STOMPAgent, *, next_q_value: float) -> STOMPState:
+    """Start a STOMP agent whose heads read 0 at ``[1, 0, 0]`` and
+    ``next_q_value`` at ``[0, 1, 0]``, with a large negative average reward."""
+    state = agent.init(jr.key(0))
+    head_weight = jnp.array([[0.0, next_q_value, 0.0]], dtype=jnp.float32)
+    learner_state = state.base_learner_state.replace(
+        head_params=state.base_learner_state.head_params.replace(
+            weights=tuple(
+                head_weight for _ in state.base_learner_state.head_params.weights
+            )
+        )
+    )
+    state = state.replace(base_learner_state=learner_state)
+    started = agent.start(state, jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32))
+    return started.replace(
+        base_average_reward=jnp.array(-2e38, dtype=jnp.float32)
+    )
+
+
+def test_stomp_update_applies_cancelled_td_target() -> None:
+    """``R - rbar + bootstrap`` overflows; the rearranged target is finite.
+
+    With reward ``2e38``, average reward ``-2e38`` (mass 1), and bootstrap
+    ``-2e38``, the left-to-right target is ``inf`` while
+    ``R - (rbar - bootstrap)`` is ``2e38``. The base update must apply with
+    that TD error instead of dropping a valid transition.
+    """
+    agent = _agent()
+    state = _cancelled_target_state(agent, next_q_value=-2e38)
+    result = agent.update(
+        state,
+        jnp.asarray(2e38, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert float(result.td_error) == pytest.approx(float(np.float32(2e38)), rel=1e-6)
+    assert int(result.state.step_count) == int(state.step_count) + 1
+    assert bool(agent.state_valid(result.state))
+
+
+def test_primitive_only_stomp_applies_cancelled_td_target() -> None:
+    """The primitive-only STOMP path recovers the same cancelled TD target."""
+    agent = STOMPAgent(
+        STOMPConfig(subtask_specs=(), observation_dim=OBS_DIM, n_primitive_actions=N_PRIMITIVE)
+    )
+    state = _cancelled_target_state(agent, next_q_value=-2e38)
+    result = agent.update(
+        state,
+        jnp.asarray(2e38, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert float(result.td_error) == pytest.approx(float(np.float32(2e38)), rel=1e-6)
+    assert int(result.state.step_count) == int(state.step_count) + 1
+    assert bool(agent.state_valid(result.state))
+
+
+def test_option_model_planning_applies_cancelled_td_target() -> None:
+    """A Dyna backup recovers the cancelled option-model target as well."""
+    agent = STOMPAgent(
+        STOMPConfig(
+            subtask_specs=(
+                SubtaskSpec(feature_index=0),
+                SubtaskSpec(feature_index=1),
+            ),
+            observation_dim=OBS_DIM,
+            n_primitive_actions=N_PRIMITIVE,
+            option_planning_backups_per_step=1,
+        )
+    )
+    state = _cancelled_target_state(agent, next_q_value=-2e38)
+    models = OptionModelsState(
+        cumreward_ema=jnp.zeros(N_OPTIONS, dtype=jnp.float32),
+        env_return_ema=jnp.array([2e38, 0.0], dtype=jnp.float32),
+        duration_ema=jnp.ones(N_OPTIONS, dtype=jnp.float32),
+        baseline_mass_ema=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        discount_ema=jnp.ones(N_OPTIONS, dtype=jnp.float32),
+        # Map anchor [1, 0, 0] to predicted-next [0, 1, 0]: delta [-1, +1, 0].
+        next_state_weights=jnp.array(
+            [
+                [[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            ],
+            dtype=jnp.float32,
+        ),
+        n_completions=jnp.array([1, 0], dtype=jnp.int32),
+    )
+    new_learner, count, mean_td = agent._apply_option_model_planning(
+        state.base_learner_state,
+        models,
+        jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32),
+        jnp.array(-2e38, dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.uint32),
+        jnp.ones((agent.config.n_total_actions,), dtype=jnp.bool_),
+    )
+    assert int(count) == 1
+    assert float(mean_td) == pytest.approx(float(np.float32(2e38)), rel=1e-6)
+    assert bool(
+        jnp.any(
+            new_learner.head_params.weights[N_PRIMITIVE]
+            != state.base_learner_state.head_params.weights[N_PRIMITIVE]
+        )
+    )
+
+
+def test_stomp_update_still_rejects_unrepresentable_td_target() -> None:
+    """A target that stays outside float32 under both associations rejects."""
+    agent = _agent()
+    state = _cancelled_target_state(agent, next_q_value=3e38)
+    state = state.replace(base_average_reward=jnp.array(-3e38, dtype=jnp.float32))
+    result = agent.update(
+        state,
+        jnp.asarray(3e38, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    assert float(result.td_error) == 0.0
+    assert int(result.state.step_count) == int(state.step_count)
+
+
 @pytest.mark.unit
 class TestStompConfigScalarValidation:
     """STOMPConfig must reject non-finite/out-of-range scalar hyperparameters (#523)."""
@@ -690,7 +814,7 @@ def test_stomp_closes_float32_schema_and_direct_resource_boundaries() -> None:
     with pytest.raises(ValueError, match="threshold"):
         SubtaskSpec(feature_index=0, threshold=1.0e100)
 
-    last_legal_observation_dim = (2**29 - 1 - 22) // 4
+    last_legal_observation_dim = (2**29 - 1 - 23) // 4
     with pytest.raises(ValueError, match="update working set byte count"):
         STOMPConfig(observation_dim=last_legal_observation_dim, n_primitive_actions=1)
     with pytest.raises(ValueError, match="direct array bytes"):
@@ -811,3 +935,326 @@ def test_scan_preserves_base_learner_host_clocks() -> None:
     assert clocks.birth_timestamp == birth
     assert type(clocks.uptime_s) is float
     assert clocks.uptime_s == uptime
+
+
+def _zeroed_base_heads(agent: STOMPAgent, state: STOMPState) -> STOMPState:
+    """Zero base head weights/biases so TD errors are exact in trace tests."""
+    learner_state = state.base_learner_state
+    head_params = learner_state.head_params
+    return state.replace(
+        base_learner_state=learner_state.replace(
+            head_params=head_params.replace(
+                weights=tuple(jnp.zeros_like(w) for w in head_params.weights),
+                biases=tuple(jnp.zeros_like(b) for b in head_params.biases),
+            )
+        )
+    )
+
+
+def _force_base_transition(state: STOMPState, obs: list[float], action: int) -> STOMPState:
+    """Prime a base transition, as if the agent had just taken ``action``."""
+    return state.replace(
+        executing_option=jnp.asarray(-1, dtype=jnp.int32),
+        base_last_obs=jnp.asarray(obs, dtype=jnp.float32),
+        base_last_action=jnp.asarray(action, dtype=jnp.int32),
+        last_primitive_action=jnp.asarray(action, dtype=jnp.int32),
+    )
+
+
+def _head_trace(state: STOMPState, head: int) -> tuple[list[float], float]:
+    weights, bias = state.base_learner_state.head_traces[head]
+    return [float(x) for x in jnp.asarray(weights).reshape(-1)], float(
+        jnp.asarray(bias).reshape(-1)[0]
+    )
+
+
+def _head_params(state: STOMPState, head: int) -> tuple[list[float], float]:
+    weights = state.base_learner_state.head_params.weights[head]
+    bias = state.base_learner_state.head_params.biases[head]
+    return [float(x) for x in jnp.asarray(weights).reshape(-1)], float(
+        jnp.asarray(bias).reshape(-1)[0]
+    )
+
+
+def test_stomp_base_trace_decays_for_inactive_heads() -> None:
+    """Inactive base heads must decay by prior discount * base_trace_decay.
+
+    The base learner pre-scales every head trace by the prior transition discount
+    and then applies its per-head decay only to the active head's trace:
+    without the STOMP-side correction, an inactive head's trace misses the
+    lam factor and is over-credited by lam**-k after k inactive steps.
+    Both base-update sites are covered: the primitive-only path and the
+    full update path with options configured.
+    """
+    one = jnp.asarray(1.0, dtype=jnp.float32)
+    zero = jnp.asarray(0.0, dtype=jnp.float32)
+
+    # Primitive-only path (no options configured).
+    config = STOMPConfig(
+        subtask_specs=(),
+        observation_dim=2,
+        n_primitive_actions=2,
+        base_step_size=1.0,
+        base_avg_reward_step_size=0.0,
+        base_trace_decay=0.5,
+        base_hidden_sizes=(),
+        epsilon_base=0.0,
+    )
+    agent = STOMPAgent(config)
+    state = _zeroed_base_heads(agent, agent.init(jr.key(0)))
+
+    # Action 0 at [1, 0], reward 0: head 0 trace becomes ([1, 0], 1).
+    state = _force_base_transition(state, [1.0, 0.0], 0)
+    result = agent.update(state, zero, jnp.asarray([0.0, 1.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert float(result.td_error) == 0.0
+    assert _head_trace(result.state, 0) == ([1.0, 0.0], 1.0)
+
+    # Action 1 elsewhere, reward 0: head 0 is inactive and must decay to
+    # discount * lam = 0.5 of its trace, with weights untouched.
+    state = _force_base_transition(result.state, [0.0, 1.0], 1)
+    result = agent.update(state, zero, jnp.asarray([0.0, 0.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert _head_trace(result.state, 0) == ([0.5, 0.0], 0.5)
+    assert _head_params(result.state, 0) == ([0.0, 0.0], 0.0)
+
+    # Action 0 again at [0, 0], reward 1, TD 1: the reactivated head's trace
+    # is 0.5 * [0.5, 0] + [0, 0] = [0.25, 0] with bias 0.5 * 0.5 + 1 = 1.25,
+    # and its weights move by exactly that trace (step size 1).
+    state = _force_base_transition(result.state, [0.0, 0.0], 0)
+    result = agent.update(state, one, jnp.asarray([0.0, 0.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert float(result.td_error) == 1.0
+    assert _head_trace(result.state, 0) == ([0.25, 0.0], 1.25)
+    assert _head_params(result.state, 0) == ([0.25, 0.0], 1.25)
+
+    # Full update path with one option configured (not executing).
+    config = STOMPConfig(
+        subtask_specs=(
+            SubtaskSpec(
+                feature_index=0,
+                threshold=10.0,
+                pseudo_reward_scale=1.0,
+                max_option_steps=10,
+            ),
+        ),
+        observation_dim=2,
+        n_primitive_actions=2,
+        base_step_size=1.0,
+        base_avg_reward_step_size=0.0,
+        base_trace_decay=0.5,
+        base_hidden_sizes=(),
+        epsilon_base=0.0,
+        epsilon_option=0.0,
+        option_planning_backups_per_step=0,
+    )
+    agent = STOMPAgent(config)
+    state = _zeroed_base_heads(agent, agent.init(jr.key(0)))
+    state = _force_base_transition(state, [1.0, 0.0], 0)
+    result = agent.update(state, zero, jnp.asarray([0.0, 1.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert _head_trace(result.state, 0) == ([1.0, 0.0], 1.0)
+    state = _force_base_transition(result.state, [0.0, 1.0], 1)
+    result = agent.update(state, zero, jnp.asarray([0.0, 0.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert _head_trace(result.state, 0) == ([0.5, 0.0], 0.5)
+
+
+def _trace_config(subtask_specs: tuple[SubtaskSpec, ...] = ()) -> STOMPConfig:
+    return STOMPConfig(
+        subtask_specs=subtask_specs,
+        observation_dim=2,
+        n_primitive_actions=2,
+        base_step_size=1.0,
+        base_avg_reward_step_size=0.0,
+        base_trace_decay=0.5,
+        base_hidden_sizes=(),
+        epsilon_base=0.0,
+    )
+
+
+def test_stomp_base_trace_decays_by_prior_discount_on_terminal_step() -> None:
+    """A terminal transition must not erase the carried base trace.
+
+    The base trace decays by the discount into the current state, carried
+    from the previous update; only the bootstrap uses this transition's
+    discount (Sutton & Barto, 2nd ed., Sections 12.7-12.8). Decaying by the
+    current discount turns the terminating step into TD(0): a zero
+    terminating discount erases the carried trace before the terminal TD
+    error is applied, so earlier state-actions lose their multi-step
+    credit. The same prior-discount rule already governs the intra-option
+    traces in this module and the differential-SARSA traces.
+    """
+    agent = STOMPAgent(_trace_config())
+    state = _zeroed_base_heads(agent, agent.init(jr.key(0)))
+    first = agent.update(
+        _force_base_transition(state, [1.0, 0.0], 0),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+    assert float(first.td_error) == pytest.approx(0.0)
+    weights, bias = _head_trace(first.state, 0)
+    assert weights == pytest.approx([1.0, 0.0])
+    assert bias == pytest.approx(1.0)
+
+    terminal = agent.update(
+        _force_base_transition(first.state, [0.0, 1.0], 0),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    assert bool(terminal.update_applied)
+    assert float(terminal.td_error) == pytest.approx(1.0)
+    # Prior discount 1.0 keeps the carried trace: 0.5 * [1, 0] plus the
+    # current gradient [0, 1]. Decaying by the current discount 0.0 leaves
+    # only [0, 1] and a bias step of 1.0.
+    weights, bias = _head_params(terminal.state, 0)
+    assert weights == pytest.approx([0.5, 1.0])
+    assert bias == pytest.approx(1.5)
+    assert float(first.state.base_previous_discount) == pytest.approx(1.0)
+    assert float(terminal.state.base_previous_discount) == pytest.approx(0.0)
+
+
+def test_stomp_base_trace_decays_by_prior_discount_when_discount_falls() -> None:
+    """A falling but nonzero discount must not shrink the carried trace."""
+    agent = STOMPAgent(_trace_config())
+    state = _zeroed_base_heads(agent, agent.init(jr.key(0)))
+    first = agent.update(
+        _force_base_transition(state, [1.0, 0.0], 0),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+    second = agent.update(
+        _force_base_transition(first.state, [0.0, 1.0], 0),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(0.5, dtype=jnp.float32),
+    )
+    assert bool(second.update_applied)
+    assert float(second.td_error) == pytest.approx(1.0)
+    # The trace decays by the prior discount 1.0, not the current 0.5:
+    # 0.5 * [1, 0] + [0, 1]. The buggy decay gives [0.25, 1.0] / 1.25.
+    weights, bias = _head_params(second.state, 0)
+    assert weights == pytest.approx([0.5, 1.0])
+    assert bias == pytest.approx(1.5)
+    assert float(second.state.base_previous_discount) == pytest.approx(0.5)
+
+
+def test_stomp_base_trace_decays_by_prior_discount_with_options() -> None:
+    """The options-path base update follows the same prior-discount rule."""
+    agent = STOMPAgent(
+        _trace_config(subtask_specs=(SubtaskSpec(feature_index=0),))
+    )
+    state = _zeroed_base_heads(agent, agent.init(jr.key(0)))
+    first = agent.update(
+        _force_base_transition(state, [1.0, 0.0], 0),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+    terminal = agent.update(
+        _force_base_transition(first.state, [0.0, 1.0], 0),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    assert bool(terminal.update_applied)
+    assert float(terminal.td_error) == pytest.approx(1.0)
+    weights, bias = _head_params(terminal.state, 0)
+    assert weights == pytest.approx([0.5, 1.0])
+    assert bias == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize("option_duration", [1, 3])
+@pytest.mark.parametrize("final_discount", [0.0, 0.5, 1.0])
+def test_stomp_option_termination_trace_decays_by_prior_macro_discount(
+    option_duration: int, final_discount: float,
+) -> None:
+    """Old traces decay by the discount into the option's start state.
+
+    The option's cumulative discount bootstraps this semi-MDP transition
+    and decays eligibility on the next base update. Applying it before
+    the current TD error would discard credit on terminal options and
+    violate one-step option equivalence to primitive actions.
+    """
+    agent = STOMPAgent(
+        _trace_config(subtask_specs=(SubtaskSpec(
+            feature_index=0, threshold=10.0, max_option_steps=option_duration,
+        ),))
+    )
+    state = _zeroed_base_heads(agent, agent.init(jr.key(0)))
+    first = agent.update(
+        _force_base_transition(state, [1.0, 0.0], 0),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+        jnp.asarray(0.5, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+    executing = first.state.replace(
+        executing_option=jnp.asarray(0, dtype=jnp.int32),
+        base_last_action=jnp.asarray(2, dtype=jnp.int32),
+        last_primitive_action=jnp.asarray(0, dtype=jnp.int32),
+        option_last_intra_action=jnp.asarray(0, dtype=jnp.int32),
+        base_last_obs=jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+        option_start_obs=jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+        option_steps=jnp.asarray(0, dtype=jnp.int32),
+        option_cumreward=jnp.asarray(0.0, dtype=jnp.float32),
+        option_env_cumreward=jnp.asarray(0.0, dtype=jnp.float32),
+        option_baseline_mass=jnp.asarray(0.0, dtype=jnp.float32),
+        option_discount=jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    for _ in range(option_duration - 1):
+        progress = agent.update(
+            executing,
+            jnp.asarray(0.0, dtype=jnp.float32),
+            jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+            jnp.asarray(1.0, dtype=jnp.float32),
+        )
+        assert bool(progress.update_applied)
+        assert not bool(progress.option_terminated)
+        assert _head_trace(progress.state, 0) == ([1.0, 0.0], 1.0)
+        assert float(progress.state.base_previous_discount) == pytest.approx(0.5)
+        executing = progress.state
+
+    terminated = agent.update(
+        executing,
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(final_discount, dtype=jnp.float32),
+    )
+    assert bool(terminated.update_applied)
+    assert bool(terminated.option_terminated)
+    assert float(terminated.td_error) == pytest.approx(1.0)
+    # The option head learns its gradient at the start state.
+    weights, bias = _head_params(terminated.state, 2)
+    assert weights == pytest.approx([0.0, 1.0])
+    assert bias == pytest.approx(1.0)
+    # The inactive head decays by prior discount 0.5 times lambda 0.5.
+    # The current macro discount is stored for the next base update.
+    weights, bias = _head_trace(terminated.state, 0)
+    assert weights == pytest.approx([0.25, 0.0])
+    assert bias == pytest.approx(0.25)
+    # The stored discount is now the option's cumulative discount: the
+    # semi-MDP transition discount into the termination state.
+    assert float(terminated.state.base_previous_discount) == pytest.approx(final_discount)
+    assert float(first.state.base_previous_discount) == pytest.approx(0.5)
+
+
+def test_stomp_base_previous_discount_migrates_from_legacy_payload() -> None:
+    """Payloads without the new field fill the continuing default (1.0)."""
+    payload = stomp_state_to_checkpoint_payload(_state())
+    payload.pop("base_previous_discount", None)
+
+    migrated = load_stomp_state_with_migration(payload)
+
+    assert float(migrated.base_previous_discount) == pytest.approx(1.0)
+
+    old_format = load_stomp_state_with_migration(_old_format_payload(_state()))
+    assert float(old_format.base_previous_discount) == pytest.approx(1.0)
+    fresh = _agent().init(jr.key(1))
+    assert float(fresh.base_previous_discount) == pytest.approx(1.0)

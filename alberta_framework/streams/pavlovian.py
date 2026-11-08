@@ -60,6 +60,7 @@ from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream  # noqa: F401  (re-exported)
 
 _INT32_MAX = 2**31 - 1
+_FLOAT32_MAX = np.finfo(np.float32).max
 _ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
 )
@@ -378,7 +379,8 @@ class ClassicalConditioningStream:
         iti_max: Maximum ITI (steps, inclusive).
         noise_std: Std of Gaussian observation noise, canonicalized to
             float32. Positive values below the float32 subnormal range
-            become exact zero.
+            become exact zero. Draws whose noisy observation exceeds the
+            float32 range saturate to its signed finite limit.
         distractor_prob: Per-step probability that an idle distractor
             fires.
         phases: Tuple of ``PavlovianPhase``.
@@ -821,7 +823,11 @@ class ClassicalConditioningStream:
         noise = self._noise_std * jr.normal(
             k_noise, (self.feature_dim,), dtype=jnp.float32
         )
-        observation = (clean_obs + noise).astype(jnp.float32)
+        observation = jnp.clip(
+            (clean_obs + noise).astype(jnp.float32),
+            -_FLOAT32_MAX,
+            _FLOAT32_MAX,
+        )
 
         target = jnp.where(us_fires, jnp.float32(1.0), jnp.float32(0.0))
 

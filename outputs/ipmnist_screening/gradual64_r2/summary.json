@@ -1,0 +1,252 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "upgd_w_control",
+ "created_unix": 1791808074.769047,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "7.0.0-38-generic",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.14.4"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 6,
+ "noise_gradual_steps": 64,
+ "noise_mode": "gradual",
+ "noise_pool_steps": null,
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.8905666440555556,
+   "average_online_accuracy_stderr": 0.005357648651123839,
+   "average_plasticity_mean": 0.6448959933888889,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_identmap50_r_idet003_s0031640625_r02",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 1.0,
+    "head_resid": 1.0,
+    "ident_match2": 200.0,
+    "ident_match3": 2000.0,
+    "ident_match_at": 50.0,
+    "ident_reset_frac": 0.03,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 0.03,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.0031640625,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": 8.904752380952329e-05,
+   "n_seeds": 3,
+   "paired_vs_control": {
+    "all_seeds_improve": true,
+    "beats_control": true,
+    "confirmation_candidate": true,
+    "control": "upgd_w_control",
+    "mean_diff": 0.11099666277777791,
+    "per_seed_diff": [
+     0.101437,
+     0.11402,
+     0.117533
+    ],
+    "seeds": [
+     0,
+     1,
+     2
+    ],
+    "stderr_diff": 0.0048864129593648225
+   },
+   "per_seed_average_online_accuracy": [
+    0.879987,
+    0.894387,
+    0.897327
+   ],
+   "per_seed_late_window_slope": [
+    -2.714e-05,
+    -0.00067571,
+    0.00097
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 210.27
+  },
+  {
+   "average_online_accuracy_mean": 0.7795699812777777,
+   "average_online_accuracy_stderr": 0.0005361821322003476,
+   "average_plasticity_mean": 0.49989583505555557,
+   "base_learner": "upgd_w",
+   "config_name": "upgd_w_control",
+   "hyperparameters": {
+    "noise_std": 0.1,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": 2.642849999999883e-05,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.77855,
+    0.780367,
+    0.779793
+   ],
+   "per_seed_late_window_slope": [
+    0.00069,
+    -1.43e-06,
+    -0.00060929
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 899.22
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v3",
+ "shard_manifest": [
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s0031640625_r02",
+   "path": "outputs/ipmnist_screening/gradual64_r2/rls_head_resid_identmap50_r_idet003_s0031640625_r02_seed0.json",
+   "seed": 0,
+   "sha256": "8420d9001269ce9840b086cc918db7d3985b0234d0312b984d631a4d46f9d411",
+   "size_bytes": 5906
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s0031640625_r02",
+   "path": "outputs/ipmnist_screening/gradual64_r2/rls_head_resid_identmap50_r_idet003_s0031640625_r02_seed1.json",
+   "seed": 1,
+   "sha256": "1d503dba9b747aa985d4cf5d594cfd574b0dd973550b7ebbc4d6adf9fd811099",
+   "size_bytes": 5900
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_idet003_s0031640625_r02",
+   "path": "outputs/ipmnist_screening/gradual64_r2/rls_head_resid_identmap50_r_idet003_s0031640625_r02_seed2.json",
+   "seed": 2,
+   "sha256": "3ecc58e05c9560744faf43a15c5dc33b4368d8aab60f38bf5b895111ed0db6c7",
+   "size_bytes": 5918
+  },
+  {
+   "config_name": "upgd_w_control",
+   "path": "outputs/ipmnist_screening/gradual64_r2/upgd_w_control_seed0.json",
+   "seed": 0,
+   "sha256": "aeeee5f1dc2db74f078ce33ee2c578761851396c0a534c446a09c2ef4f84bc41",
+   "size_bytes": 5470
+  },
+  {
+   "config_name": "upgd_w_control",
+   "path": "outputs/ipmnist_screening/gradual64_r2/upgd_w_control_seed1.json",
+   "seed": 1,
+   "sha256": "fc73b3be27ee3c0b6c8fce6f7993034089b805fdb362b21a2da3dc85f5a85bd4",
+   "size_bytes": 5480
+  },
+  {
+   "config_name": "upgd_w_control",
+   "path": "outputs/ipmnist_screening/gradual64_r2/upgd_w_control_seed2.json",
+   "seed": 2,
+   "sha256": "5c2453173dfbecf639ea9c48b234077fb7a61c728c80d2c4d11c61d2b38fb849",
+   "size_bytes": 5491
+  }
+ ],
+ "slope_window": 15,
+ "source_provenance": {
+  "git_commit": "8b08aba141d05f502be00d6d120d26fa727a3a48",
+  "git_object_format": "sha1",
+  "git_tree": "f0d60da69612de942afddbea2d29dcd5f3430fb6",
+  "relevant_source_file_count": 232,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "ede68295aeffce4baf44143f9225fd9e81e743e055d756cf175232ce358fee4e",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}

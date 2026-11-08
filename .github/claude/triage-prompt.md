@@ -7,7 +7,7 @@ Your only deliverable is the file `/tmp/pr-triage/verdict.json`.
 
 - `/tmp/pr-triage/metadata.json` — PR title, body, author, branch, size.
 - `/tmp/pr-triage/changed_files.txt` — full changed-file list.
-- `/tmp/pr-triage/diff.patch` — the diff, possibly truncated at 400 KB.
+- `/tmp/pr-triage/diff.patch` — the diff, up to 400 KB.
 - The working directory is a checkout of the **base** branch (the PR is not
   applied). Read any repository files you need for context, including
   `CLAUDE.md` for this project's rules.
@@ -41,8 +41,9 @@ Pick exactly one:
     corrections that match the code's actual behavior.
   - No behavior change to library code, benchmarks, evidence tooling, or
     numerical results; no new dependencies; no API changes.
-  - Touches none of: `.github/`, `outputs/`, `CLAUDE.md`, `AGENTS.md`,
-    `VENDORING.md`, `pyproject.toml`,
+  - Touches none of: `.github/`, `outputs/`, `.claude/`, `.husky/`,
+    `.mcp.json`, `.claude.json`, `.gitmodules`, `.gitattributes`, `.ripgreprc`,
+    `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `VENDORING.md`, `pyproject.toml`,
     `alberta_framework/evaluation/evidence_manifest.py`.
     (A deterministic gate also enforces this; do not rely on it.)
   When in any doubt at all, do not choose `auto_merge`.

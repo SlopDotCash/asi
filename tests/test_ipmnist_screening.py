@@ -7658,10 +7658,7 @@ class TestRLSHeadIdentMap:
         assert np.all(np.isfinite(np.asarray(ident.per_task_accuracy)))
 
     def test_registry_arms(self):
-        """Only the two 200-task-confirmed identifier arms plus the gated
-        idet003 trigger and idet003_s005625 step-size triple screens are
-        registered; the screened intermediates and the round-2 rejections
-        (negative result #22) are deregistered."""
+        """Pin the current and retained historical identifier arm inventory."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
             _make_rls_head_identmap_learner,
@@ -7669,6 +7666,45 @@ class TestRLSHeadIdentMap:
         )
 
         expected = {
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_polyak_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "polyak_window": window,
+                    "polyak_head_avg": head_avg,
+                }
+                for tag, window, head_avg in (
+                    ("w100h0", 100.0, 0.0), ("w100h1", 100.0, 1.0),
+                    ("w1000h0", 1000.0, 0.0), ("w1000h1", 1000.0, 1.0),
+                )
+            },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s005625_as{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "body_as_meta": meta, "body_as_tau": 1e4,
+                }
+                for tag, meta in (("1e3", 1e-3), ("1e2", 1e-2))
+            },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "anneal_peak": peak,
+                }
+                for tag, peak in (("p75", 0.0075), ("p10", 0.01), ("p15", 0.015))
+            },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s005625_snp_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "snp_shrink": shrink, "snp_sigma": sigma,
+                }
+                for tag, shrink, sigma in (("l08s001", 0.8, 0.01), ("l05s01", 0.5, 0.1))
+            },
             "rls_head_resid_identmap50_r": {
                 "ident_match_at": 50.0, "ident_match2": 200.0,
                 "ident_match3": 2000.0,
@@ -7786,17 +7822,112 @@ class TestRLSHeadIdentMap:
                 for tag, ridge in (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
             },
         }
+        expected.update({
+            f"rls_head_resid_identmap{tag}": {
+                "ident_match_at": 50.0, "ident_match2": 200.0, "ident_match3": 2000.0,
+                **overrides,
+            }
+            for tag, overrides in (
+                ("50_r_mom9", {"body_momentum": 0.9}),
+                ("50_r_mom99", {"body_momentum": 0.99}),
+                ("50_r_nogate", {"gate_scale": 0.0}),
+                (
+                    "200_r_nogate",
+                    {
+                        "ident_match_at": 200.0,
+                        "ident_match2": 500.0,
+                        "gate_scale": 0.0,
+                    },
+                ),
+                ("50_r_nogate_idet003", {"gate_scale": 0.0, "ident_reset_frac": 0.03}),
+                (
+                    "50_r_nogate_idet003_s0075",
+                    {
+                        "gate_scale": 0.0,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0075,
+                    },
+                ),
+                (
+                    "50_r_nogate_idet003_s005625",
+                    {
+                        "gate_scale": 0.0,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.005625,
+                    },
+                ),
+                ("50_r_idet002", {"ident_reset_frac": 0.02}),
+                ("50_r_idet003_s00421875", {"ident_reset_frac": 0.03, "step_size": 0.00421875}),
+                ("50_r_idet004_s00421875", {"ident_reset_frac": 0.04, "step_size": 0.00421875}),
+                ("50_r_idet003_s0031640625", {"ident_reset_frac": 0.03, "step_size": 0.0031640625}),
+                (
+                    "50_r_idet003_s002373046875",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.002373046875,
+                    },
+                ),
+                (
+                    "50_r_idet003_s0031640625_r01",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.1,
+                    },
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02_preset003",
+                    {
+                        "rls_reset_frac": 0.03,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02_sgdhead",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                        "rls_head_sgd": 1.0,
+                        "rls_head_sgd_step": 0.1,
+                    },
+                ),
+            )
+        })
+        expected.update({
+            f"rls_head_resid_identmap50_r_idet003_s0031640625_r02_{suffix}_stable": {
+                "ident_match_at": 50.0, "ident_match2": 200.0, "ident_match3": 2000.0,
+                "ident_reset_frac": 0.03, "step_size": 0.0031640625,
+                "rls_ridge_init": 0.03, selector: value,
+            }
+            for suffix, selector, value in (
+                ("diaghead", "rls_head_diag", 1.0), ("gdiag", "rls_head_gdiag", 1.0),
+                ("blockhead", "rls_head_block", 4.0),
+            )
+        })
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
         }
-        assert registered == set(expected)
+        assert registered == set(expected) | {
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init",
+        }
         for name, overrides in expected.items():
             spec = SCREENING_REGISTRY[name]
             assert spec.factory is _make_rls_head_identmap_learner
             assert spec.frozen_probe_input is _rls_head_frozen_probe_input
             assert spec.hyperparameters["head_resid"] == 1.0
             assert spec.hyperparameters["rls_lambda"] == 1.0
-            assert spec.hyperparameters["rls_reset_frac"] == 0.05
+            assert spec.hyperparameters["rls_reset_frac"] == overrides.get("rls_reset_frac", 0.05)
             for key, value in overrides.items():
                 assert spec.hyperparameters[key] == value
 
@@ -8154,6 +8285,369 @@ class TestRLSHeadIdentMapStepAnneal:
                   .hyperparameters, **bad}
             with pytest.raises(ValueError):
                 _make_rls_head_identmap_learner(hp)
+
+
+class TestRLSHeadIdentMapPolyak:
+    """Polyak-style body iterate averaging on the anneal_f2t1000 parent.
+
+    The reduction pin runs the LIVE averaging path (``polyak_window = 1``,
+    both head settings) on a stream where the detector fires and the
+    identifier remaps, and requires bitwise equality with the PARENT.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+
+    @classmethod
+    def _spec(cls, **overrides):
+        spec = screening_spec(cls.PARENT)
+        return replace(
+            spec,
+            name=spec.name + "_polyak_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, "anneal_tau": 2.0, **overrides,
+            },
+        )
+
+    def _run(self, **overrides):
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        return run_screening_config(
+            x, y, self._spec(**overrides), seed=7, config=SMALL
+        )
+
+    def test_stream_exercises_identifier(self):
+        parent = self._run()
+        no_ident = self._run(ident_match_at=0.0)
+        assert not np.array_equal(
+            np.asarray(parent.per_task_loss), np.asarray(no_ident.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("head_avg", [0.0, 1.0])
+    def test_window_one_live_path_pin_bitwise(self, head_avg):
+        """``polyak_window = 1`` through the live average is the parent
+        bit-exactly, for both head settings."""
+        parent = self._run()
+        off = self._run(polyak_window=1.0, polyak_head_avg=head_avg)
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("head_avg", [0.0, 1.0])
+    def test_mechanism_live(self, head_avg):
+        """A real window diverges from the parent and stays finite."""
+        parent = self._run()
+        arm = self._run(polyak_window=8.0, polyak_head_avg=head_avg)
+        assert not np.array_equal(
+            np.asarray(arm.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+        assert np.all(np.isfinite(np.asarray(arm.per_task_loss)))
+        if head_avg == 0.0:
+            np.testing.assert_array_equal(arm.per_task_plasticity, parent.per_task_plasticity)
+
+    def test_avg_resets_at_shift_and_remap(self):
+        """Direct state check: after a remap step the average equals the
+        raw body exactly and the counter is 1."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        hp = dict(self._spec(polyak_window=4.0).hyperparameters)
+        init_fn, step_fn = _make_rls_head_identmap_learner(hp)
+        params = init_mlp_params(jr.key(0), SMALL)
+        state = init_fn(params)
+        step_fn = jax.jit(step_fn)
+        saw_reset = saw_avg = False
+        for t in range(x.shape[0]):
+            prev_remap = np.asarray(state.ident.remap)
+            params, state, _ = step_fn(
+                params, state, jnp.asarray(x[t]), jnp.asarray(y[t]), jr.key(t)
+            )
+            reset = int(state.ident.since_shift) == 1 or not np.array_equal(
+                prev_remap, np.asarray(state.ident.remap)
+            )
+            if reset:
+                saw_reset = True
+                assert int(state.avg_n) == 1
+                for k in state.avg:
+                    np.testing.assert_array_equal(
+                        np.asarray(state.avg[k]), np.asarray(params[k])
+                    )
+            elif int(state.avg_n) > 1:
+                saw_avg = True
+        assert saw_reset and saw_avg
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        base = self._spec(polyak_window=100.0).hyperparameters
+        for bad in ({"polyak_window": 0.0}, {"polyak_window": 2.5},
+                    {"polyak_window": float("inf")},
+                    {"polyak_head_avg": 0.5}, {"ident_match_at": 0.0},
+                    {"rls_head_sgd": 1.0}):
+            with pytest.raises(ValueError):
+                _make_rls_head_identmap_learner({**base, **bad})
+        with pytest.raises(ValueError, match="L2-Init"):
+            _make_rls_head_identmap_learner(dict(base), _decay_to_init=True)
+
+
+class TestRLSHeadIdentMapAutostep:
+    """Autostep per-weight body step sizes on idet003_s005625.
+
+    Preregistered in
+    ``outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_autostep/``.
+    ``body_as_meta = 0`` must reproduce the parent bit-for-bit; a positive
+    meta rate must change the run and keep it finite.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625"
+    ARMS = (PARENT + "_as1e3", PARENT + "_as1e2")
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+        )
+
+        parent = SCREENING_REGISTRY[self.PARENT]
+        for name, meta in zip(self.ARMS, (1e-3, 1e-2), strict=True):
+            spec = SCREENING_REGISTRY[name]
+            assert spec.factory is _make_rls_head_identmap_learner
+            assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+                "body_as_meta", "body_as_tau"
+            }
+            for key, value in parent.hyperparameters.items():
+                assert spec.hyperparameters[key] == value, key
+            assert spec.hyperparameters["body_as_meta"] == meta
+            assert spec.hyperparameters["body_as_tau"] == 1e4
+
+    @pytest.mark.parametrize("arm", ARMS)
+    def test_meta_zero_pin_bitwise(self, small_data, arm):
+        """``body_as_meta = 0`` reproduces the parent bit-for-bit."""
+        x, y = small_data
+        spec = screening_spec(arm)
+        inert = replace(
+            spec,
+            name=spec.name + "_meta0_test",
+            hyperparameters={**spec.hyperparameters, "body_as_meta": 0.0},
+        )
+        expected = run_screening_config(
+            x, y, screening_spec(self.PARENT), seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(x, y, inert, seed=7, config=SMALL)
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_mechanism_live_and_finite(self, small_data):
+        x, y = small_data
+        parent = run_screening_config(
+            x, y, screening_spec(self.PARENT), seed=7, config=SMALL,
+        )
+        result = run_screening_config(
+            x, y, screening_spec(self.ARMS[1]), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+        assert not np.array_equal(
+            np.asarray(result.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_rejects_invalid(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = dict(screening_spec(self.ARMS[0]).hyperparameters)
+        with pytest.raises(ValueError, match="body_as_meta"):
+            _make_rls_head_learner({**hp, "body_as_meta": -1.0})
+        with pytest.raises(ValueError, match="body_as_tau"):
+            _make_rls_head_learner({**hp, "body_as_tau": 0.5})
+        with pytest.raises(ValueError, match="gated residual body"):
+            _make_rls_head_learner({**hp, "gate_scale": 0.0})
+        with pytest.raises(ValueError, match="fixed-step"):
+            _make_rls_head_learner({**hp, "anneal_floor": 0.0028125, "anneal_tau": 1000.0})
+
+
+class TestRLSHeadIdentMapShrinkPerturb:
+    """Shrink & Perturb at the identifier's first remap (S&P wave).
+
+    The reduction pin runs the LIVE S&P path (keys present,
+    ``snp_shrink = 1, snp_sigma = 0``) on a stream where the identifier
+    provably fires, and requires bitwise equality with the parent.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625"
+
+    @staticmethod
+    def _offset_data():
+        key = jr.key(4321)
+        kx, ky = jr.split(key)
+        offsets = jnp.linspace(-2.0, 2.0, SMALL.input_dim)
+        x = np.asarray(
+            jr.uniform(kx, (64, SMALL.input_dim), jnp.float32, -0.3, 0.3)
+            + offsets[None, :]
+        )
+        y = np.asarray(jr.randint(ky, (64,), 0, SMALL.n_classes))
+        return x, y
+
+    @classmethod
+    def _spec(cls, **overrides):
+        spec = screening_spec(cls.PARENT)
+        return replace(
+            spec,
+            name=spec.name + "_snp_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, **overrides,
+            },
+        )
+
+    def test_off_live_path_pin_bitwise(self):
+        """``snp_shrink = 1, snp_sigma = 0`` through the live path is the
+        parent bit-exactly, on a stream where the remap fires."""
+        x, y = self._offset_data()
+        parent = run_screening_config(x, y, self._spec(), seed=7, config=SMALL)
+        off = run_screening_config(
+            x, y, self._spec(snp_shrink=1.0, snp_sigma=0.0),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_helper_identity_bitwise(self):
+        """The body transform at (1, 0) returns every tensor bitwise."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _shrink_perturb_body,
+        )
+
+        params = init_mlp_params(jr.key(3), SMALL)
+        out = _shrink_perturb_body(
+            params, jnp.bool_(True), jr.key(9), 1.0, 0.0
+        )
+        for name, value in params.items():
+            np.testing.assert_array_equal(
+                np.asarray(out[name]), np.asarray(value)
+            )
+
+    def test_helper_event_gating(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _shrink_perturb_body,
+        )
+
+        params = init_mlp_params(jr.key(3), SMALL)
+        idle = _shrink_perturb_body(
+            params, jnp.bool_(False), jr.key(9), 0.5, 0.1
+        )
+        fired = _shrink_perturb_body(
+            params, jnp.bool_(True), jr.key(9), 0.5, 0.1
+        )
+        for name in ("w1", "b1", "w2", "b2"):
+            np.testing.assert_array_equal(
+                np.asarray(idle[name]), np.asarray(params[name])
+            )
+            bound = 1.0 / math.sqrt(params[f"w{name[1:]}"].shape[0])
+            delta = np.asarray(fired[name]) - 0.5 * np.asarray(params[name])
+            assert np.all(np.abs(delta) <= 0.1 * bound + 1e-6)
+        for name in params:
+            if name not in ("w1", "b1", "w2", "b2"):
+                np.testing.assert_array_equal(
+                    np.asarray(fired[name]), np.asarray(params[name])
+                )
+
+    def test_mechanism_live(self):
+        """With a real shrink the trajectory diverges from the parent (the
+        event fires inside the scanned loop; on this offset stream the
+        detector already fires during task 0's warm-up)."""
+        x, y = self._offset_data()
+        parent = run_screening_config(x, y, self._spec(), seed=7, config=SMALL)
+        snp = run_screening_config(
+            x, y, self._spec(snp_shrink=0.5, snp_sigma=0.1),
+            seed=7, config=SMALL,
+        )
+        assert not np.array_equal(
+            np.asarray(snp.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+        assert np.all(np.isfinite(np.asarray(snp.per_task_loss)))
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        for bad in (
+            {"snp_shrink": 0.0}, {"snp_shrink": 1.5}, {"snp_shrink": 1e-100},
+            {"snp_sigma": -0.1}, {"snp_sigma": 1e39}, {"ident_match_at": 0.0},
+            {"body_wclip_kappa": 2.0},
+        ):
+            hp = {**self._spec(snp_shrink=0.8, snp_sigma=0.01)
+                  .hyperparameters, **bad}
+            with pytest.raises(ValueError):
+                _make_rls_head_identmap_learner(hp)
+
+
+class TestRLSHeadIdentMapAnnealPeak:
+    """Protect the screened peak mechanism and its parent reduction."""
+
+    @staticmethod
+    def _spec():
+        return TestRLSHeadIdentMapStepAnneal._spec(
+            anneal_floor=0.0028125, anneal_tau=1000.0,
+        )
+
+    def test_peak_reduces_to_parent_and_changes_step_when_enabled(self):
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        spec = self._spec()
+
+        def run(arm):
+            return run_screening_config(x, y, arm, seed=7, config=SMALL)
+
+        parent = run(spec)
+        pinned = run(replace(
+            spec, hyperparameters={**spec.hyperparameters, "anneal_peak": 0.005625},
+        ))
+        changed = run(replace(
+            spec, hyperparameters={**spec.hyperparameters, "anneal_peak": 0.015},
+        ))
+        np.testing.assert_array_equal(pinned.per_task_accuracy, parent.per_task_accuracy)
+        np.testing.assert_array_equal(pinned.per_task_loss, parent.per_task_loss)
+        assert not np.array_equal(changed.per_task_loss, parent.per_task_loss)
+        assert np.all(np.isfinite(changed.per_task_loss))
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for peak in (0.001, 0.0, -0.01, 1e39, float("inf"), float("nan")):
+            with pytest.raises(ValueError, match="anneal_peak"):
+                _make_rls_head_identmap_learner({**base, "anneal_peak": peak})
+        without_anneal = {key: value for key, value in base.items() if key != "anneal_floor"}
+        with pytest.raises(ValueError, match="anneal_peak"):
+            _make_rls_head_identmap_learner({**without_anneal, "anneal_peak": 0.01})
+        with pytest.raises(ValueError, match="anneal_peak"):
+            _make_rls_head_identmap_learner({
+                **base, "ident_match_at": 0.0, "anneal_peak": 0.01,
+            })
 
 
 class TestPlasticityCounterSaturation:

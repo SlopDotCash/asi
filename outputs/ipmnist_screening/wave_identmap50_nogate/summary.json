@@ -1,0 +1,180 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "rls_head_resid_identmap50_r_nogate",
+ "created_unix": 1791693239.5155303,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "7.0.0-39-generic",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.3"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 3,
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.9126955319444443,
+   "average_online_accuracy_stderr": 0.007076784566597865,
+   "average_plasticity_mean": 0.7174785749444444,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_identmap50_r_nogate",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 0.0,
+    "head_resid": 1.0,
+    "ident_match2": 200.0,
+    "ident_match3": 2000.0,
+    "ident_match_at": 50.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": 0.0002997629047619045,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.916783,
+    0.898917,
+    0.922387
+   ],
+   "per_seed_late_window_slope": [
+    0.00199572,
+    -0.00116857,
+    7.214e-05
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 567.28
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v2",
+ "shard_manifest": [
+  {
+   "config_name": "rls_head_resid_identmap50_r_nogate",
+   "path": "outputs/ipmnist_screening/wave_identmap50_nogate/rls_head_resid_identmap50_r_nogate_seed0.json",
+   "seed": 0,
+   "sha256": "e5bee804dbef66ee9bf3be6e074d93ccdf066250a46aaf747c2dd3bdab5459f0",
+   "size_bytes": 5823
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_nogate",
+   "path": "outputs/ipmnist_screening/wave_identmap50_nogate/rls_head_resid_identmap50_r_nogate_seed1.json",
+   "seed": 1,
+   "sha256": "4e8c762fa26bfa1dce6be24bb015bd0c50ae882b3d4edc02ff5227b0c554e53b",
+   "size_bytes": 5827
+  },
+  {
+   "config_name": "rls_head_resid_identmap50_r_nogate",
+   "path": "outputs/ipmnist_screening/wave_identmap50_nogate/rls_head_resid_identmap50_r_nogate_seed2.json",
+   "seed": 2,
+   "sha256": "3d62c641a22fbb0e71275703e6901b254b600549bbcaa6f306f3c77b5ed86606",
+   "size_bytes": 5829
+  }
+ ],
+ "slope_window": 15,
+ "source_provenance": {
+  "git_commit": "90df6eb6a225d53025498867dd3c7b8659d38553",
+  "git_object_format": "sha1",
+  "git_tree": "107e4b9920b66f0da740bf3b44e610545dcf3e8e",
+  "relevant_source_file_count": 232,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "5f6752c90d9759a12cb987de00acdfb69281ad597d847172b7e0735a91567239",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}
