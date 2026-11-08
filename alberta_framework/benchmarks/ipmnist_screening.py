@@ -10205,29 +10205,48 @@ def _build_registry() -> dict[str, ScreeningSpec]:
 SCREENING_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType(_build_registry())
 
 
-_ARCHIVED_RLS_DIAGONAL_COMMITS = MappingProxyType({
+_ARCHIVED_RLS_HEAD_COMMITS = MappingProxyType({
     "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead":
         "e562e60ba7e886da7de0603b232305b3ee24d1aa",
     "rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag":
         "4d648e0b0b5d858b0e0061e237d19e01f914d644",
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank":
+        "d068ddbf55d62ad7bde30e2f4e0e56b1fa774fdd",
 })
 
 
-def _archived_rls_diagonal_factory(
+def _archived_rls_head_factory(
     hp: Mapping[str, float],
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     del hp
-    raise ValueError("historical diagonal RLS is replay only; use the _stable arm for new runs")
-
-
-_ARCHIVED_RLS_DIAGONAL_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType({
-    name: replace(
-        SCREENING_REGISTRY[name + "_stable"],
-        name=name,
-        factory=_archived_rls_diagonal_factory,
-        description="Historical diagonal RLS archive",
+    raise ValueError(
+        "historical RLS heads are replay only. Select a live registered arm for new runs"
     )
-    for name in _ARCHIVED_RLS_DIAGONAL_COMMITS
+
+
+_ARCHIVED_RLS_HEAD_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType({
+    **{
+        name: replace(
+            SCREENING_REGISTRY[name + "_stable"],
+            name=name,
+            factory=_archived_rls_head_factory,
+            description="Historical diagonal RLS archive",
+        )
+        for name in _ARCHIVED_RLS_HEAD_COMMITS
+        if not name.endswith("_lowrank")
+    },
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank": replace(
+        SCREENING_REGISTRY["rls_head_resid_identmap50_r_idet003_s0031640625_r02"],
+        name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank",
+        hyperparameters=_rls_head_hp(
+            rls_lambda=1.0, rls_reset_frac=0.05, head_resid=1.0,
+            ident_match_at=50.0, ident_match2=200.0, ident_match3=2000.0,
+            ident_reset_frac=0.03, step_size=0.0031640625,
+            rls_ridge_init=0.03, rls_head_rank=8.0,
+        ),
+        factory=_archived_rls_head_factory,
+        description="Historical low-rank archive with an indefinite covariance recurrence",
+    ),
 })
 
 
@@ -13156,7 +13175,7 @@ def load_shard(
 ) -> dict[str, Any]:
     """Load legacy v1 or strictly validate a source-bound v2/v3 screening shard."""
     registry = (
-        {**SCREENING_REGISTRY, **_ARCHIVED_RLS_DIAGONAL_REGISTRY}
+        {**SCREENING_REGISTRY, **_ARCHIVED_RLS_HEAD_REGISTRY}
         if spec_registry is None else spec_registry
     )
     payload = load_strict_json_object(path)
@@ -13245,11 +13264,11 @@ def load_shard(
     )
     if config_name not in registry:
         raise ValueError(f"{path}: unknown config_name")
-    archived_commit = _ARCHIVED_RLS_DIAGONAL_COMMITS.get(config_name)
+    archived_commit = _ARCHIVED_RLS_HEAD_COMMITS.get(config_name)
     if archived_commit is not None and (
         schema != SHARD_SCHEMA or payload["source_provenance"]["git_commit"] != archived_commit
     ):
-        raise ValueError(f"{path}: historical diagonal RLS requires its original source commit")
+        raise ValueError(f"{path}: historical RLS requires its original source commit")
     spec = registry[config_name]
     base_learner = _required_nonempty_string(
         payload.get("base_learner"), context=f"{path}: base_learner"
@@ -13721,7 +13740,7 @@ def merge_shards(
             "would silently carry no paired_vs_control blocks"
         )
     registry = (
-        {**SCREENING_REGISTRY, **_ARCHIVED_RLS_DIAGONAL_REGISTRY}
+        {**SCREENING_REGISTRY, **_ARCHIVED_RLS_HEAD_REGISTRY}
         if spec_registry is None else spec_registry
     )
     for name, per_seed in sorted(by_config.items()):
