@@ -319,9 +319,22 @@ def step8_update(
     next_observation: Array,
 ) -> WorldModelUpdateResult:
     """Run one Step 8 model-learning transition update."""
-    return cast(
+    result = cast(
         WorldModelUpdateResult,
         model.update(state, observation, action, reward, next_observation),
+    )
+    # The jitted update narrows the host-only clocks, which one transition
+    # does not advance. Restore their incoming values.
+    return cast(
+        WorldModelUpdateResult,
+        result.replace(  # type: ignore[attr-defined]
+            state=result.state.replace(
+                learner_state=result.state.learner_state.replace(
+                    birth_timestamp=state.learner_state.birth_timestamp,
+                    uptime_s=state.learner_state.uptime_s,
+                )
+            )
+        ),
     )
 
 
