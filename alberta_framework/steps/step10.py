@@ -571,6 +571,20 @@ def init_step10_state(
     ).state
 
 
+def _restore_step10_host_clocks(
+    updated: STOMPState,
+    original: STOMPState,
+) -> STOMPState:
+    restored_learner = updated.base_learner_state.replace(
+        birth_timestamp=original.base_learner_state.birth_timestamp,
+        uptime_s=original.base_learner_state.uptime_s,
+    )
+    return cast(
+        STOMPState,
+        updated.replace(base_learner_state=restored_learner),
+    )
+
+
 def init_step10_state_and_action(
     agent: STOMPAgent,
     *,
@@ -585,7 +599,13 @@ def init_step10_state_and_action(
     init_key, _ = jr.split(key)
     state = agent.init(init_key)
     obs = jnp.asarray(initial_observation, dtype=jnp.float32)
-    return agent.start_with_action(state, obs)
+    result = agent.start_with_action(state, obs)
+    return cast(
+        STOMPStartResult,
+        result.replace(
+            state=_restore_step10_host_clocks(result.state, state),
+        ),
+    )
 
 
 def step10_update(
@@ -607,7 +627,13 @@ def step10_update(
     Returns:
         :class:`STOMPUpdateResult` containing the new state and diagnostics.
     """
-    return cast(STOMPUpdateResult, agent.update(state, env_reward, next_observation))
+    result = cast(STOMPUpdateResult, agent.update(state, env_reward, next_observation))
+    return cast(
+        STOMPUpdateResult,
+        result.replace(
+            state=_restore_step10_host_clocks(result.state, state),
+        ),
+    )
 
 
 def _has_trusted_array_type(value: object) -> bool:
