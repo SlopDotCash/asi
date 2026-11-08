@@ -12,10 +12,12 @@ import pytest
 
 from alberta_framework._strict_json import load_strict_json_object
 from alberta_framework.benchmarks.ipmnist_screening import (
+    RLSHeadBlockState,
     RLSHeadDiagonalState,
     RLSHeadIdentState,
     RLSHeadL2InitState,
     RLSHeadMomentumState,
+    _block_rls_gain,
     _diagonal_rls_gain,
     _make_rls_head_learner,
     load_shard,
@@ -48,6 +50,7 @@ _OUTPUTS = Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
         "wave_identmap50_r_idet003_s0031640625_r02_sgdhead",
         "wave_identmap50_r_idet003_s0031640625_r02_diaghead",
         "wave_identmap50_r_idet003_s0031640625_r02_gdiag",
+        "wave_identmap50_r_idet003_s0031640625_r02_blockhead",
         "gradual64_r2",
     ),
 )
@@ -301,8 +304,8 @@ def test_live_diagonal_registry_preserves_vector_carry_and_head_reset(suffix: st
     np.testing.assert_array_equal(reset.inner.wout, updated.inner.wout)
 
 
-@pytest.mark.parametrize("suffix", ("diaghead", "gdiag"))
-def test_archived_diagonal_ids_are_replay_only(suffix: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", ("diaghead", "gdiag", "blockhead"))
+def test_archived_head_ids_are_replay_only(suffix: str, tmp_path: Path) -> None:
     name = "rls_head_resid_identmap50_r_idet003_s0031640625_r02_" + suffix
     with pytest.raises(ValueError, match="unknown screening config"):
         screening_spec(name)
@@ -334,4 +337,99 @@ def test_live_diagonal_head_rejects_overlapping_head_and_body_modes(
 ) -> None:
     spec = screening_spec("rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead_stable")
     with pytest.raises(ValueError, match=message):
+        spec.factory({**spec.hyperparameters, **override})
+
+
+@pytest.mark.parametrize("groups", (1, 2, 4))
+def test_global_block_head_matches_dense_projection_over_multiple_steps(groups: int) -> None:
+    width = -(-5 // groups)
+    roots = jnp.tile(jnp.eye(width)[None] / np.sqrt(0.03), (groups, 1, 1))
+    rng = np.random.default_rng(12)
+    step = jax.jit(_block_rls_gain)
+    for _ in range(10):
+        phi = np.append(rng.uniform(0.0, 3.0, 4), 1.0).astype(np.float32)
+        covariance = np.asarray(roots, dtype=np.float64)
+        covariance = covariance @ covariance.transpose(0, 2, 1)
+        padded = np.pad(phi.astype(np.float64), (0, groups * width - phi.size))
+        features = padded.reshape(groups, width)
+        projected = np.einsum("gij,gj->gi", covariance, features)
+        denominator = 1.0 + np.sum(features * projected)
+        expected = covariance - (
+            projected[:, :, None] * projected[:, None, :] / denominator
+        )
+
+        gain, roots = step(roots, phi)
+        actual = np.asarray(roots) @ np.asarray(roots).transpose(0, 2, 1)
+
+        np.testing.assert_allclose(gain, projected.flatten()[:5] / denominator, atol=2e-6)
+        np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=2e-6)
+        assert np.all(np.linalg.eigvalsh(actual) > 0.0)
+
+
+def test_global_block_head_uses_one_innovation_for_all_blocks() -> None:
+    gain, roots = jax.jit(_block_rls_gain)(jnp.ones((2, 1, 1)), jnp.ones(2))
+    np.testing.assert_allclose(gain, [1.0 / 3.0, 1.0 / 3.0], rtol=1e-6)
+    np.testing.assert_allclose(roots[:, 0, 0] ** 2, [2.0 / 3.0, 2.0 / 3.0], rtol=1e-6)
+
+
+def test_block_joseph_factor_retains_covariance_after_dominant_excitation() -> None:
+    roots = jnp.tile(jnp.eye(2)[None] / np.sqrt(0.03), (2, 1, 1))
+    gain, updated = jax.jit(_block_rls_gain)(roots, jnp.array([10000.0, 0.0, 1.0]))
+    covariance = np.asarray(updated) @ np.asarray(updated).transpose(0, 2, 1)
+    assert covariance[0, 0, 0] > 0.0
+    expected = (1.0 / 0.03) * (1.0 + 1.0 / 0.03) / (
+        1.0 + (1.0 / 0.03) * (1e8 + 1.0)
+    )
+    np.testing.assert_allclose(covariance[0, 0, 0], expected, rtol=2e-6)
+    assert np.all(np.isfinite(gain))
+    # The padded coordinate remains an unobserved prior direction.
+    np.testing.assert_allclose(covariance[1, 1, 1], 1.0 / 0.03, rtol=1e-6)
+
+    gain, updated = jax.jit(_block_rls_gain)(roots, jnp.array([1e20, 0.0, 1e18, 1.0]))
+    covariance = np.asarray(updated) @ np.asarray(updated).transpose(0, 2, 1)
+    assert np.all(np.isfinite(gain))
+    assert np.all(np.isfinite(covariance))
+    assert np.all(np.linalg.eigvalsh(covariance) > 0.0)
+
+
+def test_block_registry_preserves_body_updates_and_covariance_reset() -> None:
+    parent = screening_spec("rls_head_resid_identmap50_r_idet003_s0031640625_r02")
+    stable = screening_spec(parent.name + "_blockhead_stable")
+    params = {
+        "w1": jnp.zeros((4, 4)),
+        "b1": jnp.zeros(4),
+        "w2": jnp.zeros((4, 4)),
+        "b2": jnp.array([0.5, 0.0, 0.0, 0.0]),
+        "w3": jnp.zeros((4, 2)),
+        "b3": jnp.zeros(2),
+    }
+    initialize, step = stable.factory(stable.hyperparameters)
+    parent_init, parent_step = parent.factory(parent.hyperparameters)
+    state = initialize(params)
+    assert isinstance(state.inner, RLSHeadBlockState)
+    assert state.inner.p.shape == (4, 2, 2)
+    args = jnp.zeros(4), jnp.int32(1), jr.key(0)
+    actual_params, actual_state, _ = jax.jit(step)(params, state, *args)
+    parent_params, parent_state, _ = jax.jit(parent_step)(params, parent_init(params), *args)
+    for name in params:
+        np.testing.assert_array_equal(actual_params[name], parent_params[name])
+    np.testing.assert_allclose(actual_state.inner.wout, parent_state.inner.wout, atol=1e-7)
+
+    _, reset_step = stable.factory({**stable.hyperparameters, "rls_reset_frac": 0.0})
+    _, reset_state, _ = jax.jit(reset_step)(params, state, *args)
+    np.testing.assert_array_equal(reset_state.inner.p, state.inner.p)
+    np.testing.assert_array_equal(reset_state.inner.wout, actual_state.inner.wout)
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        {"rls_head_sgd": 1.0}, {"rls_head_diag": 1.0}, {"rls_head_rank": 8.0},
+        {"rls_head_block": 0.5}, {"rls_lambda": 0.999}, {"anneal_floor": 0.001},
+        {"polyak_window": 16.0}, {"body_momentum": 0.9},
+    ),
+)
+def test_block_head_rejects_conflicting_modes(override: dict[str, float]) -> None:
+    spec = screening_spec("rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead_stable")
+    with pytest.raises(ValueError):
         spec.factory({**spec.hyperparameters, **override})

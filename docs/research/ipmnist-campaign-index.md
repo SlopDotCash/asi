@@ -96,6 +96,7 @@ protocol. The historical waves do not change the lead development candidate.
 | #3125 | [Gated r02 body L2-to-initialization](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_l2init/summary.json) |
 | #3126 | [Gated r02 decayed SGD readout](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_sgdhead/summary.json) |
 | #3127 | [Historical per-coordinate diagonal head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_diaghead/summary.json) |
+| #3128 | [Historical block-local head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_blockhead/summary.json) |
 | #3129 | [Historical pooled diagonal head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_gdiag/summary.json) |
 | #3144 | [Gradual transitions with a 64-step ramp](../../outputs/ipmnist_screening/gradual64_r2/summary.json) |
 
@@ -104,6 +105,14 @@ with their bound source commits. New runs use the `diaghead_stable` and
 `gdiag_stable` suffixes. These controls update the diagonal covariance with
 positive terms and use scaled excitation to avoid float32 overflow. Both
 stable variants are unmeasured and require fresh matched runs.
+
+The archived `blockhead` ID uses block-local innovation denominators. Its
+new `blockhead_stable` control projects the dense update onto four covariance
+blocks using one global innovation denominator. It stores square root factors
+and updates them with Joseph-form QR, requiring O(G*b^2) state and O(G*b^3)
+arithmetic for G blocks of width b. This variant is unmeasured and needs a
+fresh matched run with resource accounting. Its scores cannot be inferred
+from the archived local-denominator experiment.
 
 ## Artifact-schema boundary
 

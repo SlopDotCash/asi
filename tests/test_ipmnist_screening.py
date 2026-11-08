@@ -7908,9 +7908,12 @@ class TestRLSHeadIdentMap:
             f"rls_head_resid_identmap50_r_idet003_s0031640625_r02_{suffix}_stable": {
                 "ident_match_at": 50.0, "ident_match2": 200.0, "ident_match3": 2000.0,
                 "ident_reset_frac": 0.03, "step_size": 0.0031640625,
-                "rls_ridge_init": 0.03, selector: 1.0,
+                "rls_ridge_init": 0.03, selector: value,
             }
-            for suffix, selector in (("diaghead", "rls_head_diag"), ("gdiag", "rls_head_gdiag"))
+            for suffix, selector, value in (
+                ("diaghead", "rls_head_diag", 1.0), ("gdiag", "rls_head_gdiag", 1.0),
+                ("blockhead", "rls_head_block", 4.0),
+            )
         })
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
