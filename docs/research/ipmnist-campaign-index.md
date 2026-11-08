@@ -97,6 +97,7 @@ protocol. The historical waves do not change the lead development candidate.
 | #3126 | [Gated r02 decayed SGD readout](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_sgdhead/summary.json) |
 | #3127 | [Historical per-coordinate diagonal head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_diaghead/summary.json) |
 | #3129 | [Historical pooled diagonal head](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_gdiag/summary.json) |
+| #3131 | [Historical low-rank experiment with an indefinite covariance recurrence](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_lowrank/summary.json) |
 | #3144 | [Gradual transitions with a 64-step ramp](../../outputs/ipmnist_screening/gradual64_r2/summary.json) |
 
 The original `diaghead` and `gdiag` arm IDs are available for artifact replay
@@ -104,6 +105,14 @@ with their bound source commits. New runs use the `diaghead_stable` and
 `gdiag_stable` suffixes. These controls update the diagonal covariance with
 positive terms and use scaled excitation to avoid float32 overflow. Both
 stable variants are unmeasured and require fresh matched runs.
+
+The #3131 low-rank records are retained for source-bound artifact replay. Dropping
+an old downdate's off-diagonal entries while retaining its diagonal can make the
+covariance indefinite. With ridge 0.03 and eight stored directions, an eleven-step
+nonnegative-feature witness gives innovation −680.828 before a square root. The
+historical accuracy comparison therefore cannot support its claimed conclusion
+about low-rank head capacity. A live low-rank control requires a covariance design
+that preserves positive semidefiniteness and a fresh matched experiment.
 
 ## Artifact-schema boundary
 

@@ -48,6 +48,7 @@ _OUTPUTS = Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
         "wave_identmap50_r_idet003_s0031640625_r02_sgdhead",
         "wave_identmap50_r_idet003_s0031640625_r02_diaghead",
         "wave_identmap50_r_idet003_s0031640625_r02_gdiag",
+        "wave_identmap50_r_idet003_s0031640625_r02_lowrank",
         "gradual64_r2",
     ),
 )
@@ -301,8 +302,8 @@ def test_live_diagonal_registry_preserves_vector_carry_and_head_reset(suffix: st
     np.testing.assert_array_equal(reset.inner.wout, updated.inner.wout)
 
 
-@pytest.mark.parametrize("suffix", ("diaghead", "gdiag"))
-def test_archived_diagonal_ids_are_replay_only(suffix: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", ("diaghead", "gdiag", "lowrank"))
+def test_archived_rls_ids_are_replay_only(suffix: str, tmp_path: Path) -> None:
     name = "rls_head_resid_identmap50_r_idet003_s0031640625_r02_" + suffix
     with pytest.raises(ValueError, match="unknown screening config"):
         screening_spec(name)
