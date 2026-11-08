@@ -933,6 +933,8 @@ class TestMultiHeadUpdateNoneActive:
 
         result = learner.update(warmed, obs, jnp.array([jnp.nan, jnp.nan]))
 
+        assert bool(result.update_applied)
+        chex.assert_trees_all_equal(result.state.trunk_traces, warmed.trunk_traces)
         for i in range(len(warmed.trunk_params.weights)):
             chex.assert_trees_all_close(
                 result.state.trunk_params.weights[i],
