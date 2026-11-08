@@ -25,6 +25,7 @@ from alberta_framework.core.recurrent_latent_world_model_ensemble import (
     RecurrentLatentWorldModelEnsemble,
     RecurrentLatentWorldModelEnsembleConfig,
     RecurrentLatentWorldModelEnsembleState,
+    _scale_safe_mean,
     _scale_safe_mean_and_variance,
     _tree_l2_norm,
     load_recurrent_latent_world_model_ensemble_checkpoint,
@@ -374,6 +375,27 @@ def test_scale_safe_mean_and_variance_is_zero_for_identical_large_values(
     mean, variance = _scale_safe_mean_and_variance(values, axis=0)
     np.testing.assert_allclose(float(mean), magnitude, rtol=2.0e-7)
     assert float(variance) == 0.0
+
+
+@pytest.mark.parametrize("members", [7, 9])
+@pytest.mark.parametrize("axis", [0, 1])
+@pytest.mark.parametrize("with_variance", [False, True])
+def test_scale_safe_means_keep_identical_float32_limits(
+    members: int, axis: int, with_variance: bool,
+) -> None:
+    maximum = np.float32(np.finfo(np.float32).max)
+    values = np.tile(np.asarray([maximum, -maximum], dtype=np.float32), (members, 1))
+    if axis == 1:
+        values = values.T
+    expected = np.mean(values.astype(np.float64), axis=axis)
+    if with_variance:
+        mean, variance = jax.jit(
+            lambda array: _scale_safe_mean_and_variance(array, axis=axis)
+        )(jnp.asarray(values))
+        np.testing.assert_array_equal(variance, np.zeros_like(expected))
+    else:
+        mean = jax.jit(lambda array: _scale_safe_mean(array, axis=axis))(jnp.asarray(values))
+    np.testing.assert_array_equal(mean, expected)
 
 
 @pytest.mark.parametrize("magnitude", [1.0e10, 1.0e18, 1.0e25])

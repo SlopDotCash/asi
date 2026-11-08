@@ -251,7 +251,9 @@ def _scale_safe_mean(values: Array, *, axis: int) -> Array:
     exponent = jnp.where(peak > 0.0, exponent, 0)
     scaled = jnp.ldexp(values, -exponent)
     scaled_mean = jnp.mean(scaled, axis=axis)
-    return jnp.ldexp(scaled_mean, jnp.squeeze(exponent, axis=axis))
+    mean = jnp.ldexp(scaled_mean, jnp.squeeze(exponent, axis=axis))
+    # Roundoff near float32's limit must not leave the inputs' convex hull.
+    return jnp.clip(mean, jnp.min(values, axis=axis), jnp.max(values, axis=axis))
 
 
 def _scale_safe_mean_and_variance(values: Array, *, axis: int) -> tuple[Array, Array]:
@@ -271,8 +273,9 @@ def _scale_safe_mean_and_variance(values: Array, *, axis: int) -> tuple[Array, A
     centered = shifted - jnp.expand_dims(mean_offset, axis=axis)
     scaled_variance = jnp.mean(jnp.square(centered), axis=axis)
     reduced_exponent = jnp.squeeze(exponent, axis=axis)
+    mean = jnp.ldexp(scaled_mean, reduced_exponent)
     return (
-        jnp.ldexp(scaled_mean, reduced_exponent),
+        jnp.clip(mean, jnp.min(values, axis=axis), jnp.max(values, axis=axis)),
         jnp.ldexp(scaled_variance, 2 * reduced_exponent),
     )
 
