@@ -1740,8 +1740,10 @@ def run_off_policy_horde_learning_loop(
         (observations, cumulants, next_observations, rhos, discounts),
     )
     elapsed = time.time() - t0
+    # Host-only clocks are narrowed while carried through the traced scan.
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
     )
 
     return OffPolicyHordeLearningResult(
