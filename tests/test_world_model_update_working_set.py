@@ -13,6 +13,7 @@ from alberta_framework.core.world_model import (
     OneStepWorldModel,
     WorldModelConfig,
     _preflight_world_model_update_working_set,
+    _world_model_direct_state_scalars,
     _world_model_update_working_set_bytes,
 )
 
@@ -46,7 +47,7 @@ def _wm_kwargs(observation_dim: int) -> dict[str, object]:
 
 
 def _ac_persist_bytes(observation_dim: int) -> int:
-    return 8 * observation_dim * observation_dim + 48 * observation_dim + 76
+    return 8 * observation_dim * observation_dim + 56 * observation_dim + 92
 
 
 def _tree_array_nbytes(tree: object) -> int:
@@ -66,7 +67,7 @@ def test_world_model_persist_fits_while_update_working_set_does_not() -> None:
     persist = _ac_persist_bytes(_AC_FIRST_WORKING_SET_OVERFLOW)
     working = _world_model_update_working_set_bytes(**_ac_kwargs(_AC_FIRST_WORKING_SET_OVERFLOW))
     assert persist <= _INT32_MAX
-    assert persist == 1_073_512_452
+    assert persist == 1_073_605_116
     assert (
         _world_model_update_working_set_bytes(**_ac_kwargs(_AC_LAST_WORKING_SET))
         <= _INT32_MAX
@@ -180,6 +181,39 @@ def test_world_model_result_extras_formula_matches_all_published_arrays() -> Non
     )
     expected_extras = 4 * (2 * 3 + 11 * 5 + 11) + 6
     assert returned_nonstate_bytes == expected_extras
+
+
+def test_world_model_persist_formula_matches_measured_state() -> None:
+    """The named persist count must match the state actually allocated.
+
+    The inner learner's LMS optimizer state holds one scalar step size per
+    (weight, bias) pair -- two per trunk layer and two per head -- so the
+    formula must count them alongside parameters, traces, utilities, and
+    counters. Before the fix the formula undercounts a (4, 5) hidden model
+    by 14 scalars (56 bytes): 736 measured learner bytes vs 680 named.
+    """
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=3,
+            n_actions=2,
+            hidden_sizes=(4, 5),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(11))
+    # Host-only float leaves (birth_timestamp/uptime_s) carry no bytes.
+    measured = sum(
+        leaf.size * leaf.dtype.itemsize
+        for leaf in jax.tree.leaves(state)
+        if isinstance(leaf, jax.Array)
+    )
+    assert measured == 4 * _world_model_direct_state_scalars(
+        observation_dim=3,
+        action_feature_dim=2,
+        hidden_sizes=(4, 5),
+        n_heads=5,
+        outer_state_scalars=2 * 3 + 4,
+    )
 
 
 def test_world_model_exact_last_legal_update_width_and_first_overflow() -> None:

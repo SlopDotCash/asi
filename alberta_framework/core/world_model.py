@@ -143,9 +143,14 @@ def _world_model_direct_state_scalars(
         for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
     )
     head_parameters = n_heads * (head_input + 1)
+    # Params and traces are one copy each (2x); the LMS optimizer state adds
+    # one scalar step size per (weight, bias) pair: two per trunk layer and
+    # two per head. The +3 covers step_count plus the two step_words.
     return (
         2 * (trunk_parameters + head_parameters)
         + sum(hidden_sizes)
+        + 2 * len(hidden_sizes)
+        + 2 * n_heads
         + 3
         + outer_state_scalars
     )

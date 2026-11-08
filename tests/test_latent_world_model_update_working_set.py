@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -53,7 +54,7 @@ def test_latent_named_persist_and_width_still_fit_at_overflow() -> None:
         **_LINEAR_KWARGS,
     )
     extras_bytes = working_set_bytes - 3 * persist_bytes
-    assert persist_bytes == 800_560_076
+    assert persist_bytes == 800_640_092
     assert persist_bytes <= _INT32_MAX
     assert persist_bytes + extras_bytes <= _INT32_MAX
     assert 4 * _OVERFLOW_LATENT_DIM <= _INT32_MAX
@@ -121,7 +122,7 @@ def test_legal_small_latent_world_model_still_constructs() -> None:
         hidden_sizes=(),
         include_action_interactions=False,
     )
-    assert persist_bytes == 444
+    assert persist_bytes == 492
     model = LatentWorldModel(config)
     state = model.init(jr.key(0))
     model.update(
@@ -131,4 +132,36 @@ def test_legal_small_latent_world_model_still_constructs() -> None:
         jnp.asarray(0.0, dtype=jnp.float32),
         jnp.asarray(0.99, dtype=jnp.float32),
         jnp.zeros((2,), dtype=jnp.float32),
+    )
+
+
+def test_latent_persist_formula_matches_measured_state() -> None:
+    """The named persist count must match the state actually allocated.
+
+    The inner learner's LMS optimizer state holds one scalar step size per
+    (weight, bias) pair -- two per trunk layer and two per head -- so the
+    formula must count them alongside parameters, traces, utilities, and
+    counters. Before the fix the formula undercounts a (4, 5) hidden model
+    by 16 scalars (64 bytes): 824 measured learner bytes vs 760 named.
+    """
+    config = LatentWorldModelConfig(
+        observation_dim=3,
+        n_actions=2,
+        latent_dim=4,
+        hidden_sizes=(4, 5),
+    )
+    model = LatentWorldModel(config)
+    state = model.init(jr.key(0))
+    # Host-only float leaves (birth_timestamp/uptime_s) carry no bytes.
+    measured = sum(
+        leaf.size * leaf.dtype.itemsize
+        for leaf in jax.tree.leaves(state)
+        if isinstance(leaf, jax.Array)
+    )
+    assert measured == 4 * _latent_direct_state_scalars(
+        observation_dim=3,
+        n_actions=2,
+        latent_dim=4,
+        hidden_sizes=(4, 5),
+        include_action_interactions=False,
     )
