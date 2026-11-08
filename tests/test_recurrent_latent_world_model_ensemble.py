@@ -376,6 +376,44 @@ def test_scale_safe_mean_and_variance_is_zero_for_identical_large_values(
     assert float(variance) == 0.0
 
 
+@pytest.mark.parametrize("magnitude", [1.0e10, 1.0e18, 1.0e25])
+@pytest.mark.parametrize("axis", [0, 1])
+def test_scale_safe_variance_preserves_adjacent_float32_disagreement(
+    magnitude: float, axis: int,
+) -> None:
+    base = np.float32(magnitude)
+    neighbor = np.nextafter(base, np.float32(np.inf))
+    members = np.asarray([base, base, neighbor], dtype=np.float32)
+    values = np.stack([members, members[::-1]])
+    if axis == 0:
+        values = values.T
+    _, variance = jax.jit(
+        lambda array: _scale_safe_mean_and_variance(array, axis=axis)
+    )(jnp.asarray(values))
+    expected = np.var(values.astype(np.float64), axis=axis)
+    np.testing.assert_allclose(variance, expected, rtol=2.0e-6)
+
+
+def test_scale_safe_variance_preserves_large_heterogeneous_disagreement() -> None:
+    values = np.asarray([-1e18, 1e18, 0.0], dtype=np.float32)
+    mean, variance = jax.jit(
+        lambda array: _scale_safe_mean_and_variance(array, axis=0)
+    )(jnp.asarray(values))
+    assert float(mean) == 0.0
+    np.testing.assert_allclose(float(variance), np.var(values.astype(np.float64)), rtol=2.0e-6)
+
+
+@pytest.mark.parametrize("magnitude", [1.0e30, 1.0e38])
+def test_scale_safe_variance_keeps_unrepresentable_disagreement_nonfinite(
+    magnitude: float,
+) -> None:
+    values = jnp.asarray([-magnitude, magnitude, 0.0], dtype=jnp.float32)
+    _, variance = jax.jit(
+        lambda array: _scale_safe_mean_and_variance(array, axis=0)
+    )(values)
+    assert np.isposinf(float(variance))
+
+
 def test_decide_preserves_identical_large_member_predictions_at_1e30() -> None:
     """Identical large heads must stay a valid zero-disagreement prediction."""
     model = RecurrentLatentWorldModelEnsemble(
