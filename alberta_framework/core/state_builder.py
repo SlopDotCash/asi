@@ -62,6 +62,7 @@ from alberta_framework.core.checkpoints import (
     load_checkpoint_metadata,
     save_checkpoint,
 )
+from alberta_framework.core.model_replay_rehearsal import _exact_json_equal
 from alberta_framework.core.update_safety import safe_discrete_action, select_transaction
 from alberta_framework.core.working_memory import (
     WorkingMemoryConfig,
@@ -2317,9 +2318,12 @@ def load_state_builder_checkpoint(
     key = jr.key(0) if template_key is None else template_key
     template = builder.init(key)
     state, restored_metadata = load_checkpoint(template, path)
-    if restored_metadata != metadata:
+    if not _exact_json_equal(restored_metadata, metadata):
         raise ValueError("state-builder checkpoint metadata changed between reads")
-    if restored_metadata.get("resource_budget") != builder.resource_budget().to_config():
+    if not _exact_json_equal(
+        restored_metadata.get("resource_budget"),
+        builder.resource_budget().to_config(),
+    ):
         raise ValueError("state-builder checkpoint resource budget does not match config")
     if not bool(jax.device_get(builder.state_valid(state))):
         raise ValueError("state-builder checkpoint restored state is invalid")
