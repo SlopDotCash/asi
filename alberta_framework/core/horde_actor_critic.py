@@ -360,6 +360,38 @@ def _rollback_critic_result(
     )
 
 
+def _restore_critic_host_clocks(
+    state: Any,
+    source_critic_state: MultiHeadMLPState,
+) -> Any:
+    """Restore Python-float critic clocks after JIT or scan tracing."""
+    if isinstance(state.step_count, jax.core.Tracer):
+        return state
+    return state.replace(
+        critic_state=state.critic_state.replace(
+            birth_timestamp=source_critic_state.birth_timestamp,
+            uptime_s=source_critic_state.uptime_s,
+        ),
+    )
+
+
+def _restore_update_result_critic_host_clocks(
+    result: Any,
+    source_critic_state: MultiHeadMLPState,
+) -> Any:
+    """Restore Python-float critic clocks on an update result outside tracing."""
+    if isinstance(result.state.step_count, jax.core.Tracer):
+        return result
+    restored_critic = result.critic_result.state.replace(
+        birth_timestamp=source_critic_state.birth_timestamp,
+        uptime_s=source_critic_state.uptime_s,
+    )
+    return result.replace(
+        state=result.state.replace(critic_state=restored_critic),
+        critic_result=result.critic_result.replace(state=restored_critic),
+    )
+
+
 def _clear_terminal_value_trace(
     critic: HordeLearner,
     result: HordeUpdateResult,
@@ -785,7 +817,12 @@ class QHordeActorCriticAgent:
         inputs pass through to those runtime gates.
         """
         observation = _require_concrete_finite("observation", observation)
-        return self._start(state, observation)  # type: ignore[no-any-return]
+        new_state, action, probs = self._start(state, observation)
+        return (
+            _restore_critic_host_clocks(new_state, state.critic_state),
+            action,
+            probs,
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def _start(
@@ -802,7 +839,6 @@ class QHordeActorCriticAgent:
         )
         return new_state, action, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: QHordeActorCriticState,
@@ -812,6 +848,21 @@ class QHordeActorCriticAgent:
         prediction_cumulants: Array | None = None,
     ) -> QHordeActorCriticUpdateResult:
         """Update actor and action-value Horde critic from one transition."""
+        result = self._update(state, reward, observation, terminated, prediction_cumulants)
+        return cast(
+            QHordeActorCriticUpdateResult,
+            _restore_update_result_critic_host_clocks(result, state.critic_state),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update(
+        self,
+        state: QHordeActorCriticState,
+        reward: Array,
+        observation: Array,
+        terminated: Array,
+        prediction_cumulants: Array | None = None,
+    ) -> QHordeActorCriticUpdateResult:
         cfg = self._config
         prev_obs = state.last_observation
         action_valid = (state.last_action >= 0) & (state.last_action < cfg.n_actions)
@@ -1144,7 +1195,12 @@ class HordeActorCriticAgent:
         inputs pass through to those runtime gates.
         """
         observation = _require_concrete_finite("observation", observation)
-        return self._start(state, observation)  # type: ignore[no-any-return]
+        new_state, action, probs = self._start(state, observation)
+        return (
+            _restore_critic_host_clocks(new_state, state.critic_state),
+            action,
+            probs,
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def _start(
@@ -1161,8 +1217,23 @@ class HordeActorCriticAgent:
         )
         return new_state, action, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
+        self,
+        state: HordeActorCriticState,
+        reward: Array,
+        observation: Array,
+        auxiliary_cumulants: Array | None = None,
+        discount: Array | None = None,
+    ) -> HordeActorCriticUpdateResult:
+        """Update actor and Horde critic from one transition."""
+        result = self._update(state, reward, observation, auxiliary_cumulants, discount)
+        return cast(
+            HordeActorCriticUpdateResult,
+            _restore_update_result_critic_host_clocks(result, state.critic_state),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update(
         self,
         state: HordeActorCriticState,
         reward: Array,
@@ -1471,6 +1542,7 @@ def run_horde_actor_critic_from_arrays(
             discounts,
         ),
     )
+    final_state = _restore_critic_host_clocks(final_state, state.critic_state)
     return HordeActorCriticArrayResult(  # type: ignore[call-arg]
         state=final_state,
         actions=out_actions,
@@ -2055,7 +2127,12 @@ class NonlinearHordeActorCriticAgent:
         inputs pass through to those runtime gates.
         """
         observation = _require_concrete_finite("observation", observation)
-        return self._start(state, observation)  # type: ignore[no-any-return]
+        new_state, action, probs = self._start(state, observation)
+        return (
+            _restore_critic_host_clocks(new_state, state.critic_state),
+            action,
+            probs,
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def _start(
@@ -2072,8 +2149,23 @@ class NonlinearHordeActorCriticAgent:
         )
         return new_state, action, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
+        self,
+        state: NonlinearHordeActorCriticState,
+        reward: Array,
+        observation: Array,
+        auxiliary_cumulants: Array | None = None,
+        discount: Array | None = None,
+    ) -> NonlinearHordeActorCriticUpdateResult:
+        """Update MLP actor and Horde critic from one transition."""
+        result = self._update(state, reward, observation, auxiliary_cumulants, discount)
+        return cast(
+            NonlinearHordeActorCriticUpdateResult,
+            _restore_update_result_critic_host_clocks(result, state.critic_state),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update(
         self,
         state: NonlinearHordeActorCriticState,
         reward: Array,
@@ -2452,6 +2544,7 @@ def run_nonlinear_horde_actor_critic_from_arrays(
         state,
         (observations, rewards, next_observations, auxiliary_cumulants, discounts),
     )
+    final_state = _restore_critic_host_clocks(final_state, state.critic_state)
     return NonlinearHordeActorCriticArrayResult(  # type: ignore[call-arg]
         state=final_state,
         actions=out_actions,
@@ -2796,7 +2889,12 @@ class NonlinearQHordeActorCriticAgent:
         inputs pass through to those runtime gates.
         """
         observation = _require_concrete_finite("observation", observation)
-        return self._start(state, observation)  # type: ignore[no-any-return]
+        new_state, action, probs = self._start(state, observation)
+        return (
+            _restore_critic_host_clocks(new_state, state.critic_state),
+            action,
+            probs,
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def _start(
@@ -2816,7 +2914,6 @@ class NonlinearQHordeActorCriticAgent:
             probs,
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: NonlinearHordeActorCriticState,
@@ -2826,6 +2923,21 @@ class NonlinearQHordeActorCriticAgent:
         prediction_cumulants: Array | None = None,
     ) -> NonlinearQHordeActorCriticUpdateResult:
         """Update actor and action-value Horde critic from one transition."""
+        result = self._update(state, reward, observation, terminated, prediction_cumulants)
+        return cast(
+            NonlinearQHordeActorCriticUpdateResult,
+            _restore_update_result_critic_host_clocks(result, state.critic_state),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update(
+        self,
+        state: NonlinearHordeActorCriticState,
+        reward: Array,
+        observation: Array,
+        terminated: Array,
+        prediction_cumulants: Array | None = None,
+    ) -> NonlinearQHordeActorCriticUpdateResult:
         cfg = self._config
         prev_obs = state.last_observation
         action_valid = (state.last_action >= 0) & (state.last_action < cfg.n_actions)

@@ -165,7 +165,7 @@ def test_public_array_runner_preserves_delayed_reward(outgoing):
 
 def _assert_same_tree(actual, expected):
     for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
-        if jax.dtypes.issubdtype(a.dtype, jax.dtypes.prng_key):
+        if hasattr(a, "dtype") and jax.dtypes.issubdtype(a.dtype, jax.dtypes.prng_key):
             a, b = jr.key_data(a), jr.key_data(b)
         np.testing.assert_array_equal(a, b)
 
