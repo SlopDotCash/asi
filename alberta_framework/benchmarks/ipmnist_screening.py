@@ -10280,6 +10280,8 @@ SCREENING_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType(_build_regist
 
 
 _ARCHIVED_RLS_HEAD_COMMITS = MappingProxyType({
+    "rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead":
+        "5c96b3987bd61ca110edbaef718cf3a7435159c3",
     "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead":
         "e562e60ba7e886da7de0603b232305b3ee24d1aa",
     "rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag":
