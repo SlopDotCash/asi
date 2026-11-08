@@ -4992,9 +4992,17 @@ def _block_rls_gain(roots: Array, phi: Array) -> tuple[Array, Array]:
     groups, width, _ = roots.shape
     padded = groups * width
     features = jnp.pad(phi, (0, padded - phi.shape[0])).reshape(groups, width)
-    scale = jnp.maximum(1.0, jnp.max(jnp.abs(features)))
-    features = features / scale
-    transformed = jnp.einsum("gji,gj->gi", roots, features)
+    # The prior bounds every root entry by sqrt(1 / 0.03) < 8. Bound dot
+    # products with a safety margin, dividing only near overflow so tiny
+    # features survive. Scale in covariance space, including zero axes.
+    root_magnitude = jnp.max(jnp.abs(roots), axis=2)
+    largest_term = jnp.max(jnp.abs(features) * (root_magnitude * 0.125))
+    dot_divisor = jnp.maximum(
+        1.0, largest_term / (float(np.finfo(np.float32).max) / (16.0 * width)),
+    )
+    transformed = jnp.einsum("gji,gj->gi", roots, features / dot_divisor)
+    scale = jnp.maximum(1.0, jnp.max(jnp.abs(transformed)))
+    transformed = (transformed / scale) * dot_divisor
     excitation = jnp.sum(transformed * transformed, axis=1)
     prior = (1.0 / scale) / scale
     denominator = prior + jnp.sum(excitation)
@@ -5003,14 +5011,22 @@ def _block_rls_gain(roots: Array, phi: Array) -> tuple[Array, Array]:
     normalized = projected / denominator
     gain = (normalized / scale).reshape(padded)[:phi.shape[0]]
 
-    # Positive sums of other blocks avoid subtracting a dominant block
-    # from the total innovation when forming the Joseph correction.
-    zero = jnp.zeros_like(excitation[:1])
-    before = jnp.concatenate([zero, jnp.cumsum(excitation[:-1])])
-    after = jnp.concatenate([jnp.cumsum(excitation[:0:-1])[::-1], zero])
-    remaining = prior + before + after
+    # Hypot retains representable square roots when their squares underflow.
+    # Exclusive scans keep the other blocks' excitation without subtracting
+    # a dominant term from the total innovation.
+    excitation_root = jax.lax.associative_scan(
+        jnp.hypot, jnp.abs(transformed), axis=1,
+    )[:, -1]
+    zero = jnp.zeros_like(excitation_root[:1])
+    before = jnp.concatenate([
+        zero, jax.lax.associative_scan(jnp.hypot, excitation_root)[:-1],
+    ])
+    after = jnp.concatenate([
+        jax.lax.associative_scan(jnp.hypot, excitation_root, reverse=True)[1:], zero,
+    ])
+    remaining_root = jnp.hypot(1.0 / scale, jnp.hypot(before, after))
     residual = roots - normalized[:, :, None] * transformed[:, None, :]
-    correction = normalized[:, :, None] * jnp.sqrt(remaining)[:, None, None]
+    correction = normalized[:, :, None] * remaining_root[:, None, None]
     factors = jnp.concatenate([residual, correction], axis=2)
     _, triangular = jnp.linalg.qr(jnp.swapaxes(factors, 1, 2), mode="reduced")
     return gain, jnp.swapaxes(triangular, 1, 2)

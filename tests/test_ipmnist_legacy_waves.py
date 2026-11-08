@@ -393,6 +393,36 @@ def test_block_joseph_factor_retains_covariance_after_dominant_excitation() -> N
     assert np.all(np.linalg.eigvalsh(covariance) > 0.0)
 
 
+def test_block_gain_ignores_huge_features_on_zero_covariance_axes() -> None:
+    roots = jnp.diag(jnp.array([0.0, 1.0]))[None]
+    gain, updated = jax.jit(_block_rls_gain)(roots, jnp.array([1e30, 1.0]))
+    np.testing.assert_allclose(gain, [0.0, 0.5], rtol=2e-6)
+    covariance = np.asarray(updated, dtype=np.float64)
+    covariance = covariance @ covariance.transpose(0, 2, 1)
+    np.testing.assert_allclose(covariance[0], np.diag([0.0, 0.5]), rtol=2e-6)
+
+
+@pytest.mark.parametrize("magnitude", (1e20, 1e30))
+def test_block_factor_preserves_tiny_variance_for_the_next_update(magnitude: float) -> None:
+    step = jax.jit(_block_rls_gain)
+    _, roots = step(jnp.eye(2)[None], jnp.array([magnitude, 0.0]))
+    np.testing.assert_allclose(abs(float(roots[0, 0, 0])), 1.0 / magnitude, rtol=2e-6)
+    gain, updated = step(roots, jnp.array([magnitude, 1.0]))
+    np.testing.assert_allclose(gain, [1.0 / (3.0 * magnitude), 1.0 / 3.0], rtol=2e-6)
+    assert np.all(np.isfinite(updated))
+
+
+def test_block_factor_preserves_small_excitation_from_other_blocks() -> None:
+    _, roots = jax.jit(_block_rls_gain)(jnp.ones((2, 1, 1)), jnp.array([1e30, 1.0]))
+    np.testing.assert_allclose(abs(float(roots[0, 0, 0])), np.sqrt(2.0) / 1e30, rtol=2e-6)
+    np.testing.assert_allclose(abs(float(roots[1, 0, 0])), 1.0, rtol=2e-6)
+
+
+def test_block_gain_preserves_tiny_representable_features() -> None:
+    gain, _ = jax.jit(_block_rls_gain)(jnp.eye(2)[None], jnp.array([0.0, 1e-37]))
+    np.testing.assert_allclose(gain, [0.0, 1e-37], rtol=2e-6)
+
+
 def test_block_registry_preserves_body_updates_and_covariance_reset() -> None:
     parent = screening_spec("rls_head_resid_identmap50_r_idet003_s0031640625_r02")
     stable = screening_spec(parent.name + "_blockhead_stable")
