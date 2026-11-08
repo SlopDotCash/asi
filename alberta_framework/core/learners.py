@@ -646,7 +646,10 @@ def run_learning_loop[StreamStateT](
         )
         jax.block_until_ready((final_learner, metrics))  # type: ignore[no-untyped-call]
         elapsed = time.time() - t0
-        final_learner = final_learner.replace(uptime_s=final_learner.uptime_s + elapsed)  # type: ignore[attr-defined]
+        final_learner = final_learner.replace(  # type: ignore[attr-defined]
+            birth_timestamp=learner_state.birth_timestamp,
+            uptime_s=learner_state.uptime_s + elapsed,
+        )
 
         return final_learner, metrics
 
@@ -831,7 +834,10 @@ def run_learning_loop[StreamStateT](
     ) = jax.lax.scan(step_fn_with_tracking, initial_carry, jnp.arange(num_steps))
     jax.block_until_ready((final_learner, metrics))  # type: ignore[no-untyped-call]
     elapsed = time.time() - t0
-    final_learner = final_learner.replace(uptime_s=final_learner.uptime_s + elapsed)  # type: ignore[attr-defined]
+    final_learner = final_learner.replace(  # type: ignore[attr-defined]
+        birth_timestamp=learner_state.birth_timestamp,
+        uptime_s=learner_state.uptime_s + elapsed,
+    )
 
     # Build return values based on what was tracked
     ss_history_result = None
@@ -2532,7 +2538,10 @@ def run_td_learning_loop[StreamStateT](
         step_fn, (learner_state, stream_state), jnp.arange(num_steps)
     )
     elapsed = time.time() - t0
-    final_learner = final_learner.replace(uptime_s=final_learner.uptime_s + elapsed)  # type: ignore[attr-defined]
+    final_learner = final_learner.replace(  # type: ignore[attr-defined]
+        birth_timestamp=learner_state.birth_timestamp,
+        uptime_s=learner_state.uptime_s + elapsed,
+    )
 
     return final_learner, metrics
 
