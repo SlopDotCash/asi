@@ -10220,17 +10220,14 @@ def _archived_rls_diagonal_factory(
     raise ValueError("historical diagonal RLS is replay only; use the _stable arm for new runs")
 
 
-_SHARD_SCREENING_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType({
-    **SCREENING_REGISTRY,
-    **{
-        name: replace(
-            SCREENING_REGISTRY[name + "_stable"],
-            name=name,
-            factory=_archived_rls_diagonal_factory,
-            description="Historical diagonal RLS archive",
-        )
-        for name in _ARCHIVED_RLS_DIAGONAL_COMMITS
-    },
+_ARCHIVED_RLS_DIAGONAL_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType({
+    name: replace(
+        SCREENING_REGISTRY[name + "_stable"],
+        name=name,
+        factory=_archived_rls_diagonal_factory,
+        description="Historical diagonal RLS archive",
+    )
+    for name in _ARCHIVED_RLS_DIAGONAL_COMMITS
 })
 
 
@@ -13158,7 +13155,10 @@ def load_shard(
     spec_registry: Mapping[str, ScreeningSpec] | None = None,
 ) -> dict[str, Any]:
     """Load legacy v1 or strictly validate a source-bound v2/v3 screening shard."""
-    registry = _SHARD_SCREENING_REGISTRY if spec_registry is None else spec_registry
+    registry = (
+        {**SCREENING_REGISTRY, **_ARCHIVED_RLS_DIAGONAL_REGISTRY}
+        if spec_registry is None else spec_registry
+    )
     payload = load_strict_json_object(path)
     schema = payload.get("schema")
     if type(schema) is not str or schema not in {
@@ -13720,7 +13720,10 @@ def merge_shards(
             f"(present: {sorted(by_config)}); a summary without its control "
             "would silently carry no paired_vs_control blocks"
         )
-    registry = _SHARD_SCREENING_REGISTRY if spec_registry is None else spec_registry
+    registry = (
+        {**SCREENING_REGISTRY, **_ARCHIVED_RLS_DIAGONAL_REGISTRY}
+        if spec_registry is None else spec_registry
+    )
     for name, per_seed in sorted(by_config.items()):
         _validate_screening_arm_contract(name, per_seed)
         _require_registered_base_learner(name, per_seed, registry)
