@@ -17,6 +17,7 @@ from alberta_framework.core.options import (
     STOMP_STATE_EXPANSION_FIELDS,
     STOMP_STATE_LIFETIME_FIELDS,
     IntraOptionPoliciesState,
+    OptionModelsState,
     STOMPAgent,
     STOMPConfig,
     STOMPSpecArrays,
@@ -434,6 +435,7 @@ def _differential_family_step(
         q_weights=q[None, ...],
         traces=traces[None, ...],
         average_rewards=rbar[None],
+        previous_discounts=jnp.ones((1,), dtype=jnp.float32),
     )
     new_policies, intra_td, intra_applied = intra(
         policies,
@@ -570,6 +572,129 @@ def test_unrepresentable_differential_update_still_rejects(
         expected_td=np.float32(0.0),
         expected_weight=weight,
     )
+
+
+def _cancelled_target_state(agent: STOMPAgent, *, next_q_value: float) -> STOMPState:
+    """Start a STOMP agent whose heads read 0 at ``[1, 0, 0]`` and
+    ``next_q_value`` at ``[0, 1, 0]``, with a large negative average reward."""
+    state = agent.init(jr.key(0))
+    head_weight = jnp.array([[0.0, next_q_value, 0.0]], dtype=jnp.float32)
+    learner_state = state.base_learner_state.replace(
+        head_params=state.base_learner_state.head_params.replace(
+            weights=tuple(
+                head_weight for _ in state.base_learner_state.head_params.weights
+            )
+        )
+    )
+    state = state.replace(base_learner_state=learner_state)
+    started = agent.start(state, jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32))
+    return started.replace(
+        base_average_reward=jnp.array(-2e38, dtype=jnp.float32)
+    )
+
+
+def test_stomp_update_applies_cancelled_td_target() -> None:
+    """``R - rbar + bootstrap`` overflows; the rearranged target is finite.
+
+    With reward ``2e38``, average reward ``-2e38`` (mass 1), and bootstrap
+    ``-2e38``, the left-to-right target is ``inf`` while
+    ``R - (rbar - bootstrap)`` is ``2e38``. The base update must apply with
+    that TD error instead of dropping a valid transition.
+    """
+    agent = _agent()
+    state = _cancelled_target_state(agent, next_q_value=-2e38)
+    result = agent.update(
+        state,
+        jnp.asarray(2e38, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert float(result.td_error) == pytest.approx(float(np.float32(2e38)), rel=1e-6)
+    assert int(result.state.step_count) == int(state.step_count) + 1
+    assert bool(agent.state_valid(result.state))
+
+
+def test_primitive_only_stomp_applies_cancelled_td_target() -> None:
+    """The primitive-only STOMP path recovers the same cancelled TD target."""
+    agent = STOMPAgent(
+        STOMPConfig(subtask_specs=(), observation_dim=OBS_DIM, n_primitive_actions=N_PRIMITIVE)
+    )
+    state = _cancelled_target_state(agent, next_q_value=-2e38)
+    result = agent.update(
+        state,
+        jnp.asarray(2e38, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert float(result.td_error) == pytest.approx(float(np.float32(2e38)), rel=1e-6)
+    assert int(result.state.step_count) == int(state.step_count) + 1
+    assert bool(agent.state_valid(result.state))
+
+
+def test_option_model_planning_applies_cancelled_td_target() -> None:
+    """A Dyna backup recovers the cancelled option-model target as well."""
+    agent = STOMPAgent(
+        STOMPConfig(
+            subtask_specs=(
+                SubtaskSpec(feature_index=0),
+                SubtaskSpec(feature_index=1),
+            ),
+            observation_dim=OBS_DIM,
+            n_primitive_actions=N_PRIMITIVE,
+            option_planning_backups_per_step=1,
+        )
+    )
+    state = _cancelled_target_state(agent, next_q_value=-2e38)
+    models = OptionModelsState(
+        cumreward_ema=jnp.zeros(N_OPTIONS, dtype=jnp.float32),
+        env_return_ema=jnp.array([2e38, 0.0], dtype=jnp.float32),
+        duration_ema=jnp.ones(N_OPTIONS, dtype=jnp.float32),
+        baseline_mass_ema=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        discount_ema=jnp.ones(N_OPTIONS, dtype=jnp.float32),
+        # Map anchor [1, 0, 0] to predicted-next [0, 1, 0]: delta [-1, +1, 0].
+        next_state_weights=jnp.array(
+            [
+                [[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            ],
+            dtype=jnp.float32,
+        ),
+        n_completions=jnp.array([1, 0], dtype=jnp.int32),
+    )
+    new_learner, count, mean_td = agent._apply_option_model_planning(
+        state.base_learner_state,
+        models,
+        jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32),
+        jnp.array(-2e38, dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.uint32),
+        jnp.ones((agent.config.n_total_actions,), dtype=jnp.bool_),
+    )
+    assert int(count) == 1
+    assert float(mean_td) == pytest.approx(float(np.float32(2e38)), rel=1e-6)
+    assert bool(
+        jnp.any(
+            new_learner.head_params.weights[N_PRIMITIVE]
+            != state.base_learner_state.head_params.weights[N_PRIMITIVE]
+        )
+    )
+
+
+def test_stomp_update_still_rejects_unrepresentable_td_target() -> None:
+    """A target that stays outside float32 under both associations rejects."""
+    agent = _agent()
+    state = _cancelled_target_state(agent, next_q_value=3e38)
+    state = state.replace(base_average_reward=jnp.array(-3e38, dtype=jnp.float32))
+    result = agent.update(
+        state,
+        jnp.asarray(3e38, dtype=jnp.float32),
+        jnp.asarray([0.0, 1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    assert float(result.td_error) == 0.0
+    assert int(result.state.step_count) == int(state.step_count)
 
 
 @pytest.mark.unit
