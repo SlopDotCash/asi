@@ -692,6 +692,69 @@ def step3_predict(
     return cast(Array, horde.predict(cast(Any, state), features))
 
 
+def _restore_independent_horde_host_clocks(
+    updated: IndependentDemonHordeState,
+    original: IndependentDemonHordeState,
+) -> IndependentDemonHordeState:
+    demon_states = tuple(
+        demon.replace(  # type: ignore[attr-defined]
+            birth_timestamp=orig.birth_timestamp,
+            uptime_s=orig.uptime_s,
+        )
+        for demon, orig in zip(updated.demon_states, original.demon_states)
+    )
+    return cast(
+        IndependentDemonHordeState,
+        updated.replace(  # type: ignore[attr-defined]
+            birth_timestamp=original.birth_timestamp,
+            uptime_s=original.uptime_s,
+            demon_states=demon_states,
+        ),
+    )
+
+
+def _restore_step3_host_clocks(
+    updated: MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState,
+    original: MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState,
+) -> MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState:
+    if type(original) is MultiHeadMLPState:
+        return cast(
+            MultiHeadMLPState,
+            cast(MultiHeadMLPState, updated).replace(  # type: ignore[attr-defined]
+                birth_timestamp=original.birth_timestamp,
+                uptime_s=original.uptime_s,
+            ),
+        )
+    if type(original) is IndependentDemonHordeState:
+        return _restore_independent_horde_host_clocks(
+            cast(IndependentDemonHordeState, updated),
+            original,
+        )
+    mixed_updated = cast(MixedHordeState, updated)
+    mixed_original = cast(MixedHordeState, original)
+    shared_state = mixed_updated.shared_state
+    if mixed_original.shared_state is not None and shared_state is not None:
+        shared_state = shared_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=mixed_original.shared_state.birth_timestamp,
+            uptime_s=mixed_original.shared_state.uptime_s,
+        )
+    independent_state = mixed_updated.independent_state
+    if mixed_original.independent_state is not None and independent_state is not None:
+        independent_state = _restore_independent_horde_host_clocks(
+            independent_state,
+            mixed_original.independent_state,
+        )
+    return cast(
+        MixedHordeState,
+        mixed_updated.replace(  # type: ignore[attr-defined]
+            birth_timestamp=mixed_original.birth_timestamp,
+            uptime_s=mixed_original.uptime_s,
+            shared_state=shared_state,
+            independent_state=independent_state,
+        ),
+    )
+
+
 def step3_update(
     horde: HordeLearner | IndependentDemonHorde | MixedHorde,
     state: MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState,
@@ -714,8 +777,10 @@ def step3_update(
         cumulants,
         next_features,
     )
+    # The jitted update narrows the host-only clocks, which one transition
+    # does not advance. Restore their incoming values across all Horde modes.
     return Step3OneStepResult(
-        state=result.state,
+        state=_restore_step3_host_clocks(result.state, state),
         predictions=result.predictions,
         td_errors=result.td_errors,
         td_targets=result.td_targets,
