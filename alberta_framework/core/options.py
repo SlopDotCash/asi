@@ -49,7 +49,7 @@ from alberta_framework.core.normalizers import (
 )
 from alberta_framework.core.types import LMSState
 
-STOMP_STATE_SCHEMA = "alberta.stomp-state.v2"
+STOMP_STATE_SCHEMA = "alberta.stomp-state.v3"
 STOMP_LIFETIME_COUNTER_NBYTES = 12
 STOMP_LIFETIME_COUNTER_DELTA_NBYTES = 8
 
@@ -126,10 +126,12 @@ def _stomp_direct_array_scalars(config: STOMPConfig) -> int:
         + 2 * n_options * n_actions * observation_dim
         + n_options * observation_dim * observation_dim
         # Per-option scalars now include previous_discounts alongside the
-        # model EMAs, completions, and average rewards.
+        # model EMAs, completions, and average rewards. The trailing scalar
+        # count includes base_previous_discount, the discount into the base
+        # decision state that will be trained by its next update.
         + 12 * n_options
         + 2 * observation_dim
-        + 15
+        + 16
     )
 
 
@@ -351,6 +353,13 @@ class STOMPState:
         base_learner_state: Extended Q-function state (MultiHeadMLPLearner
             with ``n_heads = K + N``).
         base_average_reward: Scalar continuing reward rate for base agent.
+        base_previous_discount: Discount of the last applied base transition,
+            into the current base decision state. The next base update
+            decays the stored traces by it (Sutton & Barto, 2nd ed.,
+            Sections 12.7-12.8). Only the
+            bootstrap uses the current transition's discount. A fresh state
+            stores ``1.0``; its traces are zero. On option termination the
+            stored value becomes the option's cumulative discount.
         base_last_obs: Most recent observation seen by the base agent.
         base_last_action: Last extended action index taken (0..K+N-1).
         last_primitive_action: Primitive action most recently selected for
@@ -377,6 +386,7 @@ class STOMPState:
 
     base_learner_state: MultiHeadMLPState
     base_average_reward: Float[Array, ""]
+    base_previous_discount: Float[Array, ""]
     base_last_obs: Float[Array, " obs_dim"]
     base_last_action: Int[Array, ""]
     last_primitive_action: Int[Array, ""]
@@ -563,6 +573,7 @@ def _stomp_static_dispatch_contract(
     )
     scalar_float32 = (
         state.base_average_reward,
+        state.base_previous_discount,
         state.option_cumreward,
         state.option_env_cumreward,
         state.option_baseline_mass,
@@ -786,6 +797,8 @@ def replace_dispatched_primitive_action(
         & (state.option_baseline_mass >= 0.0)
         & (state.option_discount >= 0.0)
         & (state.option_discount <= 1.0)
+        & (state.base_previous_discount >= 0.0)
+        & (state.base_previous_discount <= 1.0)
         & jnp.all(state.option_models.duration_ema >= 0.0)
         & jnp.all(state.option_models.baseline_mass_ema >= 0.0)
         & jnp.all(state.option_models.discount_ema >= 0.0)
@@ -1015,7 +1028,7 @@ def _decay_inactive_base_traces(
 ) -> MultiHeadMLPState:
     """Apply the base trace decay to every head except the updated one.
 
-    The base learner pre-scales all head traces by the transition discount
+    The base learner pre-scales all head traces by the prior transition discount
     before its update, and then applies its per-head gamma*lamda decay only
     to the active head's trace: inactive heads are masked back to their
     discount-scaled input trace. Without this step an inactive head's trace
@@ -1884,6 +1897,8 @@ class STOMPAgent:
             & (state.option_baseline_mass >= 0.0)
             & (state.option_discount >= 0.0)
             & (state.option_discount <= 1.0)
+            & (state.base_previous_discount >= 0.0)
+            & (state.base_previous_discount <= 1.0)
             & jnp.all(state.option_models.duration_ema >= 0.0)
             & jnp.all(state.option_models.baseline_mass_ema >= 0.0)
             & jnp.all(state.option_models.discount_ema >= 0.0)
@@ -1945,6 +1960,7 @@ class STOMPAgent:
         return STOMPState(
             base_learner_state=base_learner_state,
             base_average_reward=jnp.array(0.0, dtype=jnp.float32),
+            base_previous_discount=jnp.array(1.0, dtype=jnp.float32),
             base_last_obs=obs_zero,
             base_last_action=jnp.array(0, dtype=jnp.int32),
             last_primitive_action=jnp.array(0, dtype=jnp.int32),
@@ -2469,7 +2485,11 @@ class STOMPAgent:
             MultiHeadMLPState,
             state.base_learner_state.replace(
                 head_traces=jax.tree_util.tree_map(
-                    lambda trace: primitive_discount * trace,
+                    # Decay by the discount into the current state, carried
+                    # from the previous update, not this transition's
+                    # discount: a terminal discount must not erase the
+                    # carried trace before the terminal TD error is applied.
+                    lambda trace: state.base_previous_discount * trace,
                     state.base_learner_state.head_traces,
                 )
             ),
@@ -2516,6 +2536,7 @@ class STOMPAgent:
         proposed_state = STOMPState(
             base_learner_state=new_base_state,
             base_average_reward=new_average_reward,
+            base_previous_discount=primitive_discount,
             base_last_obs=decision_obs,
             base_last_action=next_action,
             last_primitive_action=next_action,
@@ -2972,11 +2993,18 @@ class STOMPAgent:
                 .at[state.base_last_action]
                 .set(td_target)
             )
+            # Decay the stored traces by the discount into the state being
+            # trained, carried from the previous base update. The current
+            # primitive or option transition's discount bootstraps the TD
+            # target and becomes the prior discount on the next base update.
+            # Decaying by the current discount instead would erase
+            # the carried trace on a terminal step (discount zero) before
+            # the terminal TD error is applied, turning it into TD(0).
             trace_adjusted_state = cast(
                 MultiHeadMLPState,
                 state.base_learner_state.replace(
                     head_traces=jax.tree_util.tree_map(
-                        lambda trace: base_discount * trace,
+                        lambda trace: state.base_previous_discount * trace,
                         state.base_learner_state.head_traces,
                     )
                 ),
@@ -3140,6 +3168,16 @@ class STOMPAgent:
         proposed_state = STOMPState(
             base_learner_state=new_base_learner_state,
             base_average_reward=new_avg_r,
+            # The stored discount is the semi-MDP transition discount into
+            # the next decision state: this transition's discount for a
+            # primitive step, the option's cumulative discount on lifecycle
+            # end. Mid-option steps perform no base update, so the stored
+            # discount into the option start state is preserved.
+            base_previous_discount=jnp.where(
+                should_update_base,
+                base_discount,
+                state.base_previous_discount,
+            ),
             base_last_obs=decision_obs,
             base_last_action=jnp.where(
                 next_select_extended, extended_action, state.base_last_action
@@ -3514,6 +3552,10 @@ STOMP_STATE_EXPANSION_FIELDS = (
 #: Exact-lifetime fields introduced by ``STOMP_STATE_SCHEMA`` v2.
 STOMP_STATE_LIFETIME_FIELDS = ("step_words",)
 
+#: Base trace-discount field introduced by ``STOMP_STATE_SCHEMA`` v3.
+#: Payloads written before prior-discount tracking lack this key.
+STOMP_STATE_PREVIOUS_DISCOUNT_FIELDS = ("base_previous_discount",)
+
 
 def measure_stomp_state_nbytes(state: STOMPState) -> int:
     """Measure STOMP-owned arrays plus its nested base-learner arrays."""
@@ -3609,6 +3651,9 @@ def load_stomp_state_with_migration(payload: dict[str, Any]) -> STOMPState:
       zeros — any option mid-flight at checkpoint time restarts its
       environment-return and baseline-mass accumulation, since the old
       format never recorded those quantities.
+    * ``base_previous_discount`` becomes scalar ``1.0`` when missing — the
+      continuing-stream default, since the old format never recorded the
+      discount of its last transition.
 
     Everything present in the payload is required: missing pre-expansion
     fields or unknown keys raise ``ValueError`` (fail-closed) rather than
@@ -3637,10 +3682,14 @@ def load_stomp_state_with_migration(payload: dict[str, Any]) -> STOMPState:
     missing_state_fields = state_field_names - set(data)
     pre_lifetime_fields = set(STOMP_STATE_LIFETIME_FIELDS)
     pre_expansion_fields = set(STOMP_STATE_EXPANSION_FIELDS) | pre_lifetime_fields
+    pre_previous_discount_fields = set(STOMP_STATE_PREVIOUS_DISCOUNT_FIELDS)
     allowed_missing_state_fields: tuple[set[str], ...] = (
         set(),
+        pre_previous_discount_fields,
         pre_lifetime_fields,
+        pre_lifetime_fields | pre_previous_discount_fields,
         pre_expansion_fields,
+        pre_expansion_fields | pre_previous_discount_fields,
     )
     if missing_state_fields not in allowed_missing_state_fields:
         raise ValueError(
@@ -3659,7 +3708,7 @@ def load_stomp_state_with_migration(payload: dict[str, Any]) -> STOMPState:
     missing_model_fields = model_field_names - set(models)
     expected_missing_model_fields = (
         set(STOMP_OPTION_MODEL_EXPANSION_FIELDS)
-        if missing_state_fields == pre_expansion_fields
+        if pre_expansion_fields <= missing_state_fields
         else set()
     )
     if missing_model_fields != expected_missing_model_fields:
@@ -3702,6 +3751,17 @@ def load_stomp_state_with_migration(payload: dict[str, Any]) -> STOMPState:
             data[name] = jnp.asarray(data[name], dtype=jnp.float32)
         else:
             data[name] = jnp.array(0.0, dtype=jnp.float32)
+
+    # Payloads written before base prior-discount tracking lack
+    # base_previous_discount; their stored traces were decayed by the
+    # then-current discount, so the neutral continuing default (1.0) is the
+    # only principled fill, matching the previous_discounts fill above.
+    if "base_previous_discount" in data:
+        data["base_previous_discount"] = jnp.asarray(
+            data["base_previous_discount"], dtype=jnp.float32
+        )
+    else:
+        data["base_previous_discount"] = jnp.array(1.0, dtype=jnp.float32)
 
     base_learner = data["base_learner_state"]
     if not isinstance(base_learner, MultiHeadMLPState):
@@ -3773,6 +3833,7 @@ __all__ = [
     "STOMP_OPTION_MODEL_EXPANSION_FIELDS",
     "STOMP_STATE_EXPANSION_FIELDS",
     "STOMP_STATE_LIFETIME_FIELDS",
+    "STOMP_STATE_PREVIOUS_DISCOUNT_FIELDS",
     "SubtaskSpec",
     "check_option_terminated",
     "compute_pseudo_reward",

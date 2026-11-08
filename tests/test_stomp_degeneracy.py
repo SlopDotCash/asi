@@ -62,7 +62,10 @@ class TestSemiMDPDegeneracy:
     """One-step options with gamma_o=1 must equal primitive Q-learning."""
 
     @pytest.mark.parametrize("base_trace_decay", [0.0, 0.5])
-    def test_base_q_trajectory_matches_primitive_learner(self, base_trace_decay):
+    @pytest.mark.parametrize("transition_discounts", [(1.0,), (1.0, 0.5, 0.0, 0.75)])
+    def test_base_q_trajectory_matches_primitive_learner(
+        self, base_trace_decay, transition_discounts,
+    ):
         """Trajectory of base-Q updates equals a primitive differential learner.
 
         With ``max_option_steps=1``, unreachable thresholds, and
@@ -91,14 +94,18 @@ class TestSemiMDPDegeneracy:
         ref_last_obs = state.base_last_obs
         ref_last_action = state.base_last_action
         ref_key = state.rng_key
+        ref_previous_discount = jnp.asarray(1.0, dtype=jnp.float32)
 
         stomp_tds, stomp_avgs, stomp_actions, stomp_terms = [], [], [], []
         ref_tds, ref_avgs, ref_actions = [], [], []
 
         for t in range(1, num_steps + 1):
             reward, obs = rewards[t], observations[t]
+            discount = jnp.asarray(
+                transition_discounts[(t - 1) % len(transition_discounts)], dtype=jnp.float32,
+            )
 
-            result = agent.update(state, reward, obs)
+            result = agent.update(state, reward, obs, discount)
             state = result.state
             stomp_tds.append(float(result.td_error))
             stomp_avgs.append(float(result.average_reward))
@@ -107,10 +114,18 @@ class TestSemiMDPDegeneracy:
 
             # Primitive differential Q-learning over the extended action set.
             next_q = learner.predict(ref_learner_state, obs)
-            td_target = reward - ref_avg_reward + jnp.max(next_q)
+            td_target = reward - ref_avg_reward + discount * jnp.max(next_q)
             targets = jnp.full(n_total, jnp.nan, dtype=jnp.float32).at[
                 ref_last_action
             ].set(td_target)
+            # Eligibility uses the discount into the state being trained.
+            # The current transition discount enters the bootstrap above.
+            ref_learner_state = ref_learner_state.replace(
+                head_traces=jtu.tree_map(
+                    lambda trace: ref_previous_discount * trace,
+                    ref_learner_state.head_traces,
+                )
+            )
             upd = learner.update(ref_learner_state, ref_last_obs, targets)
             td = upd.errors[ref_last_action]
             ref_avg_reward = ref_avg_reward + beta * td
@@ -138,6 +153,7 @@ class TestSemiMDPDegeneracy:
             ref_actions.append(int(action))
             ref_last_obs = obs
             ref_last_action = action
+            ref_previous_discount = discount
 
         # The degeneracy is only meaningful if option executions occurred.
         assert any(stomp_terms), "no option was ever executed; test is vacuous"
