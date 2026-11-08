@@ -1589,7 +1589,8 @@ class TestSARSALambdaTraces:
 
         # Head 1's 1e19 update is finite; the inactive head's delayed 7.2e38
         # update overflows float32. Both updates and both counters must roll back.
-        assert int(result.action) == -1
+        # The rejected update reports the prior action the state kept, not -1.
+        assert int(result.action) == 1
         chex.assert_trees_all_equal(result.state, state)
 
     def test_control_head_trace_decay_factor(self):
@@ -2306,7 +2307,9 @@ def test_sarsa_invalid_next_action_is_an_exact_noop(next_action: int) -> None:
         jnp.asarray(next_action, dtype=jnp.int32),
     )
     _assert_sarsa_state_exact_ignoring_host_time(result.state, state)
-    assert int(result.action) == -1
+    # The update is rejected, so the state keeps its prior action and the
+    # result reports that action instead of the -1 refusal sentinel.
+    assert int(result.action) == int(action)
     assert float(result.td_error) == 0.0
     assert bool(jnp.all(result.q_values == 0.0))
 
@@ -2335,7 +2338,9 @@ def test_sarsa_invalid_dynamic_transition_is_an_exact_noop(reward, terminated) -
         jnp.asarray(0, dtype=jnp.int32),
     )
     _assert_sarsa_state_exact_ignoring_host_time(result.state, state)
-    assert int(result.action) == -1
+    # The update is rejected, so the state keeps its prior action 0 and the
+    # result reports it instead of the -1 refusal sentinel.
+    assert int(result.action) == 0
 
 
 def test_sarsa_public_array_shapes_and_dtypes_fail_before_transaction() -> None:

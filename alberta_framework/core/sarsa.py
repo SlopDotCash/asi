@@ -355,7 +355,8 @@ class SARSAUpdateResult:
 
     Attributes:
         state: Updated SARSA state (includes new action a_{t+1})
-        action: Next action a_{t+1} selected for the new state
+        action: Next action a_{t+1} selected for the new state; the prior
+            action when the update is rejected and the state rolls back
         q_values: Q-values for all actions at s_{t+1}
         td_error: TD error for the taken action
         reward: Reward received
@@ -1168,7 +1169,11 @@ class SARSAAgent:
 
         return SARSAUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(transaction_applied, safe_next_action, -1),
+            # A rejected update rolls the state back, so the state keeps its
+            # prior action: report it instead of the -1 refusal sentinel,
+            # or the recorded action diverges from the action the state
+            # credits in learning. Only a missing prior action keeps -1.
+            action=jnp.where(transaction_applied, safe_next_action, state.last_action),
             q_values=jnp.where(transaction_applied, q_next, jnp.zeros_like(q_next)),
             td_error=jnp.where(diagnostic_valid, td_error, 0.0),
             reward=jnp.where(jnp.isfinite(raw_reward), raw_reward, 0.0),
