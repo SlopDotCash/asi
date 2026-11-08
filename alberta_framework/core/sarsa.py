@@ -233,7 +233,16 @@ def _preflight_sarsa_direct_state(
     )
     final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
     head_parameters = n_heads * (final_width + 1)
-    horde_direct_scalars = 2 * (trunk_parameters + head_parameters) + sum(hidden_sizes) + 3
+    # Params and traces are one copy each (2x); the LMS optimizer state adds
+    # one scalar step size per (weight, bias) pair: two per trunk layer and
+    # two per head. The +3 covers step_count plus the two step_words.
+    horde_direct_scalars = (
+        2 * (trunk_parameters + head_parameters)
+        + sum(hidden_sizes)
+        + 2 * len(hidden_sizes)
+        + 2 * n_heads
+        + 3
+    )
     # last_observation, last_action, epsilon, step_count, and the two-word
     # Threefry key are all four-byte public-state leaves.
     aggregate_scalars = horde_direct_scalars + feature_dim + 5
