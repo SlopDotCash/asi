@@ -68,6 +68,8 @@ In the [IPMNIST development lane](docs/research/ipmnist-campaign-index.md), the 
 constant-step 0.02 arm is the leading candidate. Its retained 200-task confirmation cleared the
 annealed zero-decay comparator on all 20 seeds. A fresh 200-task pair also favored it over
 constant step 0.005625. All of these runs are permanently nonpromoting.
+The campaign index also records the replayed historical controls and the repaired
+diagonal covariance controls, whose distinct live configurations await measurement.
 
 Individual mechanisms range from contract-tested kernels to narrow historical evidence
 packages. The retained `PrototypeAgent` is a candidate composition surface, not a completed

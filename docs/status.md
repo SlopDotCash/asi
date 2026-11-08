@@ -385,6 +385,12 @@ Use the mutable index to identify the current record rather than copying
 rankings or means here. Output documents are append-only chronological records;
 their historical superlatives and run-status language may have been superseded.
 
+The historical diagonal covariance screens replay under their original source
+identities. The repaired `diaghead_stable` and `gdiag_stable` configurations use
+positive covariance updates and scaled excitation. Both await fresh matched
+development runs. The historical block and low-rank proposals require further
+review before a live configuration can enter the comparison.
+
 - [current campaign index](research/ipmnist-campaign-index.md);
 - [theory and forward hypotheses](research/ipmnist-theory.md);
 - `outputs/ipmnist_screening/summary_*.json` for stored measurement records;
