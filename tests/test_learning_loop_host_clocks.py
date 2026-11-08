@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -133,6 +134,41 @@ def test_mlp_learning_loop_tracking_preserves_host_clocks() -> None:
     _assert_exact_clocks(final, steps=4)
 
 
+def test_learning_loop_with_jitted_learner_preserves_host_clocks() -> None:
+    learner = MLPLearner(hidden_sizes=(4,), sparsity=0.0, use_layer_norm=False)
+    state = learner.init(3, jr.key(10)).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    final, _metrics = run_learning_loop(
+        learner,
+        RandomWalkStream(feature_dim=3),
+        num_steps=4,
+        key=jr.key(11),
+        learner_state=state,
+    )
+    _assert_exact_clocks(final, steps=4)
+
+
+class _JittedLinearLearner(LinearLearner):
+    """Exercise the linear tracking interface with clocks crossing a JIT boundary."""
+
+    update = jax.jit(LinearLearner.update, static_argnums=(0,))
+
+
+@pytest.mark.parametrize("tracking", [False, True])
+def test_learning_loop_with_jitted_linear_learner_preserves_host_clocks(tracking: bool) -> None:
+    learner = _JittedLinearLearner(normalizer=EMANormalizer())
+    state = learner.init(3).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    result = run_learning_loop(
+        learner,
+        RandomWalkStream(feature_dim=3),
+        num_steps=4,
+        key=jr.key(13),
+        learner_state=state,
+        step_size_tracking=StepSizeTrackingConfig(interval=2) if tracking else None,
+        normalizer_tracking=NormalizerTrackingConfig(interval=2) if tracking else None,
+    )
+    _assert_exact_clocks(result[0], steps=4)
+
+
 def test_td_learning_loop_preserves_host_clocks() -> None:
     learner = TDLinearLearner()
     state = learner.init(3).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
@@ -141,6 +177,19 @@ def test_td_learning_loop_preserves_host_clocks() -> None:
         _SimpleTDStream(),
         num_steps=4,
         key=jr.key(6),
+        learner_state=state,
+    )
+    _assert_exact_clocks(final, steps=4)
+
+
+def test_td_learning_loop_with_true_online_td_preserves_host_clocks() -> None:
+    learner = TrueOnlineTDLearner()
+    state = learner.init(3).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    final, _metrics = run_td_learning_loop(
+        learner,
+        _SimpleTDStream(),
+        num_steps=4,
+        key=jr.key(12),
         learner_state=state,
     )
     _assert_exact_clocks(final, steps=4)
