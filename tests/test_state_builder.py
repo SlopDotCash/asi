@@ -1358,6 +1358,27 @@ def test_state_builder_checkpoint_refuses_invalid_states(tmp_path: Path) -> None
             load_state_builder_checkpoint(forged_path)
 
 
+def test_state_builder_checkpoint_rejects_float_aliased_resource_budget(
+    tmp_path: Path,
+) -> None:
+    """The undigested budget must keep its integer scalars, as sibling loaders do."""
+    builder = IdentityStateBuilder(IdentityStateBuilderConfig(observation_dim=2))
+    state = builder.init(jr.key(0))
+    original_path = tmp_path / "original"
+    save_state_builder_checkpoint(builder, state, original_path)
+    metadata = load_checkpoint_metadata(original_path)
+
+    tampered_budget = dict(metadata["resource_budget"])
+    tampered_budget["state_bytes"] = float(tampered_budget["state_bytes"])
+    tampered_metadata = dict(metadata)
+    tampered_metadata["resource_budget"] = tampered_budget
+    tampered_path = tmp_path / "tampered"
+    save_checkpoint(state, tampered_path, metadata=tampered_metadata)
+
+    with pytest.raises(ValueError, match="resource budget"):
+        load_state_builder_checkpoint(tampered_path)
+
+
 def test_state_builder_v1_checkpoint_without_config_digest_fails_closed(
     tmp_path: Path,
 ) -> None:
