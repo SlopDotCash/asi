@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
+from alberta_framework.core.average_reward import DifferentialSARSAState
 from alberta_framework.core.behavior_model import BehaviorModel, BehaviorModelConfig
 from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
 from alberta_framework.steps.step9 import (
@@ -82,6 +83,25 @@ def _assert_key_equal(actual: jax.Array, expected: jax.Array) -> None:
     chex.assert_trees_all_equal(jr.key_data(actual), jr.key_data(expected))
 
 
+def _assert_host_control_state(
+    actual: DifferentialSARSAState,
+    device_expected: DifferentialSARSAState,
+    incoming: DifferentialSARSAState,
+) -> None:
+    # The facade restores exact host clocks after its device-side updates.
+    assert type(actual.birth_timestamp) is float
+    assert actual.birth_timestamp == incoming.birth_timestamp
+    assert type(actual.uptime_s) is float
+    assert actual.uptime_s == incoming.uptime_s
+    chex.assert_trees_all_equal(
+        actual,
+        device_expected.replace(
+            birth_timestamp=incoming.birth_timestamp,
+            uptime_s=incoming.uptime_s,
+        ),
+    )
+
+
 def _without_model_uptime(result: Step9ArrayResult) -> Step9ArrayResult:
     """Zero the world-model uptime, which each scan advances by its wall time."""
     learner_state = result.state.world_model_state.learner_state.replace(uptime_s=0.0)
@@ -141,9 +161,17 @@ def test_zero_budget_is_bit_identical_to_the_real_update_only() -> None:
         discount=jnp.asarray(config.model_gamma, dtype=jnp.float32),
     )
     _, expected_behavior = _real_behavior_state(config, state)
+    # The facade restores exact host clocks after its device-side updates.
+    expected_learner = expected_model.state.learner_state.replace(
+        birth_timestamp=state.world_model_state.learner_state.birth_timestamp,
+        uptime_s=state.world_model_state.learner_state.uptime_s,
+    )
     expected_state = Step9DreamingState(
-        control_state=expected_control.state,
-        world_model_state=expected_model.state,
+        control_state=expected_control.state.replace(
+            birth_timestamp=state.control_state.birth_timestamp,
+            uptime_s=state.control_state.uptime_s,
+        ),
+        world_model_state=expected_model.state.replace(learner_state=expected_learner),
         behavior_model_state=expected_behavior,
         buffer_state=buffer.add(state.buffer_state, next_observation),
         step_count=state.step_count + 1,
@@ -199,7 +227,7 @@ def test_zero_budget_rejected_real_update_preserves_the_original_key() -> None:
 
     assert not bool(expected.update_applied)
     chex.assert_trees_all_equal(result.real_control_result, expected)
-    chex.assert_trees_all_equal(result.state.control_state, expected.state)
+    _assert_host_control_state(result.state.control_state, expected.state, saturated_control)
 
 
 def test_dream_roots_and_rollout_descendants_are_pairwise_distinct() -> None:
@@ -283,7 +311,7 @@ def test_gate_rejected_dreams_still_persist_the_reserved_future_master(
     expected_control = result.real_control_result.state.replace(
         rng_key=_advance_master(master, planning_budget)
     )
-    chex.assert_trees_all_equal(result.state.control_state, expected_control)
+    _assert_host_control_state(result.state.control_state, expected_control, state.control_state)
     _, expected_behavior = _real_behavior_state(config, state)
     chex.assert_trees_all_equal(result.state.behavior_model_state, expected_behavior)
 
@@ -385,7 +413,7 @@ def test_accepted_dream_uses_dedicated_candidate_behavior_and_control_roots() ->
     assert not bool(jnp.array_equal(expected_dream.td_error, aliased_dream.td_error))
 
     chex.assert_trees_all_equal(result.dream_td_errors[0], expected_dream.td_error)
-    chex.assert_trees_all_equal(result.state.control_state, expected_control)
+    _assert_host_control_state(result.state.control_state, expected_control, state.control_state)
     chex.assert_trees_all_equal(result.state.behavior_model_state, expected_behavior)
 
 
@@ -500,9 +528,14 @@ def test_invalid_next_observation_rejects_before_building_a_control_candidate() 
     assert not bool(result.input_valid)
     assert bool(result.candidate_state_finite)
     expected_key = jr.split(control.rng_key, 4)[0]
+    # This internal helper returns the device-side conditional result.
     chex.assert_trees_all_equal(
         result.state,
-        control.replace(rng_key=expected_key),
+        control.replace(
+            rng_key=expected_key,
+            birth_timestamp=jnp.asarray(control.birth_timestamp),
+            uptime_s=jnp.asarray(control.uptime_s),
+        ),
     )
 
 

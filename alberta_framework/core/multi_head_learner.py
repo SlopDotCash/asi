@@ -158,7 +158,16 @@ def _validate_direct_state_resources(
     final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
     head_parameter_count = n_heads * (final_width + 1)
     parameter_count = trunk_parameter_count + head_parameter_count
-    direct_state_scalars = 2 * parameter_count + sum(hidden_sizes) + 3
+    # Params and traces are one copy each (2x); the LMS optimizer state adds
+    # one scalar step size per (weight, bias) pair: two per trunk layer and
+    # two per head. The +3 covers step_count plus the two step_words.
+    direct_state_scalars = (
+        2 * parameter_count
+        + sum(hidden_sizes)
+        + 2 * len(hidden_sizes)
+        + 2 * n_heads
+        + 3
+    )
     for name, value in (
         ("parameter_count", parameter_count),
         ("direct_state_scalars", direct_state_scalars),
@@ -181,7 +190,16 @@ def _direct_state_bytes(
     )
     final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
     head_parameter_count = n_heads * (final_width + 1)
-    return 4 * (2 * (trunk_parameter_count + head_parameter_count) + sum(hidden_sizes) + 3)
+    # See _validate_direct_state_resources: params and traces are 2x, plus
+    # the LMS step-size scalars (two per trunk layer, two per head) and the
+    # three counter scalars (step_count plus two step_words).
+    return 4 * (
+        2 * (trunk_parameter_count + head_parameter_count)
+        + sum(hidden_sizes)
+        + 2 * len(hidden_sizes)
+        + 2 * n_heads
+        + 3
+    )
 
 
 def _multi_head_update_result_extras_bytes(n_heads: int) -> int:

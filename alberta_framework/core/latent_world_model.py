@@ -175,8 +175,15 @@ def _latent_direct_state_scalars(
     n_heads = latent_dim + 2
     head_input = hidden_sizes[-1] if hidden_sizes else input_dim
     head_parameters = n_heads * (head_input + 1)
+    # Params and traces are one copy each (2x); the LMS optimizer state adds
+    # one scalar step size per (weight, bias) pair: two per trunk layer and
+    # two per head. The +3 covers step_count plus the two step_words.
     learner_direct_scalars = (
-        2 * (trunk_parameters + head_parameters) + sum(hidden_sizes) + 3
+        2 * (trunk_parameters + head_parameters)
+        + sum(hidden_sizes)
+        + 2 * len(hidden_sizes)
+        + 2 * n_heads
+        + 3
     )
     outer_state_scalars = observation_dim * latent_dim + 3 * latent_dim + 4
     return learner_direct_scalars + outer_state_scalars
