@@ -668,7 +668,27 @@ def run_step12_scan(
     checked_partner_next_obs = _trusted_array(
         "partner_next_obs", partner_next_obs, shape=(steps, obs_dim), dtype=jnp.float32
     )
-    return agent.scan(state, checked_partner_obs, checked_partner_rewards, checked_partner_next_obs)
+    result = agent.scan(
+        state,
+        checked_partner_obs,
+        checked_partner_rewards,
+        checked_partner_next_obs,
+    )
+    restored_learner = result.state.cortex_state.stomp_state.base_learner_state.replace(
+        birth_timestamp=state.cortex_state.stomp_state.base_learner_state.birth_timestamp,
+        uptime_s=state.cortex_state.stomp_state.base_learner_state.uptime_s,
+    )
+    restored_cortex = result.state.cortex_state.replace(
+        stomp_state=result.state.cortex_state.stomp_state.replace(
+            base_learner_state=restored_learner,
+        ),
+    )
+    return cast(
+        IAArrayResult,
+        result.replace(
+            state=result.state.replace(cortex_state=restored_cortex),
+        ),
+    )
 
 
 def run_step12_smoke(
