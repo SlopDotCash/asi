@@ -697,6 +697,7 @@ class OffPolicyHordeLearner:
             & jnp.isfinite(td_targets)
         )
         active_mask = head_inputs_valid & global_inputs_valid & source_state_finite
+        any_active = jnp.any(active_mask)
         safe_targets = jnp.where(active_mask, td_targets, 0.0)
         safe_clipped_rhos = jnp.where(active_mask, clipped_rhos, 0.0)
         safe_trace_coefficients = jnp.where(active_mask, trace_coefficients, 0.0)
@@ -826,6 +827,23 @@ class OffPolicyHordeLearner:
             new_trunk_opt_states.append(new_b_opt)
             optimizer_updates_applied.append(b_update_applied)
 
+        # Freeze the shared trunk when no demon is active, as
+        # MultiHeadMLPLearner does (#3725). The step carries zero error
+        # signal, and inactive heads are frozen below; without this guard a
+        # stateful optimizer (e.g. Adam) steps the trunk on stale momentum.
+        new_trunk_traces = [
+            jnp.where(any_active, new_trace, old_trace)
+            for new_trace, old_trace in zip(new_trunk_traces, state.trunk_traces)
+        ]
+        new_trunk_opt_states = [
+            jax.tree.map(
+                lambda new, old: jnp.where(any_active, new, old),
+                new_opt,
+                old_opt,
+            )
+            for new_opt, old_opt in zip(new_trunk_opt_states, state.trunk_optimizer_states)
+        ]
+
         trunk_bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._bounder is not None and n_trunk_layers > 0:
             trunk_params_flat: list[Array] = []
@@ -846,6 +864,16 @@ class OffPolicyHordeLearner:
         for i in range(n_trunk_layers):
             new_trunk_weights.append(state.trunk_params.weights[i] + trunk_steps[2 * i])
             new_trunk_biases.append(state.trunk_params.biases[i] + trunk_steps[2 * i + 1])
+
+        # Freeze trunk params when no demon is active (see above).
+        new_trunk_weights = [
+            jnp.where(any_active, new_w, old_w)
+            for new_w, old_w in zip(new_trunk_weights, state.trunk_params.weights)
+        ]
+        new_trunk_biases = [
+            jnp.where(any_active, new_b, old_b)
+            for new_b, old_b in zip(new_trunk_biases, state.trunk_params.biases)
+        ]
 
         new_trunk_params = MLPParams(
             weights=tuple(new_trunk_weights),
