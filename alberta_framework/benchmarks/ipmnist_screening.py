@@ -4738,6 +4738,15 @@ class RLSHeadDiagonalState(RLSHeadState):
     """RLS carry storing only the diagonal vector of the covariance."""
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadBlockState(RLSHeadState):
+    """RLS carry with ``p`` storing one square root per covariance block.
+
+    A block's covariance is ``p[b] @ p[b].T``. Its factor is updated with
+    a Joseph-form QR step, including excitation from every other block.
+    """
+
+
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
 _WHITEN_NORM_FLOOR = 1e-12
 _NEWTON_RIDGE_REL = 1e-3
@@ -4973,6 +4982,40 @@ def _diagonal_rls_gain(
     return gain, covariance
 
 
+def _block_rls_gain(roots: Array, phi: Array) -> tuple[Array, Array]:
+    """Globally normalized gain and square roots of projected covariance.
+
+    The updated covariance is the block projection of the dense RLS update
+    from the supplied block-diagonal prior. QR of the Joseph factors keeps
+    the covariance positive semidefinite, with O(G*b^3) work per step.
+    """
+    groups, width, _ = roots.shape
+    padded = groups * width
+    features = jnp.pad(phi, (0, padded - phi.shape[0])).reshape(groups, width)
+    scale = jnp.maximum(1.0, jnp.max(jnp.abs(features)))
+    features = features / scale
+    transformed = jnp.einsum("gji,gj->gi", roots, features)
+    excitation = jnp.sum(transformed * transformed, axis=1)
+    prior = (1.0 / scale) / scale
+    denominator = prior + jnp.sum(excitation)
+    denominator = jnp.where(denominator > 0.0, denominator, 1.0)
+    projected = jnp.einsum("gij,gj->gi", roots, transformed)
+    normalized = projected / denominator
+    gain = (normalized / scale).reshape(padded)[:phi.shape[0]]
+
+    # Positive sums of other blocks avoid subtracting a dominant block
+    # from the total innovation when forming the Joseph correction.
+    zero = jnp.zeros_like(excitation[:1])
+    before = jnp.concatenate([zero, jnp.cumsum(excitation[:-1])])
+    after = jnp.concatenate([jnp.cumsum(excitation[:0:-1])[::-1], zero])
+    remaining = prior + before + after
+    residual = roots - normalized[:, :, None] * transformed[:, None, :]
+    correction = normalized[:, :, None] * jnp.sqrt(remaining)[:, None, None]
+    factors = jnp.concatenate([residual, correction], axis=2)
+    _, triangular = jnp.linalg.qr(jnp.swapaxes(factors, 1, 2), mode="reduced")
+    return gain, jnp.swapaxes(triangular, 1, 2)
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -5145,21 +5188,28 @@ def _make_rls_head_learner(
     if any(value not in (0.0, 1.0) for value in (head_diag, head_gdiag)):
         raise ValueError("rls_head_diag and rls_head_gdiag must be 0.0 or 1.0")
     diagonal_enabled = head_diag == 1.0 or head_gdiag == 1.0
-    if diagonal_enabled:
-        if (
-            sgd_head or (head_diag == 1.0 and head_gdiag == 1.0)
-            or any(hp.get(name, 0.0) != 0.0 for name in ("rls_head_block", "rls_head_rank"))
+    head_block = hp.get("rls_head_block", 0.0)
+    if not math.isfinite(head_block) or head_block < 0.0 or not float(head_block).is_integer():
+        raise ValueError("rls_head_block must be zero or a positive integer")
+    block_enabled = head_block > 0.0
+    block_count = int(head_block)
+    structured_head = diagonal_enabled or block_enabled
+    if structured_head:
+        if sum((sgd_head, head_diag == 1.0, head_gdiag == 1.0, block_enabled)) > 1 or (
+            hp.get("rls_head_rank", 0.0) != 0.0
         ):
             raise ValueError("RLS head selectors are mutually exclusive")
         if rls_lambda != 1.0 or ridge_init != 0.03 or cap_enabled:
-            raise ValueError("diagonal RLS requires lambda 1, ridge 0.03, and no trace cap")
+            raise ValueError("structured RLS requires lambda 1, ridge 0.03, and no trace cap")
         if (
             not resid or not gate_enabled or whiten_enabled or sm_enabled or as_enabled
             or _decay_to_init or wclip_on or momentum_enabled
             or any(name.startswith(("anneal_", "polyak_", "snp_")) for name in hp)
         ):
-            raise ValueError("diagonal RLS requires the plain fixed-step gated residual body")
+            raise ValueError("structured RLS requires the plain fixed-step gated residual body")
     state_type = RLSHeadDiagonalState if diagonal_enabled else RLSHeadState
+    if block_enabled:
+        state_type = RLSHeadBlockState
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -5234,6 +5284,17 @@ def _make_rls_head_learner(
                 wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
                 init_params={name: params[name] for name in _RLS_HEAD_BODY},
             )
+        initial_p = jnp.eye(m, dtype=jnp.float32) / ridge_init
+        if diagonal_enabled:
+            initial_p = jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32)
+        if block_enabled:
+            if block_count > m:
+                raise ValueError("rls_head_block must not exceed the head width")
+            width = -(-m // block_count)
+            initial_p = jnp.tile(
+                jnp.eye(width, dtype=jnp.float32) / math.sqrt(ridge_init),
+                (block_count, 1, 1),
+            )
         state = state_type(  # type: ignore[call-arg]
             utility={name: jnp.zeros_like(value) for name, value in params.items()},
             step=jnp.array(0, dtype=jnp.int32),
@@ -5243,10 +5304,7 @@ def _make_rls_head_learner(
                 count=jnp.zeros(input_dim, dtype=jnp.float32),
             ),
             fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
-            p=(
-                jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32)
-                if diagonal_enabled else jnp.eye(m, dtype=jnp.float32) / ridge_init
-            ),
+            p=initial_p,
             wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
         )
         if momentum_enabled:
@@ -5349,10 +5407,10 @@ def _make_rls_head_learner(
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
-        if diagonal_enabled and (
+        if structured_head and (
             lr is not None or decay_lr is not None or pred_body is not None or pred_head_avg
         ):
-            raise ValueError("diagonal RLS requires fixed steps and the live predictor")
+            raise ValueError("structured RLS requires fixed steps and the live predictor")
         if momentum_enabled and (lr is not None or decay_lr is not None):
             raise ValueError("body momentum requires a fixed step and decay")
         new_momentum = None
@@ -5581,6 +5639,19 @@ def _make_rls_head_learner(
             if reset_enabled:
                 trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
                 new_p = jnp.where(trigger, jnp.full_like(new_p, 1.0 / ridge_init), new_p)
+        elif block_enabled:
+            if not isinstance(state, RLSHeadBlockState):
+                raise TypeError("block RLS requires RLSHeadBlockState")
+            gain, new_p = _block_rls_gain(state.p, phi)
+            new_wout = state.wout + jnp.outer(gain, err)
+            if reset_enabled:
+                width = new_p.shape[1]
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger,
+                    jnp.eye(width, dtype=jnp.float32)[None] / math.sqrt(ridge_init),
+                    new_p,
+                )
         else:
             pp = state.p @ phi
             gain = pp / (rls_lambda + phi @ pp)
@@ -5801,8 +5872,10 @@ def _make_rls_head_identmap_learner(
     if "polyak_window" in hp:
         if hp.get("body_momentum", 0.0) != 0.0:
             raise ValueError("body momentum requires the fixed-step gated residual body")
-        if any(hp.get(name, 0.0) != 0.0 for name in ("rls_head_diag", "rls_head_gdiag")):
-            raise ValueError("diagonal RLS requires the plain fixed-step gated residual body")
+        if any(hp.get(name, 0.0) != 0.0 for name in (
+            "rls_head_diag", "rls_head_gdiag", "rls_head_block",
+        )):
+            raise ValueError("structured RLS requires the plain fixed-step gated residual body")
         if _decay_to_init:
             raise ValueError("polyak averaging is not composed with L2-Init")
         return _make_rls_head_identmap_polyak_learner(hp)
@@ -9439,13 +9512,14 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                     "ident_match_at": 50.0, "ident_match2": 200.0,
                     "ident_match3": 2000.0, "ident_reset_frac": 0.03,
                     "step_size": 0.0031640625, "rls_ridge_init": 0.03,
-                    selector: 1.0,
+                    selector: value,
                 },
-                f"Unmeasured stable diagonal covariance with {description} excitation",
+                f"Unmeasured {description} covariance with stable arithmetic",
             )
-            for suffix, selector, description in (
-                ("diaghead", "rls_head_diag", "per-coordinate"),
-                ("gdiag", "rls_head_gdiag", "globally pooled"),
+            for suffix, selector, value, description in (
+                ("diaghead", "rls_head_diag", 1.0, "per-coordinate diagonal"),
+                ("gdiag", "rls_head_gdiag", 1.0, "globally pooled diagonal"),
+                ("blockhead", "rls_head_block", 4.0, "global-innovation block"),
             )
         ),
         # Historical screens retain their exact constants for shard replay.
