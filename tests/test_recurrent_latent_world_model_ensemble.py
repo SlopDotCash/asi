@@ -25,6 +25,7 @@ from alberta_framework.core.recurrent_latent_world_model_ensemble import (
     RecurrentLatentWorldModelEnsemble,
     RecurrentLatentWorldModelEnsembleConfig,
     RecurrentLatentWorldModelEnsembleState,
+    _scale_safe_mean_and_variance,
     _tree_l2_norm,
     load_recurrent_latent_world_model_ensemble_checkpoint,
     save_recurrent_latent_world_model_ensemble_checkpoint,
@@ -359,6 +360,58 @@ def test_decide_preserves_legal_large_member_predictions_and_ensemble_means() ->
         prediction.member_mean_predictions[:, :3], expected, rtol=2.0e-7
     )
     np.testing.assert_allclose(prediction.mean_prediction[:3], expected, rtol=2.0e-7)
+    np.testing.assert_array_equal(
+        prediction.per_head_epistemic_variance[:3], np.zeros((3,), dtype=np.float32)
+    )
+
+
+@pytest.mark.parametrize("magnitude", [1.0e30, 1.0e38])
+def test_scale_safe_mean_and_variance_is_zero_for_identical_large_values(
+    magnitude: float,
+) -> None:
+    """Identical finite members have zero variance at any float32 scale."""
+    values = jnp.full((3,), magnitude, dtype=jnp.float32)
+    mean, variance = _scale_safe_mean_and_variance(values, axis=0)
+    np.testing.assert_allclose(float(mean), magnitude, rtol=2.0e-7)
+    assert float(variance) == 0.0
+
+
+def test_decide_preserves_identical_large_member_predictions_at_1e30() -> None:
+    """Identical large heads must stay a valid zero-disagreement prediction."""
+    model = RecurrentLatentWorldModelEnsemble(
+        _config(
+            max_parameter_magnitude=1.0e35,
+            max_prediction_magnitude=1.0e30,
+            max_loss_magnitude=1.0e35,
+            uncertainty_warmup_steps=0,
+        )
+    )
+    state = model.init(jr.key(23))
+    # atanh(0.5) * 1e30 saturates the heads to exactly 5e29, a magnitude
+    # whose rounded scaled mean sits one ulp away from the inputs, while the
+    # raw logits stay within max_prediction_magnitude.
+    mean_bias = jnp.asarray(
+        (5.493061443340549e29, 5.493061443340549e29, 5.493061443340549e29, 0.0),
+        dtype=jnp.float32,
+    )
+    members = tuple(
+        member.replace(  # type: ignore[attr-defined]
+            mean_kernel=jnp.zeros_like(member.mean_kernel),
+            mean_bias=mean_bias,
+        )
+        for member in state.member_parameters
+    )
+    state = state.replace(member_parameters=members)  # type: ignore[attr-defined]
+
+    decision = _decision(model, state, jnp.zeros((2,), dtype=jnp.float32))
+    prediction = decision.prediction
+
+    assert bool(model.state_valid(state))
+    assert bool(decision.valid)
+    assert bool(prediction.valid)
+    np.testing.assert_allclose(
+        prediction.member_mean_predictions[:, :3], 5.0e29, rtol=2.0e-7
+    )
     np.testing.assert_array_equal(
         prediction.per_head_epistemic_variance[:3], np.zeros((3,), dtype=np.float32)
     )
