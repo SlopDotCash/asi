@@ -292,7 +292,7 @@ def _require_builtin_value_shape(
         array = value
         if array.size > _MAX_ARRAY_ELEMENTS or array.shape != expected:
             raise ValueError(f"{name} shape must be {expected}, got {array.shape}")
-        if array.dtype.kind == "b":
+        if array.dtype.kind not in {"f", "i", "u"}:
             raise ValueError(f"{name} must contain only real numeric values, not bool")
         return
     if not expected:
@@ -345,7 +345,11 @@ def _cast_representable(
         for raw in array.reshape(-1):
             if array.dtype.kind == "f":
                 floating = float(raw)
-                if not math.isfinite(floating) or not floating.is_integer():
+                if (
+                    not math.isfinite(floating)
+                    or not floating.is_integer()
+                    or abs(floating) > (1 << 53)
+                ):
                     raise ValueError(
                         f"{name} must contain integral values representable by {dtype.name}"
                     )
@@ -384,7 +388,7 @@ class ArrayValue:
         host_dtype = _require_exact_str("dtype", self.dtype)
         try:
             dtype = np.dtype(host_dtype)
-        except TypeError as exc:
+        except (SyntaxError, TypeError, ValueError) as exc:
             raise ValueError(f"unsupported dtype '{host_dtype}'") from exc
         if dtype.name not in _SUPPORTED_DTYPES or dtype.name != self.dtype:
             raise ValueError("ArrayValue dtype must be a portable canonical numeric dtype")
@@ -394,7 +398,7 @@ class ArrayValue:
             raise ValueError(f"ArrayValue rank must be <= {_MAX_ARRAY_RANK}")
         if any(type(dimension) is not int or dimension <= 0 for dimension in self.shape):
             raise ValueError("ArrayValue shape must be a tuple of positive dimensions or ()")
-        if not isinstance(self.payload, bytes):
+        if type(self.payload) is not bytes:
             raise ValueError("ArrayValue payload must be immutable bytes")
         elements = _shape_size(self.shape)
         if elements > _MAX_ARRAY_ELEMENTS:
@@ -453,7 +457,7 @@ class SpaceSpec:
         host_dtype = _require_exact_str("dtype", self.dtype)
         try:
             dtype = np.dtype(host_dtype)
-        except TypeError as exc:
+        except (SyntaxError, TypeError, ValueError) as exc:
             raise ValueError(f"unsupported dtype '{host_dtype}'") from exc
         if dtype.name not in _SUPPORTED_DTYPES:
             raise ValueError("dtype must be a supported portable floating-point or integer dtype")
@@ -626,13 +630,13 @@ class SpaceSpec:
             if supplied_dtype is not None:
                 try:
                     supplied_name = np.dtype(supplied_dtype).name
-                except TypeError as exc:
+                except (SyntaxError, TypeError, ValueError) as exc:
                     raise ValueError("space value has an unsupported dtype") from exc
                 if supplied_name != self.dtype:
                     raise ValueError(
                         f"space value dtype must be exactly {self.dtype}, got {supplied_name}"
                     )
-            if self.shape != () and supplied_dtype is None:
+            if supplied_dtype is None or isinstance(value, (list, tuple, range, np.ndarray)):
                 _require_builtin_value_shape(
                     value,
                     expected=self.shape,
@@ -1685,6 +1689,8 @@ class ReferenceTransactionReducer:
         reason: str,
     ) -> ReferenceTransactionState:
         self._require_phase(state, TransactionPhase.ISSUED)
+        if type(reason) is not str or not reason.strip():
+            raise ValueError("halt reason must be nonempty")
         if not isinstance(receipt, DispatchReceipt) or state.command != receipt.command:
             raise DecisionOwnershipError(
                 "post-execution halt receipt does not own the issued command"
