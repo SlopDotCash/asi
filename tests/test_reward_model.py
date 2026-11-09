@@ -574,3 +574,44 @@ def test_rls_reward_model_rejects_nonpositive_innovation_denominator() -> None:
     assert not bool(result.update_applied)
     np.testing.assert_array_equal(result.gain, np.zeros(2, dtype=np.float32))
     chex.assert_trees_all_equal(result.state, state)
+
+
+def test_rls_cancelling_dot_preserves_multiscale_and_low_mantissa_bits() -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=3, forgetting=1.0, ridge=1.0))
+    disjoint_weights = jnp.array([1.0e-10, 3.0e38, 0.0], dtype=jnp.float32)
+    disjoint_features = jnp.array([1.0e10, 0.0, 3.0e38], dtype=jnp.float32)
+    state = model.init().replace(weights=disjoint_weights)
+    assert float(model.predict(state, disjoint_features)) == pytest.approx(1.0, rel=1e-6)
+
+    multiscale_weights = jnp.array([3.0e38, -3.0e38, 1.0e-10], dtype=jnp.float32)
+    multiscale_features = jnp.array([3.0e38, 3.0e38, 1.0e10], dtype=jnp.float32)
+    assert float(
+        model.predict(state.replace(weights=multiscale_weights), multiscale_features)
+    ) == pytest.approx(1.0, rel=1e-6)
+
+    model_2d = RLSRewardModel(
+        RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0)
+    )
+    val = jnp.float32(3.0e20)
+    almost_val = jnp.nextafter(val, jnp.float32(0.0))
+    w_2d = jnp.array([val, -val], dtype=jnp.float32)
+    x_2d = jnp.array([val, almost_val], dtype=jnp.float32)
+    pred = model_2d.predict(model_2d.init().replace(weights=w_2d), x_2d)
+    expected = float(np.float64(val) * (np.float64(val) - np.float64(almost_val)))
+    assert float(pred) == pytest.approx(expected, rel=1e-6)
+
+
+def test_rls_update_preserves_finite_cancelling_covariance_matvec() -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0))
+    diag = jnp.float32(2.0e34)
+    off = -jnp.nextafter(diag, jnp.float32(0.0))
+    covariance = jnp.array([[diag, off], [off, diag]], dtype=jnp.float32)
+    state = model.init().replace(covariance=covariance)
+    features = jnp.array([1.0e5, 1.0e5], dtype=jnp.float32)
+    assert not bool(jnp.all(jnp.isfinite(covariance @ features)))
+
+    result = model.update(state, features, jnp.float32(1.0))
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result.state.weights)
+    chex.assert_tree_all_finite(result.state.covariance)
+    chex.assert_tree_all_finite(result.gain)
