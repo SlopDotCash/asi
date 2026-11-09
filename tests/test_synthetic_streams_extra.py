@@ -305,3 +305,54 @@ def test_hidden_ar2_state_propagates_ar2():
     chex.assert_trees_all_close(new_state.x_prev2, saved_x_prev)
     # New x_prev should match the emitted observation.
     chex.assert_trees_all_close(new_state.x_prev, timestep.observation)
+
+
+def test_scaled_stream_wrapper_rejects_bool_and_underflow_scales() -> None:
+    import numpy as np
+
+    from alberta_framework.streams.synthetic import (
+        RandomWalkStream,
+        ScaledStreamWrapper,
+    )
+
+    inner = RandomWalkStream(feature_dim=2)
+    with pytest.raises(ValueError, match="boolean"):
+        ScaledStreamWrapper(inner, jnp.array([True, False]))
+    with pytest.raises(ValueError, match="boolean"):
+        ScaledStreamWrapper(inner, [True, 1.0])  # type: ignore[arg-type]
+    tiny_ld = np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
+    if tiny_ld > 0:
+        with pytest.raises(ValueError, match="narrows to float32 zero"):
+            ScaledStreamWrapper(
+                inner,
+                np.array([tiny_ld, np.longdouble(1.0)], dtype=np.longdouble),  # type: ignore[arg-type]
+            )
+
+
+def test_dynamic_scale_shift_and_scale_drift_init_respect_scale_bounds() -> None:
+    import numpy as np
+
+    from alberta_framework.streams.synthetic import (
+        DynamicScaleShiftStream,
+        ScaleDriftStream,
+    )
+
+    bound = float(np.float32(1.3189869e-30))
+    dyn = DynamicScaleShiftStream(
+        feature_dim=4,
+        scale_change_interval=1,
+        min_scale=bound,
+        max_scale=bound,
+    )
+    dyn_state = dyn.init(jr.key(0))
+    assert bool(jnp.all(dyn_state.current_scales == np.float32(bound)))
+    _, dyn_state_next = dyn.step(dyn_state, jnp.array(1, dtype=jnp.int32))
+    assert bool(jnp.all(dyn_state_next.current_scales == np.float32(bound)))
+
+    drift = ScaleDriftStream(
+        feature_dim=3,
+        min_log_scale=1.5,
+        max_log_scale=2.5,
+    )
+    drift_state = drift.init(jr.key(0))
+    assert bool(jnp.all((drift_state.log_scales >= 1.5) & (drift_state.log_scales <= 2.5)))
