@@ -110,6 +110,14 @@ class TestComputeStatistics:
         point, _, _ = bootstrap_ci(list(values), statistic="mean", n_bootstrap=8, seed=0)
         assert point == pytest.approx(expected)
 
+    def test_bootstrap_cancellation_interval_brackets_point(self) -> None:
+        values = [1e16, 1.0, -1e16]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            point, lo, hi = bootstrap_ci(values, statistic="mean", seed=0)
+        assert point == pytest.approx(1.0 / 3.0)
+        assert lo <= point <= hi
+
     def test_unrepresentable_large_interval_fails_closed_without_warnings(self) -> None:
         values = np.asarray([-1.0e308, 1.0e308], dtype=np.float64)
 

@@ -236,6 +236,35 @@ def _compensated_mean(values: NDArray[np.float64], *, name: str) -> float:
     return result
 
 
+# Pairwise ``np.sum`` can lose a residual of size about ``n * eps * sum(|x|)``.
+# Columns whose naive total is that small relative to the absolute mass use
+# ``_compensated_mean`` instead. Typical traces stay on the vectorized path.
+_COMPENSATED_MEAN_ABS_SLACK = 32.0
+
+
+def _compensated_mean_along_axis(
+    values: NDArray[np.float64], *, axis: int, name: str
+) -> NDArray[np.float64]:
+    """Reduce ``values`` along ``axis`` with the 1-D compensated mean as needed."""
+    work = np.moveaxis(np.asarray(values, dtype=np.float64), axis, 0)
+    count = work.shape[0]
+    flat = np.reshape(work, (count, -1))
+    with np.errstate(over="ignore", invalid="ignore"):
+        naive = np.sum(flat, axis=0)
+        abs_total = np.sum(np.abs(flat), axis=0)
+    slack = count * _COMPENSATED_MEAN_ABS_SLACK * np.finfo(np.float64).eps
+    safe = np.isfinite(naive) & np.isfinite(abs_total) & (
+        np.abs(naive) >= slack * abs_total
+    )
+    means = np.empty(flat.shape[1], dtype=np.float64)
+    if bool(np.any(safe)):
+        means[safe] = naive[safe] / count
+    if not bool(np.all(safe)):
+        for index in np.flatnonzero(~safe):
+            means[int(index)] = _compensated_mean(flat[:, int(index)], name=name)
+    return np.reshape(means, work.shape[1:])
+
+
 def _common_binary_scaled(
     a: NDArray[np.float64], b: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -447,10 +476,7 @@ def compute_timeseries_statistics(
     work = np.asarray(metric_array, dtype=np.float64)
     scaled, scales = _scaled_float64_values(metric_array, name="metric_array", axis=0)
     scale = scales[0]
-    # Column-wise compensated means stay aligned with compute_statistics.
-    mean = np.empty(work.shape[1], dtype=np.float64)
-    for step in range(work.shape[1]):
-        mean[step] = _compensated_mean(work[:, step], name="metric_array")
+    mean = _compensated_mean_along_axis(work, axis=0, name="metric_array")
 
     if n_seeds == 1:
         # One seed has no between-seed spread estimate; return the degenerate
@@ -1277,24 +1303,24 @@ def bootstrap_ci(
     work = np.asarray(arr, dtype=np.float64)
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
-    point_estimate = (
-        _compensated_mean(work, name="values")
-        if statistic == "mean"
-        else float(stat_func(scaled) * scale)
-    )
-
-    # Generate bootstrap samples
-    bootstrap_stats_list: list[float] = []
-    for _ in range(n_bootstrap):
-        sample = rng.choice(scaled, size=len(scaled), replace=True)
-        bootstrap_stats_list.append(float(stat_func(sample)))
-
-    bootstrap_stats = np.array(bootstrap_stats_list)
+    if statistic == "mean":
+        point_estimate = _compensated_mean(work, name="values")
+        draws = work[rng.integers(0, work.size, size=(n_bootstrap, work.size))]
+        bootstrap_stats = _compensated_mean_along_axis(draws, axis=1, name="values")
+        restore = 1.0
+    else:
+        point_estimate = float(stat_func(scaled) * scale)
+        bootstrap_stats_list: list[float] = []
+        for _ in range(n_bootstrap):
+            sample = rng.choice(scaled, size=len(scaled), replace=True)
+            bootstrap_stats_list.append(float(stat_func(sample)))
+        bootstrap_stats = np.asarray(bootstrap_stats_list, dtype=np.float64)
+        restore = scale
 
     # Percentile method
     lower_percentile = (1 - confidence_level) / 2 * 100
     upper_percentile = (1 + confidence_level) / 2 * 100
-    ci_lower = float(np.percentile(bootstrap_stats, lower_percentile) * scale)
-    ci_upper = float(np.percentile(bootstrap_stats, upper_percentile) * scale)
+    ci_lower = float(np.percentile(bootstrap_stats, lower_percentile) * restore)
+    ci_upper = float(np.percentile(bootstrap_stats, upper_percentile) * restore)
 
     return point_estimate, ci_lower, ci_upper
