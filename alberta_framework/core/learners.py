@@ -612,6 +612,8 @@ def run_learning_loop[StreamStateT](
             )
 
     if normalizer_tracking is not None:
+        if learner.normalizer is None:
+            raise ValueError("normalizer_tracking requires a learner with a normalizer")
         if normalizer_tracking.interval < 1:
             raise ValueError(
                 f"normalizer_tracking.interval must be >= 1, got {normalizer_tracking.interval}"
@@ -964,7 +966,12 @@ def run_learning_loop_batched[StreamStateT](
     )
     elapsed = time.time() - t0
     batched_states = batched_states.replace(  # type: ignore[attr-defined]
-        uptime_s=batched_states.uptime_s + elapsed
+        birth_timestamp=(
+            learner_state.birth_timestamp if learner_state is not None else t0
+        ),
+        uptime_s=(
+            (learner_state.uptime_s if learner_state is not None else 0.0) + elapsed
+        ),
     )
 
     # Reconstruct batched histories if tracking was enabled
@@ -1280,10 +1287,13 @@ class MLPLearner:
         new_utility = list(state.neuron_utility)
 
         n_hidden = len(self._hidden_sizes)
+        dormant_masks: list[Array | None] = [None] * n_hidden
         for layer_i in range(n_hidden):
-            dormant_mask = state.neuron_utility[layer_i] < threshold
+            utility = state.neuron_utility[layer_i]
+            dormant_mask = (~jnp.isfinite(utility)) | (utility < threshold)
             if not jnp.any(dormant_mask):
                 continue
+            dormant_masks[layer_i] = dormant_mask
             h_out, h_in = new_weights[layer_i].shape
             key, subkey = jax.random.split(key)
             fresh_w = sparse_init(subkey, (h_out, h_in), sparsity=self._sparsity)
@@ -1315,39 +1325,36 @@ class MLPLearner:
             new_opt_states[2 * layer_i + 1] = jax.tree_util.tree_map(
                 _reset_by_mask, new_opt_states[2 * layer_i + 1], fresh_b_opt
             )
-            # Zero outgoing weights from the next layer that feed into this neuron
-            if layer_i + 1 < len(new_weights):
-                out_w = new_weights[layer_i + 1]  # shape (h_{i+1}, h_i)
-                new_weights[layer_i + 1] = jnp.where(dormant_mask[None, :], 0.0, out_w)
-                # The zeroed outgoing column must not inherit the dead
-                # neuron's adaptation history either: clear its eligibility
-                # traces and re-initialise its optimizer-state slice, mirroring
-                # continual_backprop._replace_one_unit. Otherwise the first
-                # post-reset updates move the fresh zero weights along
-                # pre-reset trace directions with pre-reset step-sizes.
-                new_traces[2 * (layer_i + 1)] = jnp.where(
-                    dormant_mask[None, :], 0.0, new_traces[2 * (layer_i + 1)]
-                )
-                is_output_layer = layer_i + 1 == len(new_weights) - 1
-                out_optimizer = (
-                    self._head_optimizer
-                    if is_output_layer and self._head_optimizer is not None
-                    else self._optimizer
-                )
-                fresh_out_opt = out_optimizer.init_for_shape(out_w.shape)
-
-                def _reset_out_col(
-                    x: Array, fresh: Array, m: Array = dormant_mask
-                ) -> Array:
-                    if x.ndim != 2:
-                        return x
-                    return jnp.where(m[None, :], fresh, x)
-
-                new_opt_states[2 * (layer_i + 1)] = jax.tree_util.tree_map(
-                    _reset_out_col, new_opt_states[2 * (layer_i + 1)], fresh_out_opt
-                )
             # Reset utility for reset neurons
             new_utility[layer_i] = jnp.where(dormant_mask, 0.0, new_utility[layer_i])
+
+        for layer_i, dormant_mask_opt in enumerate(dormant_masks):
+            if dormant_mask_opt is None or layer_i + 1 >= len(new_weights):
+                continue
+            dormant_mask = dormant_mask_opt
+            out_w = new_weights[layer_i + 1]  # shape (h_{i+1}, h_i)
+            new_weights[layer_i + 1] = jnp.where(dormant_mask[None, :], 0.0, out_w)
+            new_traces[2 * (layer_i + 1)] = jnp.where(
+                dormant_mask[None, :], 0.0, new_traces[2 * (layer_i + 1)]
+            )
+            is_output_layer = layer_i + 1 == len(new_weights) - 1
+            out_optimizer = (
+                self._head_optimizer
+                if is_output_layer and self._head_optimizer is not None
+                else self._optimizer
+            )
+            fresh_out_opt = out_optimizer.init_for_shape(out_w.shape)
+
+            def _reset_out_col(
+                x: Array, fresh: Array, m: Array = dormant_mask
+            ) -> Array:
+                if x.ndim != 2:
+                    return x
+                return jnp.where(m[None, :], fresh, x)
+
+            new_opt_states[2 * (layer_i + 1)] = jax.tree_util.tree_map(
+                _reset_out_col, new_opt_states[2 * (layer_i + 1)], fresh_out_opt
+            )
 
         return state.replace(  # type: ignore[attr-defined, no-any-return]
             params=MLPParams(weights=tuple(new_weights), biases=tuple(new_biases)),
@@ -1855,6 +1862,8 @@ def run_mlp_learning_loop[StreamStateT](
     _preflight_float32_resources("MLP learning loop scan result", num_steps * 4)
     # Validate tracking config
     if normalizer_tracking is not None:
+        if learner.normalizer is None:
+            raise ValueError("normalizer_tracking requires a learner with a normalizer")
         if normalizer_tracking.interval < 1:
             raise ValueError(
                 f"normalizer_tracking.interval must be >= 1, got {normalizer_tracking.interval}"
@@ -2043,7 +2052,12 @@ def run_mlp_learning_loop_batched[StreamStateT](
     )
     elapsed = time.time() - t0
     batched_states = batched_states.replace(  # type: ignore[attr-defined]
-        uptime_s=batched_states.uptime_s + elapsed
+        birth_timestamp=(
+            learner_state.birth_timestamp if learner_state is not None else t0
+        ),
+        uptime_s=(
+            (learner_state.uptime_s if learner_state is not None else 0.0) + elapsed
+        ),
     )
 
     if normalizer_tracking is not None and batched_norm_history is not None:
@@ -2374,7 +2388,11 @@ class TrueOnlineTDLearner:
         )
         new_bias_trace = _skip_zero_scale(decay_scale, state.bias_eligibility_trace) + trace_scale
 
-        correction = value - state.v_old
+        correction = jnp.where(
+            decay_scale == 0.0,
+            jnp.zeros_like(value),
+            value - state.v_old,
+        )
         # Direct form: alpha * (delta + correction) * e - alpha * correction * phi.
         # When delta and the correction are both huge, that sum overflows even
         # though alpha * delta * e + alpha * correction * (e - phi) is finite.
@@ -2421,6 +2439,8 @@ class TrueOnlineTDLearner:
             & jnp.isfinite(jnp.squeeze(reward))
             & (jnp.all(jnp.isfinite(next_observation)) | (gamma_scalar == 0.0))
             & jnp.isfinite(gamma_scalar)
+            & (gamma_scalar >= 0.0)
+            & (gamma_scalar <= 1.0)
         )
         proposed_finite = (
             jnp.all(jnp.isfinite(proposed_state.weights))
