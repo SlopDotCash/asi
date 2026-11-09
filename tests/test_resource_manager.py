@@ -1002,3 +1002,91 @@ def test_generator_resource_manager_preserves_finite_extreme_convex_baseline() -
     np.testing.assert_array_equal(result.advantages[:19], 0.0)
     np.testing.assert_array_equal(result.advantages[19], -10.0)
     assert float(manager.weights(result.state)[19]) < float(manager.weights(state)[19])
+
+
+
+@pytest.mark.parametrize("offset", [float(np.finfo(np.float32).max), 2e38, -2e38, 0.0])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_generator_resource_manager_finite_logit_centering(
+    offset: float, compiled: bool
+) -> None:
+    count = 4
+    manager = GeneratorMetaResourceManager(
+        policy_names=tuple(f"p{index}" for index in range(count)),
+        op_ids=tuple(range(count)),
+        parent_modes=(0,) * count,
+        replacement_multipliers=(1.0,) * count,
+        promotion_margin_multipliers=(1.0,) * count,
+        candidate_min_age_multipliers=(1.0,) * count,
+        imprint_scales=(0.0,) * count,
+        learning_rate=1.0,
+        discount=1.0,
+        exploration=0.0,
+    )
+    state = dataclasses.replace(
+        manager.init(), log_weights=jnp.full((1, count), offset, dtype=jnp.float32)
+    )
+    update = jax.jit(manager.update) if compiled else manager.update
+    result = update(state, jnp.ones(count, dtype=jnp.float32))
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    np.testing.assert_allclose(result.state.log_weights, 0.0, atol=1e-6)
+    np.testing.assert_allclose(manager.weights(result.state), 0.25, atol=1e-6)
+
+
+def test_generator_exp3_preserves_finite_update_when_importance_ratio_overflows() -> None:
+    manager = GeneratorMetaResourceManager(
+        policy_names=("safe", "residual"),
+        op_ids=(1, 3),
+        parent_modes=(0, 3),
+        replacement_multipliers=(0.5, 2.0),
+        promotion_margin_multipliers=(1.25, 0.75),
+        candidate_min_age_multipliers=(1.5, 0.5),
+        imprint_scales=(0.0, 1.0),
+        learning_rate=0.5,
+        discount=1.0,
+        exploration=0.1,
+        advantage_clip=10.0,
+        update_rule="exp3",
+    )
+    state = manager.init()
+    result = manager.update(
+        state,
+        jnp.asarray([0.0, 2e38], dtype=jnp.float32),
+        selected_action=1,
+        selected_probability=0.1,
+    )
+    assert bool(result.update_applied)
+    np.testing.assert_allclose(
+        np.asarray(result.advantages),
+        np.asarray([-10.0, 10.0], dtype=np.float32),
+    )
+    assert bool(jnp.all(jnp.isfinite(result.state.log_weights)))
+
+
+def test_hedge_regret_bound_avoids_intermediate_overflow_and_underflow() -> None:
+    finite_large = finite_candidate_hedge_regret_bound(
+        2,
+        1,
+        learning_rate=1e308,
+        loss_bound=2.0,
+    )
+    assert math.isfinite(finite_large)
+    assert math.isclose(finite_large, 5e307, rel_tol=1e-12)
+
+    base = math.log(2) / 1.0
+    tiny_positive = finite_candidate_hedge_regret_bound(
+        2,
+        800_000_000,
+        learning_rate=1.0,
+        loss_bound=1e-165,
+    )
+    assert math.isfinite(tiny_positive)
+    second_only = finite_candidate_hedge_regret_bound(
+        2,
+        800_000_000,
+        learning_rate=1e200,
+        loss_bound=1e-265,
+    )
+    assert second_only > 0.0 and math.isfinite(second_only)
+    assert base > 0.0
