@@ -299,6 +299,27 @@ def _preflight_projected_statistic(
     return z, dirs, sample_count, n_projections
 
 
+def _stable_mean(values: Array, *, axis: int | None = None) -> Array:
+    """Average bounded values without overflowing or erasing small inputs.
+
+    A naive ``jnp.mean`` first sums its inputs, so two same-sign float32
+    maxima overflow to ``inf`` even though their mean is finite.  Scaling
+    by the largest magnitude first keeps the sum in ``[-count, count]``.
+
+    The scaling must use a power of two: XLA can lower division by a
+    value near ``FLT_MAX`` to a reciprocal multiply, whose reciprocal is
+    subnormal and may flush to zero, falsely reporting a zero mean (the
+    same trap :func:`_stable_std` guards against).  Power-of-two scaling
+    via ``ldexp`` keeps both factors representable.
+    """
+    count = values.size if axis is None else values.shape[axis]
+    scale = jnp.max(jnp.abs(values), axis=axis, keepdims=True)
+    _, exponent = jnp.frexp(scale)
+    power_scaled = jnp.ldexp(values, -exponent)
+    mean_scaled = jnp.sum(power_scaled, axis=axis) / jnp.asarray(count, dtype=jnp.float32)
+    return jnp.ldexp(mean_scaled, jnp.squeeze(exponent, axis=axis))
+
+
 def _stable_std(values: Array, *, axis: int) -> Array:
     """Compute float32 standard deviation without overflowing finite inputs."""
     scale = jnp.max(jnp.abs(values), axis=axis, keepdims=True)
@@ -441,11 +462,11 @@ def sigreg_diagnostics(
     projected_std = _stable_std(projected, axis=0)
     return SIGRegDiagnostics(
         loss=sliced_sigreg_loss(flat, dirs, kernel_width=cfg.kernel_width),
-        latent_mean_abs=jnp.mean(jnp.abs(jnp.mean(flat, axis=0))),
-        latent_std_mean=jnp.mean(latent_std),
+        latent_mean_abs=_stable_mean(jnp.abs(_stable_mean(flat, axis=0))),
+        latent_std_mean=_stable_mean(latent_std),
         latent_std_min=jnp.min(latent_std),
-        projected_mean_abs=jnp.mean(jnp.abs(jnp.mean(projected, axis=0))),
-        projected_std_mean=jnp.mean(projected_std),
+        projected_mean_abs=_stable_mean(jnp.abs(_stable_mean(projected, axis=0))),
+        projected_std_mean=_stable_mean(projected_std),
     )
 
 
