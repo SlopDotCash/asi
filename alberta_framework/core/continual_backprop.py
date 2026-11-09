@@ -415,6 +415,44 @@ def init_cbp_state(
     )
 
 
+def _finite_layer_norm(values: Array) -> Array:
+    """Preserve parameterless layer norm and its VJP when reductions overflow."""
+    mean = jnp.mean(values)
+    variance = jnp.var(values)
+    reduction_overflowed = (
+        (~jnp.isfinite(mean) | ~jnp.isfinite(variance))
+        & jnp.all(jnp.isfinite(values))
+    )
+    safe_values = jnp.where(reduction_overflowed, jnp.zeros_like(values), values)
+    safe_mean = jnp.mean(safe_values)
+    safe_variance = jnp.var(safe_values)
+    direct = (safe_values - safe_mean) / jnp.sqrt(safe_variance + 1e-5)
+
+    def scaled_layer_norm(finite_values: Array) -> Array:
+        scale = jnp.max(jnp.abs(finite_values))
+        _, exponent = jnp.frexp(scale)
+        scaled = jnp.ldexp(finite_values, -exponent)
+        centered = scaled - jnp.mean(scaled)
+        scaled_variance = jnp.mean(centered * centered)
+        positive_variance = scaled_variance > 0.0
+        denom_variance = jnp.where(
+            positive_variance,
+            scaled_variance,
+            jnp.ones_like(scaled_variance),
+        )
+        contrast = centered * jax.lax.rsqrt(denom_variance)
+        return jnp.where(positive_variance, contrast, jnp.zeros_like(contrast))
+
+    safe_scaled_input = jnp.where(
+        reduction_overflowed, values, jnp.zeros_like(values)
+    )
+    return jnp.where(
+        reduction_overflowed,
+        scaled_layer_norm(safe_scaled_input),
+        direct,
+    )
+
+
 def _trunk_layer_activations(
     weights: tuple[Array, ...],
     biases: tuple[Array, ...],
@@ -445,9 +483,7 @@ def _trunk_layer_activations(
     for i in range(len(weights)):
         x = weights[i] @ x + biases[i]
         if use_layer_norm:
-            mean = jnp.mean(x)
-            var = jnp.var(x)
-            x = (x - mean) / jnp.sqrt(var + 1e-5)
+            x = _finite_layer_norm(x)
         x = jnp.where(x >= 0, x, leaky_relu_slope * x)
         activations.append(x)
     return tuple(activations)
@@ -681,23 +717,22 @@ def _replace_one_unit(
     new_trunk_opt_states = list(mlp_state.trunk_optimizer_states)
     new_head_traces = list(mlp_state.head_traces)
     new_head_opt_states = list(mlp_state.head_optimizer_states)
+    def _reset_masked(tree: Any, fresh: Any, mask: Array, axis: int) -> Any:
+        def leaf(value: Array, fresh_value: Array) -> Array:
+            if value.ndim == 0:
+                return value
+            if value.ndim == 2:
+                selector = mask[:, None] if axis == 0 else mask[None, :]
+            else:
+                selector = mask
+            return jnp.where(selector, fresh_value, value)
+
+        return jax.tree_util.tree_map(leaf, tree, fresh)
+
     if optimizer is not None:
         row_mask = (
             jnp.arange(fan_out, dtype=jnp.int32) == unit_idx
         ) & has_candidate
-
-        def _reset_masked(tree: Any, fresh: Any, mask: Array, axis: int) -> Any:
-            def leaf(value: Array, fresh_value: Array) -> Array:
-                if value.ndim == 0:
-                    return value
-                if value.ndim == 2:
-                    selector = mask[:, None] if axis == 0 else mask[None, :]
-                else:
-                    selector = mask
-                return jnp.where(selector, fresh_value, value)
-
-            return jax.tree_util.tree_map(leaf, tree, fresh)
-
         fresh_w_opt = optimizer.init_for_shape((fan_out, fan_in))
         fresh_b_opt = optimizer.init_for_shape((fan_out,))
         new_trunk_opt_states[2 * layer_idx] = _reset_masked(
@@ -724,24 +759,25 @@ def _replace_one_unit(
             new_trunk_traces[2 * (layer_idx + 1)] = jnp.where(
                 col_mask[None, :], 0.0, new_trunk_traces[2 * (layer_idx + 1)]
             )
-        else:
-            head_opt = optimizer if head_optimizer is None else head_optimizer
-            for h in range(len(new_head_opt_states)):
-                head_shape = mlp_state.head_params.weights[h].shape
-                col_mask = (
-                    jnp.arange(head_shape[1], dtype=jnp.int32) == unit_idx
-                ) & has_candidate
-                fresh_head_opt = head_opt.init_for_shape(head_shape)
-                head_w_opt, head_b_opt = new_head_opt_states[h]
-                new_head_opt_states[h] = (
-                    _reset_masked(head_w_opt, fresh_head_opt, col_mask, 1),
-                    head_b_opt,
-                )
-                head_w_trace, head_b_trace = new_head_traces[h]
-                new_head_traces[h] = (
-                    jnp.where(col_mask[None, :], 0.0, head_w_trace),
-                    head_b_trace,
-                )
+
+    head_opt = head_optimizer if head_optimizer is not None else optimizer
+    if layer_idx == n_layers - 1 and head_opt is not None:
+        for h in range(len(new_head_opt_states)):
+            head_shape = mlp_state.head_params.weights[h].shape
+            col_mask = (
+                jnp.arange(head_shape[1], dtype=jnp.int32) == unit_idx
+            ) & has_candidate
+            fresh_head_opt = head_opt.init_for_shape(head_shape)
+            head_w_opt, head_b_opt = new_head_opt_states[h]
+            new_head_opt_states[h] = (
+                _reset_masked(head_w_opt, fresh_head_opt, col_mask, 1),
+                head_b_opt,
+            )
+            head_w_trace, head_b_trace = new_head_traces[h]
+            new_head_traces[h] = (
+                jnp.where(col_mask[None, :], 0.0, head_w_trace),
+                head_b_trace,
+            )
 
     new_mlp_state = mlp_state.replace(  # type: ignore[attr-defined]
         trunk_params=new_trunk_params,
@@ -1314,9 +1350,7 @@ class CBPMultiHeadMLPLearner:
                     + post_state.trunk_params.biases[j]
                 )
                 if ln:
-                    mean = jnp.mean(hidden)
-                    var = jnp.var(hidden)
-                    hidden = (hidden - mean) / jnp.sqrt(var + 1e-5)
+                    hidden = _finite_layer_norm(hidden)
                 hidden = jnp.where(hidden >= 0, hidden, slope * hidden)
             return _loss_from_hidden(hidden)
 
@@ -1361,9 +1395,15 @@ class CBPMultiHeadMLPLearner:
             mlp_state=new_post_state,
             cbp_state=new_cbp_state,
         )
-        # Feature replacement belongs to the underlying learner's transaction.
-        new_state = select_transaction(mlp_result.update_applied, new_state, state)
-        replacements_made = neutralize_array(mlp_result.update_applied, replacements_made)
+        # Feature replacement belongs to the underlying learner's transaction
+        # and freezes when every target head is inactive (all-NaN targets).
+        cbp_step_applied = mlp_result.update_applied & jnp.any(active_mask)
+        fallback_state = CBPMultiHeadMLPState(  # type: ignore[call-arg]
+            mlp_state=post_state,
+            cbp_state=state.cbp_state,
+        )
+        new_state = select_transaction(cbp_step_applied, new_state, fallback_state)
+        replacements_made = neutralize_array(cbp_step_applied, replacements_made)
 
         return CBPUpdateResult(  # type: ignore[call-arg]
             state=new_state,
