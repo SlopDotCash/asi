@@ -38,6 +38,9 @@ _BOOTSTRAP_BUDGET = ScanBudget(
     maximum_step_units=10_000_000,
 )
 _BOOTSTRAP_MAX_COUNT = _BOOTSTRAP_BUDGET.maximum_steps
+# Cap peak resample storage at about 1M elements. Sequential rng.integers
+# calls of shape (rows, n) consume the same stream as one (n_bootstrap, n) draw.
+_BOOTSTRAP_DRAW_CHUNK_ELEMS = 1_000_000
 
 
 def _require_exact_str(name: str, value: object) -> str:
@@ -263,6 +266,31 @@ def _compensated_mean_along_axis(
         for index in np.flatnonzero(~safe):
             means[int(index)] = _compensated_mean(flat[:, int(index)], name=name)
     return np.reshape(means, work.shape[1:])
+
+
+def _bootstrap_compensated_means(
+    work: NDArray[np.float64],
+    rng: np.random.Generator,
+    n_bootstrap: int,
+    *,
+    name: str,
+) -> NDArray[np.float64]:
+    """Mean of each bootstrap replicate, drawn in bounded row chunks.
+
+    Sequential ``rng.integers(..., size=(rows, n))`` calls match one
+    ``size=(n_bootstrap, n)`` draw, and also match the historical
+    ``rng.choice(..., size=n, replace=True)`` loop for the same seed.
+    """
+    n = int(work.size)
+    chunk_rows = max(1, _BOOTSTRAP_DRAW_CHUNK_ELEMS // n)
+    parts: list[NDArray[np.float64]] = []
+    remaining = n_bootstrap
+    while remaining > 0:
+        rows = min(chunk_rows, remaining)
+        draws = work[rng.integers(0, n, size=(rows, n))]
+        parts.append(_compensated_mean_along_axis(draws, axis=1, name=name))
+        remaining -= rows
+    return np.concatenate(parts)
 
 
 def _common_binary_scaled(
@@ -1170,13 +1198,11 @@ def pairwise_comparisons(
     for name, arr in metric_arrays.items():
         window_values = arr[:, -final_window:]
         _require_finite_values(window_values, name=f"metric '{name}' final window")
-        scaled, scales = _scaled_float64_values(
-            window_values,
-            name=f"metric '{name}' final window",
-            axis=1,
+        work = np.asarray(window_values, dtype=np.float64)
+        # Scaling first can erase a small residual beside cancelling large steps.
+        final_mean = _compensated_mean_along_axis(
+            work, axis=1, name=f"metric '{name}' final window"
         )
-        with np.errstate(over="ignore", invalid="ignore"):
-            final_mean = np.mean(scaled, axis=1) * np.squeeze(scales, axis=1)
         _require_finite_statistics(final_mean, name=f"metric '{name}' final window")
         final_values[name] = final_mean
 
@@ -1305,8 +1331,9 @@ def bootstrap_ci(
     scale = float(scale_array.item())
     if statistic == "mean":
         point_estimate = _compensated_mean(work, name="values")
-        draws = work[rng.integers(0, work.size, size=(n_bootstrap, work.size))]
-        bootstrap_stats = _compensated_mean_along_axis(draws, axis=1, name="values")
+        bootstrap_stats = _bootstrap_compensated_means(
+            work, rng, n_bootstrap, name="values"
+        )
         restore = 1.0
     else:
         point_estimate = float(stat_func(scaled) * scale)

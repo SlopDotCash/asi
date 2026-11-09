@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from alberta_framework.utils import statistics as statistics_module
 from alberta_framework.utils.experiments import AggregatedResults
 from alberta_framework.utils.statistics import (
     SignificanceResult,
@@ -117,6 +118,18 @@ class TestComputeStatistics:
             point, lo, hi = bootstrap_ci(values, statistic="mean", seed=0)
         assert point == pytest.approx(1.0 / 3.0)
         assert lo <= point <= hi
+
+    def test_bootstrap_chunked_draws_match_unchunked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Row-chunked rng.integers calls must replay the unchunked stream."""
+        values = [1.0, 2.0, 3.0, 4.0]
+        monkeypatch.setattr(statistics_module, "_BOOTSTRAP_DRAW_CHUNK_ELEMS", 10**12)
+        unchunked = bootstrap_ci(values, statistic="mean", n_bootstrap=21, seed=0)
+        # 8 elements / n=4 => 2 rows per chunk, so 21 replicates span many chunks.
+        monkeypatch.setattr(statistics_module, "_BOOTSTRAP_DRAW_CHUNK_ELEMS", 8)
+        chunked = bootstrap_ci(values, statistic="mean", n_bootstrap=21, seed=0)
+        assert chunked == unchunked
 
     def test_unrepresentable_large_interval_fails_closed_without_warnings(self) -> None:
         values = np.asarray([-1.0e308, 1.0e308], dtype=np.float64)
@@ -1405,6 +1418,35 @@ class TestPairwiseComparisons:
 
         assert result.statistic == pytest.approx(9.0)
         assert result.effect_size == pytest.approx(1.0)
+
+    def test_final_window_mean_preserves_signed_cancellation(self) -> None:
+        """A cancelling window must compare equal to its exact residual mean."""
+        cancelling = np.array([[1e16, 1.0, -1e16]] * 3, dtype=np.float64)
+        constant = np.full((3, 3), 1.0 / 3.0, dtype=np.float64)
+        left = AggregatedResults(
+            config_name="cancelling",
+            seeds=[0, 1, 2],
+            metric_arrays={"reward": cancelling},
+            summary={},
+        )
+        right = AggregatedResults(
+            config_name="constant",
+            seeds=[10, 11, 12],
+            metric_arrays={"reward": constant},
+            summary={},
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = pairwise_comparisons(
+                {"cancelling": left, "constant": right},
+                metric="reward",
+                test="mann_whitney",
+                window=3,
+            )[("cancelling", "constant")]
+
+        assert result.effect_size == pytest.approx(0.0)
+        assert not result.significant
 
     @staticmethod
     def _settled_trace(name: str, n_steps: int, transient: float) -> AggregatedResults:
