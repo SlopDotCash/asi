@@ -258,6 +258,46 @@ def test_step8_ensemble_prediction_preserves_representable_large_statistics() ->
     np.testing.assert_equal(float(identical_prediction.total_disagreement), 0.0)
 
 
+@pytest.mark.parametrize("members", [7, 9])
+def test_step8_ensemble_means_keep_identical_float32_limits(members: int) -> None:
+    cfg = Step8WorldModelConfig(
+        observation_dim=2,
+        n_actions=2,
+        hidden_sizes=(),
+        sparsity=0.0,
+    )
+    model = make_step8_world_model(cfg)
+    initial = init_step8_state(model, key=jr.key(1))
+    maximum = float(np.finfo(np.float32).max)
+    head_params = initial.learner_state.head_params
+    constant_heads = replace(
+        head_params,
+        weights=tuple(jnp.zeros_like(weight) for weight in head_params.weights),
+        biases=tuple(
+            jnp.array([value], dtype=jnp.float32) for value in (maximum, -maximum, maximum)
+        ),
+    )
+    state = replace(
+        initial,
+        learner_state=replace(initial.learner_state, head_params=constant_heads),
+    )
+
+    prediction = step8_ensemble_predict(
+        model,
+        [state] * members,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+    )
+
+    np.testing.assert_array_equal(float(prediction.mean_reward), np.float32(maximum))
+    np.testing.assert_array_equal(
+        np.asarray(prediction.mean_next_observation),
+        np.array([-maximum, maximum], dtype=np.float32),
+    )
+    np.testing.assert_equal(float(prediction.reward_disagreement), 0.0)
+    np.testing.assert_equal(float(prediction.total_disagreement), 0.0)
+
+
 def test_step8_ensemble_prediction_rejects_empty_state_list() -> None:
     cfg = Step8WorldModelConfig(observation_dim=2, n_actions=2)
     model = make_step8_world_model(cfg)
