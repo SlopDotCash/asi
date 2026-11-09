@@ -239,32 +239,53 @@ def _compensated_mean(values: NDArray[np.float64], *, name: str) -> float:
     return result
 
 
-# Pairwise ``np.sum`` can lose a residual of size about ``n * eps * sum(|x|)``.
-# Columns whose naive total is that small relative to the absolute mass use
-# ``_compensated_mean`` instead. Typical traces stay on the vectorized path.
-_COMPENSATED_MEAN_ABS_SLACK = 32.0
-
-
 def _compensated_mean_along_axis(
     values: NDArray[np.float64], *, axis: int, name: str
 ) -> NDArray[np.float64]:
-    """Reduce ``values`` along ``axis`` with the 1-D compensated mean as needed."""
+    """Mean along ``axis`` by a vectorized Neumaier compensated sum.
+
+    Each slice keeps a running compensation term so a small residual next to a
+    larger addend is not discarded (Neumaier's improved Kahan recurrence).
+    Absent overflow, the error in a computed sum ``ŝ`` of ``n`` terms is at
+    most about ``(2 * eps + O(n * eps ** 2)) * sum(|x|)`` — relative error
+    on the order of a few units in the last place times the condition number
+    ``sum(|x|) / |sum(x)|``, not the ``1 / 32`` worst-case relative error of
+    the earlier ``|naive| >= n * 32 * eps * sum(|x|)`` fast-path gate.
+    Columns whose running total overflows to a non-finite value fall back to
+    ``_compensated_mean`` (``math.fsum``, then exact ``Fraction``), which
+    recovers a representable finite mean such as ``mean([max, max]) == max``.
+    This is a compensated sum with that bound, not a correctly-rounded exact
+    sum for every finite input.
+    """
     work = np.moveaxis(np.asarray(values, dtype=np.float64), axis, 0)
     count = work.shape[0]
     flat = np.reshape(work, (count, -1))
+    width = flat.shape[1]
+    total = np.zeros(width, dtype=np.float64)
+    overflowed = np.zeros(width, dtype=bool)
     with np.errstate(over="ignore", invalid="ignore"):
-        naive = np.sum(flat, axis=0)
-        abs_total = np.sum(np.abs(flat), axis=0)
-    slack = count * _COMPENSATED_MEAN_ABS_SLACK * np.finfo(np.float64).eps
-    safe = np.isfinite(naive) & np.isfinite(abs_total) & (
-        np.abs(naive) >= slack * abs_total
-    )
-    means = np.empty(flat.shape[1], dtype=np.float64)
-    if bool(np.any(safe)):
-        means[safe] = naive[safe] / count
-    if not bool(np.all(safe)):
-        for index in np.flatnonzero(~safe):
-            means[int(index)] = _compensated_mean(flat[:, int(index)], name=name)
+        running = np.zeros(width, dtype=np.float64)
+        compensation = np.zeros(width, dtype=np.float64)
+        for row in range(count):
+            term = flat[row]
+            partial = running + term
+            overflowed |= ~np.isfinite(partial)
+            # Prefer the larger-magnitude addend when forming the correction
+            # so a small running sum is not lost beside a later large term.
+            use_running = np.abs(running) >= np.abs(term)
+            compensation = np.where(
+                use_running,
+                compensation + ((running - partial) + term),
+                compensation + ((term - partial) + running),
+            )
+            running = partial
+        total = running + compensation
+        overflowed |= ~np.isfinite(total)
+    means = total / count
+    if bool(np.any(overflowed)):
+        for column in np.flatnonzero(overflowed):
+            column_index = int(column)
+            means[column_index] = _compensated_mean(flat[:, column_index], name=name)
     return np.reshape(means, work.shape[1:])
 
 

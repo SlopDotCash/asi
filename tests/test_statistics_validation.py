@@ -485,6 +485,28 @@ class TestTimeseriesStatistics:
         assert lo[0] == pytest.approx(summary.ci_lower)
         assert hi[0] == pytest.approx(summary.ci_upper)
 
+    def test_column_mean_recovers_residual_old_fast_gate_accepted(self) -> None:
+        """``np.sum`` drops the 1.0 here, but the old n*32*eps gate still passed."""
+        column = np.asarray([[1e16], [1.0], [-1e16], [1024.0]], dtype=np.float64)
+        naive = float(np.sum(column))
+        abs_total = float(np.sum(np.abs(column)))
+        old_threshold = (
+            column.shape[0] * 32.0 * np.finfo(np.float64).eps * abs_total
+        )
+        assert naive == pytest.approx(1024.0)
+        assert abs(naive) >= old_threshold
+        expected = 1025.0 / 4.0
+        assert naive / float(column.shape[0]) != pytest.approx(expected)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mean, _, _ = compute_timeseries_statistics(column)
+
+        assert mean[0] == pytest.approx(expected)
+        assert mean[0] == pytest.approx(
+            compute_statistics(column.reshape(-1)).mean
+        )
+
     def test_representable_interval_survives_unrepresentable_sample_std(self) -> None:
         """Eight symmetric seeds have finite mean/CI despite an overflowing SD."""
         from scipy import stats
