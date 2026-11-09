@@ -660,23 +660,31 @@ class OffPolicyHordeLearner:
                     jnp.zeros_like(utility) for utility in state.hidden_unit_utilities
                 )
             )
-        if replacing:
-            checked_state = checked_state.replace(  # type: ignore[attr-defined]
-                trunk_traces=tuple(jnp.zeros_like(trace) for trace in state.trunk_traces),
-            )
+        # The carried trunk trace is never consumed: the wrapped learner is
+        # built with gamma=lamda=0, so each step's trunk trace is the current
+        # gradient in both trace modes. A poisoned carried trunk trace must
+        # not fail the finiteness gate (mirrors MultiHeadMLPLearner.update,
+        # which zeroes trunk traces in its checked state whenever
+        # gamma*lamda == 0).
+        checked_state = checked_state.replace(  # type: ignore[attr-defined]
+            trunk_traces=tuple(jnp.zeros_like(trace) for trace in state.trunk_traces),
+        )
         lamdas = self._horde_spec.lamdas
         # The carried trace is only consumed through its incoming-discount
         # decay, so a zero *outgoing* discount must not hide a poisoned trace.
-        head_decay_unused = jnp.all(
-            (previous_discounts == 0.0) | (jnp.asarray(lamdas, dtype=jnp.float32) == 0.0)
+        # The decay is per demon: one demon's zero incoming discount must not
+        # excuse another demon's consumed trace, and a zero-decay demon's
+        # poisoned trace must not block the demons that still learn from it.
+        head_decay_unused = (previous_discounts == 0.0) | (
+            jnp.asarray(lamdas, dtype=jnp.float32) == 0.0
         )
         checked_state = checked_state.replace(  # type: ignore[attr-defined]
             head_traces=tuple(
                 (
-                    jnp.where(head_decay_unused, jnp.zeros_like(old_w), old_w),
-                    jnp.where(head_decay_unused, jnp.zeros_like(old_b), old_b),
+                    jnp.where(unused, jnp.zeros_like(old_w), old_w),
+                    jnp.where(unused, jnp.zeros_like(old_b), old_b),
                 )
-                for old_w, old_b in state.head_traces
+                for (old_w, old_b), unused in zip(state.head_traces, head_decay_unused, strict=True)
             )
         )
         source_state_finite = _floating_tree_is_finite(checked_state) & history_valid
