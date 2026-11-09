@@ -646,8 +646,10 @@ def _action_world_model_state_is_valid(
     finite_bounds = (
         jnp.all(jnp.isfinite(state.observation_min))
         & jnp.all(jnp.isfinite(state.observation_max))
+        & jnp.all(state.observation_min <= state.observation_max)
         & jnp.isfinite(state.reward_min)
         & jnp.isfinite(state.reward_max)
+        & (state.reward_min <= state.reward_max)
     )
     empty_bounds = (
         (state.step_count == 0)
@@ -879,9 +881,18 @@ class ActionConditionedWorldModel:
         reward_arr = _float32_operand("reward", reward, ())
         discount_arr = _float32_operand("discount", discount, ())
         obs_scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
+        raw_delta = next_obs - obs
+        _, scale_exp = jnp.frexp(obs_scale)
+        half_delta = jnp.ldexp(next_obs, -1) - jnp.ldexp(obs, -1)
+        half_scale = jnp.ldexp(obs_scale, -1)
+        scaled_delta = jnp.where(
+            jnp.isinf(raw_delta) & jnp.isfinite(next_obs) & jnp.isfinite(obs),
+            jnp.ldexp(half_delta, -scale_exp) / jnp.ldexp(half_scale, -scale_exp),
+            raw_delta / obs_scale,
+        )
         normalized_delta = jnp.where(
             self._config.predict_delta,
-            (next_obs - obs) / obs_scale,
+            scaled_delta,
             next_obs / obs_scale,
         )
         reward_target = jnp.reshape(
@@ -920,16 +931,25 @@ class ActionConditionedWorldModel:
             decoded_next_observation = observation_head * obs_scale
 
         has_bounds = state.step_count > 0
-        low = state.observation_min - self._config.observation_clip_margin
-        high = state.observation_max + self._config.observation_clip_margin
+        f32_max = jnp.asarray(float(np.finfo(np.float32).max), dtype=jnp.float32)
+        low = jnp.maximum(
+            state.observation_min - self._config.observation_clip_margin, -f32_max
+        )
+        high = jnp.minimum(
+            state.observation_max + self._config.observation_clip_margin, f32_max
+        )
         clipped_next = jnp.clip(decoded_next_observation, low, high)
         next_observation = jnp.where(
             has_bounds, clipped_next, decoded_next_observation
         )
 
         raw_reward = raw_predictions[self._config.observation_dim] * self._config.reward_scale
-        reward_low = state.reward_min - self._config.observation_clip_margin
-        reward_high = state.reward_max + self._config.observation_clip_margin
+        reward_low = jnp.maximum(
+            state.reward_min - self._config.observation_clip_margin, -f32_max
+        )
+        reward_high = jnp.minimum(
+            state.reward_max + self._config.observation_clip_margin, f32_max
+        )
         clipped_reward = jnp.clip(raw_reward, reward_low, reward_high)
         reward = jnp.where(has_bounds, clipped_reward, raw_reward)
 
@@ -996,6 +1016,14 @@ class ActionConditionedWorldModel:
         next_observation: Array | None = None,
     ) -> WorldModelUpdateResult:
         """Update from one real transition."""
+        obs_dim = self._config.observation_dim
+        _preflight_world_model_update_working_set(
+            observation_dim=obs_dim,
+            action_feature_dim=self.input_dim - obs_dim,
+            hidden_sizes=self._config.hidden_sizes,
+            n_heads=self.n_heads,
+            outer_state_scalars=2 * obs_dim + 4,
+        )
         if next_observation is None:
             discount = jnp.asarray(self._config.gamma, dtype=jnp.float32)
             next_observation = discount_or_next_observation
@@ -1500,13 +1528,34 @@ class OneStepWorldModel:
             )
         return _float32_operand("action", action, (self._config.action_dim,))
 
-    @functools.partial(jax.jit, static_argnums=(0,))
-    def input_features(self, observation: Array, action: Array) -> Array:
-        """Return ``concat(observation, encoded_action)``."""
+    def _safe_input_features(
+        self,
+        observation: Array,
+        action: Array,
+    ) -> tuple[Array, Bool[Array, ""], Array]:
+        """Build finite internal operands and return their traced validity."""
         obs = _float32_operand(
             "observation", observation, (self._config.observation_dim,)
         )
-        return jnp.concatenate([obs, self.encode_action(action)], axis=0)
+        encoded_action = self.encode_action(action)
+        features_valid = jnp.all(jnp.isfinite(obs)) & jnp.all(
+            jnp.isfinite(encoded_action)
+        )
+        safe_obs = jnp.where(features_valid, obs, jnp.zeros_like(obs))
+        safe_action = jnp.where(
+            features_valid, encoded_action, jnp.zeros_like(encoded_action)
+        )
+        return jnp.concatenate([safe_obs, safe_action], axis=0), features_valid, safe_obs
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def input_features(self, observation: Array, action: Array) -> Array:
+        """Return ``concat(observation, encoded_action)``, or NaN on invalid operands."""
+        features, features_valid, _ = self._safe_input_features(observation, action)
+        return jnp.where(
+            features_valid,
+            features,
+            jnp.full_like(features, jnp.nan),
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def targets(self, observation: Array, reward: Array, next_observation: Array) -> Array:
@@ -1534,22 +1583,31 @@ class OneStepWorldModel:
         action: Array,
     ) -> WorldModelPrediction:
         """Predict reward and next observation."""
-        obs = _float32_operand(
-            "observation", observation, (self._config.observation_dim,)
+        features, features_valid, safe_obs = self._safe_input_features(
+            observation, action
         )
-        raw_predictions = self._learner.predict(
-            state.learner_state,
-            self.input_features(obs, action),
-        )
+        raw_predictions = self._learner.predict(state.learner_state, features)
         reward = raw_predictions[0]
         obs_prediction = raw_predictions[1:]
         next_observation = (
-            obs + obs_prediction if self._config.predict_delta else obs_prediction
+            safe_obs + obs_prediction if self._config.predict_delta else obs_prediction
         )
         return WorldModelPrediction(
-            next_observation=next_observation,
-            reward=reward,
-            raw_predictions=raw_predictions,
+            next_observation=jnp.where(
+                features_valid,
+                next_observation,
+                jnp.full_like(next_observation, jnp.nan),
+            ),
+            reward=jnp.where(
+                features_valid,
+                reward,
+                jnp.asarray(jnp.nan, dtype=jnp.float32),
+            ),
+            raw_predictions=jnp.where(
+                features_valid,
+                raw_predictions,
+                jnp.full_like(raw_predictions, jnp.nan),
+            ),
             discount=jnp.array(jnp.nan, dtype=jnp.float32),
         )
 
@@ -1563,6 +1621,13 @@ class OneStepWorldModel:
         next_observation: Array,
     ) -> WorldModelUpdateResult:
         """Update from one real transition."""
+        _preflight_world_model_update_working_set(
+            observation_dim=self._config.observation_dim,
+            action_feature_dim=self._action_feature_dim,
+            hidden_sizes=self._config.hidden_sizes,
+            n_heads=self._config.observation_dim + 1,
+            outer_state_scalars=1,
+        )
         observation = _float32_operand(
             "observation", observation, (self._config.observation_dim,)
         )
@@ -1588,11 +1653,18 @@ class OneStepWorldModel:
                 action_arr,
                 jnp.zeros_like(action_arr),
             )
-        prediction = self.predict(state, observation, safe_action)
-        targets = self.targets(observation, reward, next_observation)
+        obs_valid = jnp.all(jnp.isfinite(observation))
+        inputs_valid = obs_valid & action_valid
+        safe_obs = jnp.where(
+            inputs_valid,
+            observation,
+            jnp.zeros_like(observation),
+        )
+        prediction = self.predict(state, safe_obs, safe_action)
+        targets = self.targets(safe_obs, reward, next_observation)
         learner_result = self._learner.update(
             state.learner_state,
-            self.input_features(observation, safe_action),
+            self.input_features(safe_obs, safe_action),
             targets,
         )
         next_obs = next_observation
@@ -1618,7 +1690,7 @@ class OneStepWorldModel:
             & ~jnp.isinf(prediction_error)
         )
         update_applied = (
-            action_valid
+            inputs_valid
             & learner_result.update_applied
             & floating_tree_is_finite(state)
             & (state.step_count.shape == ())
