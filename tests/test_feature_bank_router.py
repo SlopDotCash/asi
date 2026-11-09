@@ -760,3 +760,48 @@ def test_router_resource_budget_keeps_host_only_consumer_counts_unbounded() -> N
     assert budget.consumer_total_scalars > 2**31
     assert budget.consumer_state_nbytes > 2**31
     assert all(type(value) is int for value in budget.to_dict().values())
+
+
+@pytest.mark.unit
+def test_router_rejects_narrowed_int64_counters_and_sequence_descriptor_wrapping() -> None:
+    router = _router()
+    state = router.init(_OLD)
+    consumers = _consumers()
+
+    # Without source_dtype checking on counters, np.int64(2**32 + 1) narrows to int32(1).
+    wrapped_counter_state = dataclasses.replace(
+        state,
+        route_count=np.int64(2**32 + 1),  # type: ignore[arg-type]
+    )
+    with pytest.raises(TypeError, match="state.route_count must have dtype int32"):
+        router.route(wrapped_counter_state, consumers, _NEW, feature_axes=_feature_axes())
+
+    wrapped_gen_state = dataclasses.replace(
+        state,
+        generation_count=2**32,  # type: ignore[arg-type]
+    )
+    with pytest.raises(TypeError, match="state.generation_count must have dtype int32"):
+        router.route(wrapped_gen_state, consumers, _NEW, feature_axes=_feature_axes())
+
+    # Without sequence int32 bounds checking, [[2**32, 1], ...] wraps mod 2**32 to [[0, 1], ...].
+    wrapped_descriptors = [[2**32, 1], [0, 2], [1, 3], [-1, -1]]
+    with pytest.raises(TypeError, match="new_descriptors must have dtype int32"):
+        router.route(
+            state,
+            consumers,
+            wrapped_descriptors,  # type: ignore[arg-type]
+            feature_axes=_feature_axes(),
+        )
+
+    # Key spoofing in from_config
+    payload = router.to_config()
+    spoofed_key_payload = {
+        (_StringSubclass(k) if k == "type" else k): v for k, v in payload.items()
+    }
+    with pytest.raises(ValueError, match="keys must be exact strings"):
+        FeatureBankRouterConfig.from_config(spoofed_key_payload)
+
+    with pytest.raises(TypeError, match="config must be a FeatureBankRouterConfig"):
+        FeatureBankRouter(object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="state must be a FeatureBankRouterState"):
+        router.route(object(), consumers, _NEW)  # type: ignore[arg-type]
