@@ -1379,9 +1379,16 @@ class AlbertaPipeline:
         if self._config.control_mode == "horde_ac":
             ac = cast(HordeActorCriticAgent, self._control)
             ac_state = ac.init(self.feature_dim, control_key)
+            critic_birth_timestamp = ac_state.critic_state.birth_timestamp
+            critic_uptime_s = ac_state.critic_state.uptime_s
             ac_state, _action, _probs = ac.start(ac_state, initial_features)
-            horde_state = ac_state.critic_state
-            control_state = ac_state
+            horde_state = ac_state.critic_state.replace(  # type: ignore[attr-defined]
+                birth_timestamp=critic_birth_timestamp,
+                uptime_s=critic_uptime_s,
+            )
+            control_state = ac_state.replace(  # type: ignore[attr-defined]
+                critic_state=horde_state
+            )
         else:
             control_state = init_step4_state(
                 self._control,
@@ -1656,6 +1663,36 @@ class AlbertaPipeline:
             lambda: proposed_state,
             lambda: state,
         )
+        next_horde = next_state.horde_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=state.horde_state.birth_timestamp,
+            uptime_s=state.horde_state.uptime_s,
+        )
+        if self._config.control_mode == "horde_ac":
+            next_control: SARSAState | HordeActorCriticState = cast(
+                HordeActorCriticState, next_state.control_state
+            ).replace(  # type: ignore[attr-defined]
+                critic_state=next_horde
+            )
+        else:
+            sarsa_in = cast(SARSAState, state.control_state)
+            sarsa_out = cast(SARSAState, next_state.control_state)
+            next_control = sarsa_out.replace(
+                learner_state=sarsa_out.learner_state.replace(
+                    birth_timestamp=sarsa_in.learner_state.birth_timestamp,
+                    uptime_s=sarsa_in.learner_state.uptime_s,
+                )
+            )
+        next_upgd = next_state.upgd_state
+        if next_upgd is not None and state.upgd_state is not None:
+            next_upgd = next_upgd.replace(  # type: ignore[attr-defined]
+                birth_timestamp=state.upgd_state.birth_timestamp,
+                uptime_s=state.upgd_state.uptime_s,
+            )
+        next_state = next_state.replace(  # type: ignore[attr-defined]
+            upgd_state=next_upgd,
+            horde_state=next_horde,
+            control_state=next_control,
+        )
         return AlbertaPipelineStepResult(
             state=next_state,
             features=jnp.where(transaction_applied, features, jnp.zeros_like(features)),
@@ -1841,7 +1878,7 @@ class AlbertaPipeline:
             control_td_errors,
         ) = outputs
         elapsed = time.time() - t0
-        # Keep host-only Horde clocks out of the device scan's scalar narrowing.
+        # Keep host-only clocks out of the device scan's scalar narrowing.
         final_horde = final_state.horde_state.replace(  # type: ignore[attr-defined]
             birth_timestamp=state.horde_state.birth_timestamp,
             uptime_s=state.horde_state.uptime_s + elapsed,
@@ -1853,8 +1890,29 @@ class AlbertaPipeline:
             ).replace(  # type: ignore[attr-defined]
                 critic_state=final_horde
             )
+        else:
+            sarsa_in = cast(SARSAState, state.control_state)
+            sarsa_out = cast(SARSAState, final_control)
+            final_control = sarsa_out.replace(
+                learner_state=sarsa_out.learner_state.replace(
+                    birth_timestamp=sarsa_in.learner_state.birth_timestamp,
+                    uptime_s=sarsa_in.learner_state.uptime_s,
+                )
+            )
+        final_upgd = final_state.upgd_state
+        if final_upgd is not None and state.upgd_state is not None:
+            final_upgd = final_upgd.replace(  # type: ignore[attr-defined]
+                birth_timestamp=state.upgd_state.birth_timestamp,
+                uptime_s=(
+                    state.upgd_state.uptime_s + elapsed
+                    if use_upgd_targets
+                    else state.upgd_state.uptime_s
+                ),
+            )
         final_state = final_state.replace(  # type: ignore[attr-defined]
-            horde_state=final_horde, control_state=final_control
+            upgd_state=final_upgd,
+            horde_state=final_horde,
+            control_state=final_control,
         )
         return AlbertaPipelineArrayResult(
             state=final_state,
