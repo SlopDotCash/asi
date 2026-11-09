@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import functools
 import operator
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -365,9 +366,23 @@ class HistoryFeatureExtractor:
 
         # EMA decay per trace row
         decay = jnp.asarray(self._decay_rates, dtype=jnp.float32)[:, None]
+        one_minus_decay = 1.0 - decay
         # decay=0 times an inf stored trace is 0*inf = NaN. Skip that product.
         carried = jnp.where(decay == 0.0, jnp.zeros_like(state.traces), decay * state.traces)
-        proposed_traces = carried + (1.0 - decay) * obs_tracked[None, :]
+        contrib = one_minus_decay * obs_tracked[None, :]
+        proposed_traces = carried + contrib
+        scaled_carried = jnp.where(
+            decay == 0.0,
+            jnp.zeros_like(state.traces),
+            decay * jnp.ldexp(state.traces, 64),
+        )
+        scaled_contrib = one_minus_decay * jnp.ldexp(obs_tracked[None, :], 64)
+        rescaled_traces = jnp.ldexp(scaled_carried + scaled_contrib, -64)
+        underflowed = (
+            ((decay != 0.0) & (state.traces != 0.0) & (carried == 0.0))
+            | ((obs_tracked[None, :] != 0.0) & (contrib == 0.0))
+        ) & jnp.isfinite(rescaled_traces)
+        proposed_traces = jnp.where(underflowed, rescaled_traces, proposed_traces)
         # Equal inputs are an EMA fixed point; intermediate products may flush to zero.
         proposed_traces = jnp.where(
             state.traces == obs_tracked[None, :], state.traces, proposed_traces
@@ -397,28 +412,31 @@ class HistoryFeatureExtractor:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> HistoryFeatureExtractor:
+    def from_config(cls, config: Mapping[str, Any]) -> HistoryFeatureExtractor:
         """Reconstruct from config dict."""
-        config = dict(config)
-        if config.pop("type", None) != "HistoryFeatureExtractor":
+        if not issubclass(type(config), Mapping):
+            raise ValueError("config must be a mapping")
+        try:
+            payload = dict(config)
+        except Exception as error:
+            raise ValueError("config must be a readable mapping") from error
+        if any(type(key) is not str for key in payload):
+            raise ValueError("config keys must be strings")
+        if payload.pop("type", None) != "HistoryFeatureExtractor":
             raise ValueError("type must be 'HistoryFeatureExtractor'")
-        raw_rates = config["decay_rates"]
-        if type(raw_rates) is list:
-            if len(raw_rates) > _MAX_HISTORY_DECAY_RATES:
+        allowed_keys = {"raw_dim", "decay_rates", "channels", "include_raw"}
+        if "raw_dim" not in payload or not set(payload).issubset(allowed_keys):
+            raise ValueError("config has missing or unsupported fields")
+        if "decay_rates" in payload and type(payload["decay_rates"]) is list:
+            if len(payload["decay_rates"]) > _MAX_HISTORY_DECAY_RATES:
                 raise ValueError(
                     f"decay_rates must contain at most {_MAX_HISTORY_DECAY_RATES} rates"
                 )
-            raw_rates = tuple(raw_rates)
-        raw_channels = config["channels"]
-        if type(raw_channels) is list:
-            if len(raw_channels) > _MAX_HISTORY_CHANNELS:
+            payload["decay_rates"] = tuple(payload["decay_rates"])
+        if "channels" in payload and type(payload["channels"]) is list:
+            if len(payload["channels"]) > _MAX_HISTORY_CHANNELS:
                 raise ValueError(
                     f"channels must contain at most {_MAX_HISTORY_CHANNELS} indices"
                 )
-            raw_channels = tuple(raw_channels)
-        return cls(
-            raw_dim=config["raw_dim"],
-            decay_rates=raw_rates,
-            channels=raw_channels,
-            include_raw=config["include_raw"],
-        )
+            payload["channels"] = tuple(payload["channels"])
+        return cls(**payload)
