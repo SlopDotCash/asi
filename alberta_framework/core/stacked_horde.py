@@ -134,6 +134,8 @@ def _require_positive_normal_float32_step_size(value: object) -> float:
 def _importance_ratio_operand(value: object) -> Array:
     """Reject exact host negatives before float32 narrowing can erase their sign."""
     actual_type = type(value)
+    if actual_type is bool or actual_type is np.bool_:
+        raise TypeError("rho must have a real numeric dtype")
     if any(actual_type is trusted_type for trusted_type in _TRUSTED_STEP_SIZE_TYPES):
         try:
             numerator, _, narrowed = round_real_to_float32_with_ratio(cast(Real, value))
@@ -142,7 +144,106 @@ def _importance_ratio_operand(value: object) -> Array:
         if numerator < 0:
             raise ValueError("rho must be non-negative")
         return jnp.asarray(narrowed, dtype=jnp.float32)
-    return jnp.asarray(value, dtype=jnp.float32)
+    if isinstance(value, np.ndarray):
+        if value.dtype == np.bool_ or np.issubdtype(value.dtype, np.complexfloating):
+            raise TypeError("rho must have a real numeric dtype")
+        narrowed_np = value.astype(np.float32)
+        if np.issubdtype(value.dtype, np.number) and value.dtype != np.float32:
+            underflowed_neg = (value < 0) & (narrowed_np == 0.0)
+            if np.any(underflowed_neg):
+                narrowed_np = np.where(
+                    underflowed_neg,
+                    np.float32(-_FLOAT32_MIN_NORMAL),
+                    narrowed_np,
+                )
+        return jnp.asarray(narrowed_np, dtype=jnp.float32)
+    raw = jnp.asarray(value)
+    if raw.dtype == jnp.bool_ or jnp.issubdtype(raw.dtype, jnp.complexfloating):
+        raise TypeError("rho must have a real numeric dtype")
+    return raw.astype(jnp.float32)
+
+
+def _skip_zero_scale(scale: Array, value: Array) -> Array:
+    """Multiply scale * value while mapping scale == 0 to exact zero before product."""
+    safe_value = jnp.where(scale == 0.0, jnp.zeros_like(value), value)
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * safe_value)
+
+
+def _finite_three_factor_step(
+    step_size: float,
+    masked_delta: Array,
+    proposed_traces: Array,
+) -> Array:
+    """Compute step_size * masked_delta * proposed_traces without premature overflow/underflow."""
+    alpha = jnp.asarray(step_size, dtype=jnp.float32)
+    zero_mask = (alpha == 0.0) | (masked_delta == 0.0) | (proposed_traces == 0.0)
+    safe_traces = jnp.where(zero_mask, jnp.zeros_like(proposed_traces), proposed_traces)
+    safe_delta = jnp.where(zero_mask, jnp.zeros_like(masked_delta), masked_delta)
+    direct = (alpha * safe_delta) * safe_traces
+    min_normal = jnp.asarray(_FLOAT32_MIN_NORMAL, dtype=jnp.float32)
+    needs_rescale = (~zero_mask) & (
+        (~jnp.isfinite(direct)) | (jnp.abs(direct) < min_normal)
+    )
+
+    def _rescale() -> Array:
+        m_a, e_a = jnp.frexp(alpha)
+        m_b, e_b = jnp.frexp(safe_delta)
+        m_c, e_c = jnp.frexp(safe_traces)
+        prod_m = (m_a * m_b) * m_c
+        total_e = (
+            e_a.astype(jnp.int32)
+            + e_b.astype(jnp.int32)
+            + e_c.astype(jnp.int32)
+        )
+        step1 = jnp.clip(total_e, -126, 127)
+        rem1 = total_e - step1
+        step2 = jnp.clip(rem1, -126, 127)
+        rem2 = rem1 - step2
+        scaled = jnp.ldexp(jnp.ldexp(jnp.ldexp(prod_m, step1), step2), rem2)
+        return jnp.where(needs_rescale, scaled, direct)
+
+    return jnp.where(
+        zero_mask,
+        jnp.zeros_like(proposed_traces),
+        jax.lax.cond(jnp.any(needs_rescale), _rescale, lambda: direct),
+    )
+
+
+def _finite_cancelling_matvec(weights: Array, features: Array) -> Array:
+    """Compute weights @ features, recovering finite cancelling rows on overflow."""
+    direct = weights @ features
+    can_recover = (
+        ~jnp.isfinite(direct)
+        & jnp.all(jnp.isfinite(weights), axis=1)
+        & jnp.all(jnp.isfinite(features))
+    )
+
+    def _recover() -> Array:
+        _, w_exp = jnp.frexp(weights)
+        _, x_exp = jnp.frexp(features)
+        active = (weights != 0.0) & (features != 0.0)
+        pair_exp = jnp.where(
+            active,
+            w_exp.astype(jnp.int32) + x_exp[None, :].astype(jnp.int32),
+            jnp.asarray(-1024, dtype=jnp.int32),
+        )
+        max_pair_exp = jnp.max(pair_exp, axis=1, keepdims=True)
+        headroom = int(math.ceil(math.log2(max(weights.shape[1], 1)))) + 2
+        total_shift = jnp.maximum(max_pair_exp + headroom - 126, 0)
+        half_shift = total_shift // 2
+        rem_shift = total_shift - half_shift
+        w_scaled = jnp.where(active, jnp.ldexp(weights, -half_shift), 0.0)
+        x_scaled = jnp.where(active, jnp.ldexp(features[None, :], -rem_shift), 0.0)
+        total_scaled = jnp.sum(w_scaled * x_scaled, axis=1)
+        shift_vec = total_shift[:, 0]
+        step1 = jnp.clip(shift_vec, -126, 127)
+        rem1 = shift_vec - step1
+        step2 = jnp.clip(rem1, -126, 127)
+        rem2 = rem1 - step2
+        recovered = jnp.ldexp(jnp.ldexp(jnp.ldexp(total_scaled, step1), step2), rem2)
+        return jnp.where(can_recover, recovered, direct)
+
+    return cast(Array, jax.lax.cond(jnp.any(can_recover), _recover, lambda: direct))
 
 
 _INT32_MAX = 2**31 - 1
@@ -498,7 +599,7 @@ class StackedLinearHorde:
             raise ValueError("features must match configured feature_dim")
         if features.dtype != jnp.dtype(jnp.float32):
             raise TypeError("features must have dtype float32")
-        return state.weights @ features
+        return _finite_cancelling_matvec(state.weights, features)
 
     def update(
         self,
@@ -553,8 +654,8 @@ class StackedLinearHorde:
         rho_vec = jnp.broadcast_to(_importance_ratio_operand(rho), (cfg.n_demons,))
         rho_valid = jnp.isfinite(rho_vec) & (rho_vec >= 0.0)
 
-        v = state.weights @ features  # (n_demons,)
-        v_next = state.weights @ next_features
+        v = _finite_cancelling_matvec(state.weights, features)  # (n_demons,)
+        v_next = _finite_cancelling_matvec(state.weights, next_features)
         # gamma=0 must not multiply an inf bootstrap (0*inf).
         bootstrap = jnp.where(self._gammas == 0.0, 0.0, self._gammas * v_next)
         cumulant_bootstrap = cumulants + bootstrap
@@ -580,11 +681,15 @@ class StackedLinearHorde:
         decayed_only = carried
         safe_rho = jnp.where(rho_valid, rho_vec, 0.0)
         proposed_traces = jnp.where(
-            active[:, None], safe_rho[:, None] * accumulated, decayed_only
+            active[:, None],
+            _skip_zero_scale(safe_rho[:, None], accumulated),
+            decayed_only,
         )
 
         masked_delta = jnp.where(channel_valid, td_errors, 0.0)
-        proposed_weights = state.weights + cfg.step_size * masked_delta[:, None] * proposed_traces
+        proposed_weights = state.weights + _finite_three_factor_step(
+            cfg.step_size, masked_delta[:, None], proposed_traces
+        )
         source_weights_finite = jnp.all(jnp.isfinite(state.weights))
         traces_needed = decay[:, 0] != 0.0
         traces_usable = (~traces_needed) | jnp.all(jnp.isfinite(state.traces), axis=1)
