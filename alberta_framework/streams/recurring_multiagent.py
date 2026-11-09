@@ -1011,6 +1011,23 @@ def migrate_legacy_recurring_two_agent_state(
     return migrated
 
 
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        right_dict = cast(dict[str, object], right)
+        return left.keys() == right_dict.keys() and all(
+            _exact_json_equal(value, right_dict[key]) for key, value in left.items()
+        )
+    if type(left) is list:
+        right_list = cast(list[object], right)
+        return len(left) == len(right_list) and all(
+            _exact_json_equal(item, other) for item, other in zip(left, right_list, strict=True)
+        )
+    return left == right
+
+
 def save_recurring_two_agent_checkpoint(
     world: RecurringTwoAgentWorld,
     state: RecurringTwoAgentState,
@@ -1070,6 +1087,6 @@ def load_recurring_two_agent_checkpoint(
     world._require_state_contract(state)
     if not bool(jax.device_get(world.state_is_valid(state))):
         raise ValueError("restored recurring two-agent state is invalid")
-    if world.resource_budget.to_dict() != metadata.get("memory_accounting"):
+    if not _exact_json_equal(world.resource_budget.to_dict(), metadata.get("memory_accounting")):
         raise ValueError("recurring two-agent checkpoint resource contract does not match")
     return world, state

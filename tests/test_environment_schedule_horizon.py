@@ -11,6 +11,10 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
+from alberta_framework.core.checkpoints import (
+    load_checkpoint_metadata,
+    save_checkpoint,
+)
 from alberta_framework.streams.gauntlet import (
     LIFETIME_GAUNTLET_CLOCK_DELTA_NBYTES,
     LIFETIME_GAUNTLET_CONFIG_SCHEMA,
@@ -307,3 +311,25 @@ def test_lifetime_schema_migration_resources_and_checkpoint(tmp_path) -> None:
     restored_stream, restored = load_lifetime_gauntlet_checkpoint(path)
     assert restored_stream.to_config() == payload
     chex.assert_trees_all_equal(restored, state)
+
+
+def test_recurring_two_agent_checkpoint_rejects_float_aliased_accounting(
+    tmp_path,
+) -> None:
+    """A float-aliased memory-accounting scalar must not load as an int."""
+    world = RecurringTwoAgentWorld(context_length=5, nuisance_dim=1)
+    state = world.init(jr.key(7))
+    original_path = tmp_path / "original"
+    save_recurring_two_agent_checkpoint(world, state, original_path)
+    metadata = load_checkpoint_metadata(original_path)
+    load_recurring_two_agent_checkpoint(original_path)
+
+    tampered_accounting = dict(metadata["memory_accounting"])
+    tampered_accounting["state_nbytes"] = float(tampered_accounting["state_nbytes"])
+    tampered_metadata = dict(metadata)
+    tampered_metadata["memory_accounting"] = tampered_accounting
+    tampered_path = tmp_path / "tampered"
+    save_checkpoint(state, tampered_path, metadata=tampered_metadata)
+
+    with pytest.raises(ValueError, match="resource contract"):
+        load_recurring_two_agent_checkpoint(tampered_path)
