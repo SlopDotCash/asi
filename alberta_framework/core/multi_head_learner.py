@@ -245,28 +245,35 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
 
 def _finite_layer_norm(values: Array) -> Array:
     """Preserve parameterless layer norm when only its reductions overflow."""
-    mean = jnp.mean(values)
-    variance = jnp.var(values)
-    direct = (values - mean) / jnp.sqrt(variance + 1e-5)
+    stopped = jax.lax.stop_gradient(values)
     reduction_overflowed = (
-        (~jnp.isfinite(mean) | ~jnp.isfinite(variance))
-        & jnp.all(jnp.isfinite(values))
+        (~jnp.isfinite(jnp.mean(stopped)) | ~jnp.isfinite(jnp.var(stopped)))
+        & jnp.all(jnp.isfinite(stopped))
     )
+    safe_values = jnp.where(reduction_overflowed, jnp.zeros_like(values), values)
+    mean = jnp.mean(safe_values)
+    variance = jnp.var(safe_values)
+    direct = (safe_values - mean) / jnp.sqrt(variance + 1e-5)
 
     def scaled_layer_norm(finite_values: Array) -> Array:
-        scale = jnp.max(jnp.abs(finite_values))
+        scale = jnp.max(jnp.abs(jax.lax.stop_gradient(finite_values)))
         _, exponent = jnp.frexp(scale)
         scaled = jnp.ldexp(finite_values, -exponent)
         centered = scaled - jnp.mean(scaled)
         scaled_variance = jnp.mean(centered * centered)
-        positive_variance = scaled_variance > 0.0
+        stopped_scaled = jax.lax.stop_gradient(scaled)
+        positive_variance = (jnp.max(stopped_scaled) > jnp.min(stopped_scaled)) & (
+            jax.lax.stop_gradient(scaled_variance) > 0.0
+        )
         safe_variance = jnp.where(
             positive_variance,
             scaled_variance,
             jnp.ones_like(scaled_variance),
         )
-        contrast = centered * jax.lax.rsqrt(safe_variance)
-        constant = jnp.ldexp(centered, exponent) * jax.lax.rsqrt(
+        safe_centered = jnp.where(positive_variance, centered, jnp.zeros_like(centered))
+        contrast = safe_centered * jax.lax.rsqrt(safe_variance)
+        unscaled_zero = finite_values - jax.lax.stop_gradient(finite_values)
+        constant = (unscaled_zero - jnp.mean(unscaled_zero)) * jax.lax.rsqrt(
             jnp.asarray(1e-5, dtype=finite_values.dtype)
         )
         return jnp.where(positive_variance, contrast, constant)
