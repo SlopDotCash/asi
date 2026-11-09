@@ -877,3 +877,47 @@ def test_rmse_finite_large_directional_derivative(n_steps: int, direction: float
         np.testing.assert_allclose(
             np.asarray(derivative), np.asarray([direction], dtype=np.float32), rtol=5e-6
         )
+
+
+def test_rmse_and_running_rmse_preserve_representable_opposite_sign_difference() -> None:
+    predictions = jnp.asarray([[2.0e38], [0.0]], dtype=jnp.float32)
+    returns = jnp.asarray([[-2.0e38], [0.0]], dtype=jnp.float32)
+    expected_rmse = float(np.float64(4.0e38) / np.sqrt(2.0))
+
+    with jax.debug_infs(True):
+        rmse = per_horizon_rmse(predictions, returns)
+        running = per_horizon_running_rmse(predictions, returns, window_size=2)
+
+    assert bool(jnp.isfinite(rmse[0]))
+    assert float(rmse[0]) == pytest.approx(expected_rmse, rel=2e-6)
+    assert bool(jnp.isfinite(running[1, 0]))
+    assert float(running[1, 0]) == pytest.approx(expected_rmse, rel=2e-6)
+
+    grad_rmse = jax.jit(jax.grad(lambda p: per_horizon_rmse(p, returns)[0]))(predictions)
+    grad_running = jax.jit(
+        jax.grad(lambda p: per_horizon_running_rmse(p, returns, window_size=2)[1, 0])
+    )(predictions)
+    expected_grad = np.asarray([[1.0 / np.sqrt(2.0)], [0.0]], dtype=np.float32)
+    np.testing.assert_allclose(np.asarray(grad_rmse), expected_grad, rtol=2e-6)
+    np.testing.assert_allclose(np.asarray(grad_running), expected_grad, rtol=2e-6)
+
+
+def test_rmse_and_running_rmse_promote_integer_dtypes_and_reject_bool_complex() -> None:
+    pred_u32 = jnp.asarray([[0], [1]], dtype=jnp.uint32)
+    ret_u32 = jnp.asarray([[1], [0]], dtype=jnp.uint32)
+    np.testing.assert_allclose(
+        np.asarray(per_horizon_rmse(pred_u32, ret_u32)),
+        np.asarray([1.0], dtype=np.float32),
+    )
+    running_u32 = per_horizon_running_rmse(pred_u32, ret_u32, window_size=2)
+    assert float(running_u32[1, 0]) == pytest.approx(1.0)
+
+    for bad in (
+        jnp.asarray([[True], [False]]),
+        jnp.asarray([[1.0 + 1.0j], [0.0 + 0.0j]], dtype=jnp.complex64),
+    ):
+        with pytest.raises(ValueError):
+            per_horizon_rmse(bad, jnp.zeros((2, 1), dtype=jnp.float32))
+        with pytest.raises(ValueError):
+            per_horizon_running_rmse(bad, jnp.zeros((2, 1), dtype=jnp.float32), window_size=1)
+
