@@ -492,24 +492,30 @@ def test_predict_and_update_remain_finite_when_all_active_logits_underflow() -> 
     np.testing.assert_array_equal(updated.state.means[1, 0], far_obs)
 
 
-def test_opposite_sign_overflowing_differences_preserve_nearer_class() -> None:
+def test_small_bandwidth_logit_underflow_preserves_nearer_representable_class() -> None:
     learner = PrototypeMemoryLearner(
         PrototypeMemoryConfig(
-            feature_dim=1,
+            feature_dim=4,
             n_classes=2,
             slots_per_class=1,
             update_rate=0.5,
             novelty_threshold=float(np.finfo(np.float32).max),
-            bandwidth=1.0,
+            bandwidth=0.01,
         )
     )
     state = PrototypeMemoryState(
-        means=jnp.asarray([[[2.0e38]], [[1.8e38]]], dtype=jnp.float32),
+        means=jnp.asarray(
+            [
+                [[2.0e19, 0.0, 0.0, 0.0]],
+                [[1.5e19, 0.0, 0.0, 0.0]],
+            ],
+            dtype=jnp.float32,
+        ),
         counts=jnp.asarray([[1], [1]], dtype=jnp.int32),
         last_update=jnp.asarray([[1], [2]], dtype=jnp.int32),
         step_count=jnp.asarray(2, dtype=jnp.int32),
     )
-    obs = jnp.asarray([-2.0e38], dtype=jnp.float32)
+    obs = jnp.asarray([-1.5e19, 0.0, 0.0, 0.0], dtype=jnp.float32)
     pred = learner.predict(state, obs)
     np.testing.assert_array_equal(pred, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
 
@@ -521,5 +527,6 @@ def test_opposite_sign_overflowing_differences_preserve_nearer_class() -> None:
     )
     assert float(result.metrics[1]) == 1.0
     assert bool(jnp.all(jnp.isfinite(result.state.means)))
+
 
 
