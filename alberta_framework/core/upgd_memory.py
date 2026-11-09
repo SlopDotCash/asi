@@ -247,8 +247,9 @@ def _require_int(
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
-    """Skip ``0 * inf`` so a disabled reliability EMA does not poison trackers."""
-    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+    """Skip ``0 * inf`` in both primal and reverse-mode autodiff."""
+    safe_value = jnp.where(scale == 0.0, jnp.zeros_like(value), value)
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * safe_value)
 
 
 def _finite_or_zero(value: Array) -> Array:
@@ -656,8 +657,12 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
 
 def _active_mse(prediction: Array, target: Array) -> Array:
     active = jnp.isfinite(target)
-    safe_target = jnp.where(active, target, 0.0)
-    squared = jnp.where(active, (prediction - safe_target) ** 2, 0.0)
+    active_error = jnp.where(
+        active,
+        jnp.where(active, prediction, 0.0) - jnp.where(active, target, 0.0),
+        0.0,
+    )
+    squared = active_error * active_error
     return jnp.sum(squared) / jnp.maximum(jnp.sum(active.astype(jnp.float32)), 1.0)
 
 
@@ -955,7 +960,9 @@ class UPGDMemoryLearner:
         memory_prediction: Array,
     ) -> Array:
         active_memory = (jnp.sum(state.memory_state.counts > 0.0) > 0).astype(jnp.float32)
-        confidence_delta = jnp.max(memory_prediction) - jnp.max(upgd_prediction)
+        max_memory = jnp.max(memory_prediction)
+        max_upgd = jnp.max(upgd_prediction)
+        confidence_delta = max_memory - max_upgd
         if self._config.reliability_decay == 0.0:
             # These prior losses still determine the prediction gate before
             # the zero-decay EMAs are overwritten.  Preserve every finite
@@ -988,14 +995,31 @@ class UPGDMemoryLearner:
             (self._config.confidence_logit_scale / scale) * confidence_delta
             + (self._config.reliability_logit_scale / scale) * reliability_delta
         )
-        recovered = state.memory_logit + jnp.asarray(scale, dtype=jnp.float32) * scaled
+        direct_recovered = state.memory_logit + jnp.asarray(scale, dtype=jnp.float32) * scaled
+        half_conf_delta = jnp.ldexp(max_memory, -1) - jnp.ldexp(max_upgd, -1)
+        half_rel_delta = jnp.ldexp(upgd_loss_ema, -1) - jnp.ldexp(memory_loss_ema, -1)
+        half_scaled = (
+            (self._config.confidence_logit_scale / scale) * half_conf_delta
+            + (self._config.reliability_logit_scale / scale) * half_rel_delta
+        )
+        half_recovered = state.memory_logit + jnp.asarray(scale, dtype=jnp.float32) * (
+            2.0 * half_scaled
+        )
+        deltas_finite = jnp.isfinite(confidence_delta) & jnp.isfinite(reliability_delta)
+        endpoints_finite = (
+            jnp.isfinite(max_memory)
+            & jnp.isfinite(max_upgd)
+            & jnp.isfinite(upgd_loss_ema)
+            & jnp.isfinite(memory_loss_ema)
+        )
+        recovered = jnp.where(deltas_finite, direct_recovered, half_recovered)
         recoverable = (
             (~jnp.isfinite(logit) | ~jnp.isfinite(terms).all())
             & jnp.isfinite(state.memory_logit)
-            & jnp.isfinite(confidence_delta) & jnp.isfinite(reliability_delta)
+            & (deltas_finite | endpoints_finite)
         )
         logit = jnp.where(recoverable, recovered, logit)
-        return active_memory * jax.nn.sigmoid(logit)
+        return _skip_zero_scale(active_memory, jax.nn.sigmoid(logit))
 
     def _blend_predictions(
         self,
