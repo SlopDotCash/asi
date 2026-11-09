@@ -1221,6 +1221,29 @@ def test_checkpoint_rejects_metadata_config_and_resource_tampering(tmp_path: Pat
         load_recurrent_latent_world_model_ensemble_checkpoint(resource_checkpoint)
 
 
+def test_checkpoint_rejects_float_aliased_resource_budget(tmp_path: Path) -> None:
+    """A float-aliased resource-budget scalar must not load as its int value."""
+    model = RecurrentLatentWorldModelEnsemble(_config())
+    state = model.init(jr.key(91))
+    source = tmp_path / "source.ckpt"
+    save_recurrent_latent_world_model_ensemble_checkpoint(model, state, source)
+
+    destination = tmp_path / "float-aliased.ckpt"
+    shutil.copytree(source, destination)
+    metadata_path = destination / "metadata" / "metadata"
+    metadata = cast(dict[str, Any], json.loads(metadata_path.read_text(encoding="utf-8")))
+    resource_budget = cast(dict[str, Any], metadata["resource_budget"])
+    resource_budget["persistent_state_bytes"] = float(
+        resource_budget["persistent_state_bytes"]
+    )
+    metadata_path.write_text(
+        json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="resource budget"):
+        load_recurrent_latent_world_model_ensemble_checkpoint(destination)
+
+
 def test_static_shape_and_dtype_contracts_fail_before_compiled_execution() -> None:
     model = RecurrentLatentWorldModelEnsemble(_config())
     state = model.init(jr.key(10))
