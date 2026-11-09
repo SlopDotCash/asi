@@ -120,7 +120,10 @@ def _strict_float32(
     actual_type = type(value)
     if actual_type not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
         raise ValueError(f"{name} must be a real scalar, not boolean")
-    normalized = float(cast(Real, value))
+    try:
+        normalized = float(cast(Real, value))
+    except OverflowError as error:
+        raise ValueError(f"{name} must be finite and float32-compatible") from error
     if not math.isfinite(normalized) or abs(normalized) > _FLOAT32_MAX:
         raise ValueError(f"{name} must be finite and float32-compatible")
     if positive and (normalized < 0.0 or (not allow_zero and normalized == 0.0)):
@@ -132,7 +135,7 @@ def _strict_float32(
         raise ValueError(f"{name} must be >= {lower}")
     if upper is not None and normalized > upper:
         raise ValueError(f"{name} must be <= {upper}")
-    return normalized
+    return 0.0 if normalized == 0.0 else normalized
 
 
 def _canonical_json_bytes(payload: object) -> bytes:
@@ -337,7 +340,9 @@ class PartnerPolicyFusionConfig:
                 name,
                 _strict_float32(getattr(self, name), name=name, lower=lower, upper=upper),
             )
-        if self.blend_net_value_threshold >= self.accept_net_value_threshold:
+        if self.blend_net_value_threshold >= self.accept_net_value_threshold or np.float32(
+            self.blend_net_value_threshold
+        ) >= np.float32(self.accept_net_value_threshold):
             raise ValueError("blend_net_value_threshold must be below accept threshold")
 
         feature_width = self.model_feature_dim
@@ -1298,15 +1303,7 @@ class PartnerPolicyFusion:
         blend_available = jnp.asarray(
             [base_allowed, option_valid, any_valid_message], dtype=jnp.bool_
         )
-        blend_score_floor = jnp.float32(
-            -max(
-                cfg.max_abs_declared_score
-                * max(cfg.base_blend_weight, cfg.option_blend_weight),
-                cfg.max_communication_cost * cfg.communication_cost_weight
-                * cfg.partner_blend_weight,
-            )
-            - 2.0
-        )
+        blend_score_floor = jnp.float32(-jnp.inf)
         blend_selected_source = jnp.argmax(
             jnp.where(blend_available, blend_scores, blend_score_floor)
         ).astype(jnp.int32)
@@ -1527,11 +1524,15 @@ class PartnerPolicyFusion:
             jnp.clip(state.armed_predicted_reliability, 0.0, 1.0),
             0.0,
         )
+        safe_assistance_value = jnp.where(
+            assistance_valid, feedback.realized_assistance_value, 0.0
+        )
         assistance_target = jnp.clip(
             0.5
             * (
-                feedback.realized_assistance_value
-                / jnp.float32(cfg.assistance_value_bound)
+                _divide_by_positive_float32_scale(
+                    safe_assistance_value, cfg.assistance_value_bound
+                )
                 + 1.0
             ),
             0.0,
@@ -1632,24 +1633,50 @@ class PartnerPolicyFusion:
         """Run a fixed-length uninterrupted decision sequence with ``lax.scan``."""
 
         length = _require_fusion_sequence_vector("decision_ids", decision_ids)
-        if (
-            decision_ids.dtype != jnp.int32
-            or event_ids.shape != (length,)
-            or event_ids.dtype != jnp.int32
-            or observation_ids.shape != (length,)
-            or observation_ids.dtype != jnp.int32
-            or context_ids.shape != (length,)
-            or context_ids.dtype != jnp.int32
-            or context_features.shape != (length, self._config.context_dim)
-            or context_features.dtype != jnp.float32
-            or base_actions.shape != (length,)
-            or base_actions.dtype != jnp.int32
-            or base_declared_scores.shape != (length,)
-            or base_declared_scores.dtype != jnp.float32
-            or safety_action_masks.shape != (length, self._config.n_actions)
-            or safety_action_masks.dtype != jnp.bool_
-        ):
-            raise ValueError("decision sequence arrays violate their fixed contract")
+        sequence_contracts: tuple[tuple[object, tuple[int, ...], Any], ...] = (
+            (decision_ids, (length,), jnp.int32),
+            (event_ids, (length,), jnp.int32),
+            (observation_ids, (length,), jnp.int32),
+            (context_ids, (length,), jnp.int32),
+            (context_features, (length, self._config.context_dim), jnp.float32),
+            (base_actions, (length,), jnp.int32),
+            (base_declared_scores, (length,), jnp.float32),
+            (safety_action_masks, (length, self._config.n_actions), jnp.bool_),
+            (option_proposals.available, (length,), jnp.bool_),
+            (option_proposals.action, (length,), jnp.int32),
+            (option_proposals.declared_score, (length,), jnp.float32),
+            (messages.available, (length, self._config.max_partners), jnp.bool_),
+            (messages.partner_id, (length, self._config.max_partners), jnp.int32),
+            (messages.observation_id, (length, self._config.max_partners), jnp.int32),
+            (messages.context_id, (length, self._config.max_partners), jnp.int32),
+            (messages.suggested_action, (length, self._config.max_partners), jnp.int32),
+            (
+                messages.declared_confidence,
+                (length, self._config.max_partners),
+                jnp.float32,
+            ),
+            (messages.rationale_reference, (length, self._config.max_partners), jnp.int32),
+            (
+                messages.provenance_reference,
+                (length, self._config.max_partners),
+                jnp.int32,
+            ),
+            (messages.communication_cost, (length, self._config.max_partners), jnp.float32),
+            (messages.issued_decision_id, (length, self._config.max_partners), jnp.int32),
+            (messages.issued_event_id, (length, self._config.max_partners), jnp.int32),
+            (
+                messages.valid_through_event_id,
+                (length, self._config.max_partners),
+                jnp.int32,
+            ),
+        )
+        for value, expected_shape, expected_dtype in sequence_contracts:
+            if (
+                not isinstance(value, jax.Array)
+                or value.shape != expected_shape
+                or value.dtype != expected_dtype
+            ):
+                raise ValueError("decision sequence arrays violate their fixed contract")
 
         def step(
             carry: PartnerPolicyFusionState,
@@ -1705,7 +1732,25 @@ class PartnerPolicyFusion:
     ) -> tuple[PartnerPolicyFusionState, PartnerFusionFeedbackResult]:
         """Run a fixed-length feedback sequence with :func:`jax.lax.scan`."""
 
-        _require_fusion_sequence_vector("feedback.available", feedback.available)
+        length = _require_fusion_sequence_vector("feedback.available", feedback.available)
+        vector_contracts = (
+            (feedback.available, jnp.bool_),
+            (feedback.decision_id, jnp.int32),
+            (feedback.executed_event_id, jnp.int32),
+            (feedback.executed_action, jnp.int32),
+            (feedback.partner_id, jnp.int32),
+            (feedback.assistance_value_available, jnp.bool_),
+            (feedback.realized_assistance_value, jnp.float32),
+            (feedback.safety_outcome_available, jnp.bool_),
+            (feedback.safety_outcome_ok, jnp.bool_),
+        )
+        for value, dtype in vector_contracts:
+            if (
+                not isinstance(value, jax.Array)
+                or value.shape != (length,)
+                or value.dtype != dtype
+            ):
+                raise ValueError("feedback sequence arrays violate their fixed contract")
 
         def step(
             carry: PartnerPolicyFusionState,
