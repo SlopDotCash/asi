@@ -242,51 +242,55 @@ def _compensated_mean(values: NDArray[np.float64], *, name: str) -> float:
 def _compensated_mean_along_axis(
     values: NDArray[np.float64], *, axis: int, name: str
 ) -> NDArray[np.float64]:
-    """Mean along ``axis`` by a vectorized Neumaier compensated sum.
+    """Mean along ``axis`` by a log-depth pairwise TwoSum cascade.
 
-    Each slice keeps a running compensation term so a small residual next to a
-    larger addend is not discarded (Neumaier's improved Kahan recurrence).
-    Absent overflow, the error in a computed sum ``ŝ`` of ``n`` terms is at
-    most about ``(2 * eps + O(n * eps ** 2)) * sum(|x|)`` — relative error
-    on the order of a few units in the last place times the condition number
-    ``sum(|x|) / |sum(x)|``, not the ``1 / 32`` worst-case relative error of
-    the earlier ``|naive| >= n * 32 * eps * sum(|x|)`` fast-path gate.
+    Each pair is combined with Knuth's TwoSum, an error-free transformation:
+    the floating-point sum ``s`` and error ``e`` satisfy ``s + e = a + b``
+    exactly in real arithmetic when the addition does not overflow. Odd-length
+    levels are padded with zero. After ``ceil(log2(n))`` vectorized passes the
+    exact sum equals the surviving total plus every recorded error term.
+    Those error terms are accumulated during the cascade and added at the end.
+
+    Absent overflow, the leftover error is only from reducing the ``O(n)``
+    error terms and from that final add. Each level pairwise-sums its
+    TwoSum residuals into a running accumulator, so the residual is on
+    the order of ``(eps + O(log(n) * eps ** 2)) * sum(|x|)``. This is not
+    a correctly-rounded exact sum for every finite input.
+
     Columns whose running total overflows to a non-finite value fall back to
     ``_compensated_mean`` (``math.fsum``, then exact ``Fraction``), which
     recovers a representable finite mean such as ``mean([max, max]) == max``.
-    This is a compensated sum with that bound, not a correctly-rounded exact
-    sum for every finite input.
     """
-    work = np.moveaxis(np.asarray(values, dtype=np.float64), axis, 0)
-    count = work.shape[0]
-    flat = np.reshape(work, (count, -1))
+    source = np.moveaxis(np.asarray(values, dtype=np.float64), axis, 0)
+    count = source.shape[0]
+    flat = np.reshape(source, (count, -1))
     width = flat.shape[1]
-    total = np.zeros(width, dtype=np.float64)
+    level = flat
     overflowed = np.zeros(width, dtype=bool)
     with np.errstate(over="ignore", invalid="ignore"):
-        running = np.zeros(width, dtype=np.float64)
-        compensation = np.zeros(width, dtype=np.float64)
-        for row in range(count):
-            term = flat[row]
-            partial = running + term
-            overflowed |= ~np.isfinite(partial)
-            # Prefer the larger-magnitude addend when forming the correction
-            # so a small running sum is not lost beside a later large term.
-            use_running = np.abs(running) >= np.abs(term)
-            compensation = np.where(
-                use_running,
-                compensation + ((running - partial) + term),
-                compensation + ((term - partial) + running),
-            )
-            running = partial
-        total = running + compensation
+        error_acc = np.zeros(width, dtype=np.float64)
+        while level.shape[0] > 1:
+            if level.shape[0] % 2 == 1:
+                level = np.concatenate(
+                    (level, np.zeros((1, width), dtype=np.float64)),
+                    axis=0,
+                )
+            even = level[0::2]
+            odd = level[1::2]
+            paired = even + odd
+            correction = paired - even
+            residual = (even - (paired - correction)) + (odd - correction)
+            overflowed |= np.any(~np.isfinite(paired) | ~np.isfinite(residual), axis=0)
+            error_acc = error_acc + np.sum(residual, axis=0)
+            level = paired
+        total = np.reshape(level, (width,)) + error_acc
         overflowed |= ~np.isfinite(total)
     means = total / count
     if bool(np.any(overflowed)):
         for column in np.flatnonzero(overflowed):
             column_index = int(column)
             means[column_index] = _compensated_mean(flat[:, column_index], name=name)
-    return np.reshape(means, work.shape[1:])
+    return np.reshape(means, source.shape[1:])
 
 
 def _bootstrap_compensated_means(
