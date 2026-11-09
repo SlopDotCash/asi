@@ -494,14 +494,25 @@ class OutOfClassPolynomialStream:
         x = self._feature_std * jr.normal(
             k_x, (self._feature_dim,), dtype=jnp.float32
         )
-        triples = (
-            x[state.triples_left]
-            * x[state.triples_middle]
-            * x[state.triples_right]
-        )
+        left = x[state.triples_left]
+        middle = x[state.triples_middle]
+        right = x[state.triples_right]
+        triples = left * middle * right
         context_idx = (state.step_count // self._context_length) % self._n_contexts
         task_weights = state.context_weights[context_idx]
-        target = task_weights @ triples + state.linear_weights @ x
+        direct = task_weights @ triples + state.linear_weights @ x
+        triple_terms = _weighted_triple_product(
+            task_weights, left, middle, right
+        )
+        linear_terms = state.linear_weights * x
+        stable = _finite_frequency_component_sum(
+            jnp.concatenate([triple_terms, linear_terms], axis=-1)
+        )
+        target = jnp.where(
+            jnp.isfinite(stable) & ~jnp.isfinite(direct),
+            stable,
+            direct,
+        )
         noise = self._noise_std * jr.normal(
             k_noise, (self._n_tasks,), dtype=jnp.float32
         )
@@ -512,6 +523,26 @@ class OutOfClassPolynomialStream:
             key=key, step_count=_saturating_step_count(state.step_count)
         )
         return timestep, new_state
+
+
+def _weighted_triple_product(
+    weight: Array,
+    left: Array,
+    middle: Array,
+    right: Array,
+) -> Array:
+    """Compute ``weight * (left * middle * right)`` without intermediate overflow."""
+    direct = weight * (left * middle * right)
+    w_m, w_e = jnp.frexp(weight)
+    l_m, l_e = jnp.frexp(left)
+    m_m, m_e = jnp.frexp(middle)
+    r_m, r_e = jnp.frexp(right)
+    stable = jnp.ldexp(
+        w_m * l_m * m_m * r_m,
+        w_e + l_e + m_e + r_e,
+    )
+    use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+    return jnp.where(use_stable, stable, direct)
 
 
 # =============================================================================
