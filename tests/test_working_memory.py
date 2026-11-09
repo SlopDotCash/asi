@@ -837,3 +837,85 @@ def test_zero_decay_does_not_multiply_inf_traces() -> None:
     )
     assert bool(result.update_applied)
     chex.assert_trees_all_close(result.state.observation_traces, obs[None, :])
+
+
+def test_gated_update_handles_opposite_sign_overflowing_innovation() -> None:
+    """Opposite-sign finite endpoints that overflow value - trace must not NaN the surprise gate."""
+    threshold = float(np.float32(2.0e38 * np.sqrt(2.0)))
+    memory = WorkingMemoryFeaturizer(
+        _minimal_config(
+            observation_decay_rates=(0.5,),
+            gated_update=True,
+            gate_threshold=threshold,
+            gate_temperature=1.0e38,
+            include_innovations=False,
+        )
+    )
+    state = memory.init().replace(  # type: ignore[attr-defined]
+        observation_traces=jnp.asarray([[-2.0e38, 0.0]], dtype=jnp.float32)
+    )
+    obs = jnp.asarray([2.0e38, 0.0], dtype=jnp.float32)
+    result = memory.step(state, obs, memory.zero_action(), memory.zero_reward())
+
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result.state)
+    chex.assert_tree_all_finite(result.features)
+    assert float(result.state.last_gate[0]) == pytest.approx(0.5, rel=1e-5)
+
+
+def test_diagnostics_avoid_nan_on_infinite_and_tiny_normal_traces() -> None:
+    """Infinite trace scale must not divide inf/inf in frexp scaling, and tiny normals keep RMS."""
+    memory = WorkingMemoryFeaturizer(
+        _minimal_config(observation_decay_rates=(0.0,))
+    )
+    tiny_normal = jnp.asarray([2.0e-38, 1.5e-38], dtype=jnp.float32)
+    state = memory.init().replace(  # type: ignore[attr-defined]
+        observation_traces=tiny_normal[None, :]
+    )
+    diagnostics = jax.jit(memory.diagnostics)(state)
+    expected_vals = np.asarray(tiny_normal, dtype=np.float64)
+    expected_rms = float(np.sqrt(np.mean(expected_vals * expected_vals)))
+    expected_norm = expected_vals / np.max(np.abs(expected_vals))
+    expected_sq = expected_norm * expected_norm
+    expected_dim = float((np.sum(expected_sq) ** 2) / np.sum(expected_sq * expected_sq))
+
+    chex.assert_tree_all_finite(diagnostics)
+    assert float(diagnostics.observation_energy) == pytest.approx(expected_rms, rel=1e-5)
+    assert float(diagnostics.effective_dimension) == pytest.approx(
+        expected_dim, rel=1e-5
+    )
+
+    inf_state = memory.init().replace(  # type: ignore[attr-defined]
+        observation_traces=jnp.asarray([[jnp.inf, 1.0]], dtype=jnp.float32)
+    )
+    inf_diag = jax.jit(memory.diagnostics)(inf_state)
+    assert bool(jnp.isinf(inf_diag.observation_energy))
+    assert not bool(jnp.isnan(inf_diag.observation_energy))
+    assert float(inf_diag.effective_dimension) == pytest.approx(1.0, rel=1e-6)
+
+
+def test_mixed_zero_decay_row_replaces_inf_trace_when_gate_is_one() -> None:
+    """A decay=0 row in a mixed trace bank is fully overwritten when gate == 1."""
+    memory = WorkingMemoryFeaturizer(
+        _minimal_config(observation_decay_rates=(0.0, 0.5), gated_update=False)
+    )
+    state = memory.init().replace(  # type: ignore[attr-defined]
+        observation_traces=jnp.asarray(
+            [[jnp.inf, jnp.inf], [2.0, -4.0]], dtype=jnp.float32
+        )
+    )
+    obs = jnp.asarray([1.0, 3.0], dtype=jnp.float32)
+
+    applied = memory.update_checked(
+        state, obs, memory.zero_action(), memory.zero_reward(), external_gate=1.0
+    )
+    assert bool(applied.update_applied)
+    chex.assert_trees_all_close(
+        applied.state.observation_traces,
+        jnp.asarray([[1.0, 3.0], [1.5, -0.5]], dtype=jnp.float32),
+    )
+
+    rejected = memory.update_checked(
+        state, obs, memory.zero_action(), memory.zero_reward(), external_gate=0.5
+    )
+    assert not bool(rejected.update_applied)

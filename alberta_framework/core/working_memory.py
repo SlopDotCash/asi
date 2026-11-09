@@ -425,9 +425,8 @@ def _effective_dimension(values: Array) -> Array:
 def _normalize_by_largest_magnitude(values: Array) -> tuple[Array, Array]:
     """Normalize finite float32 values without an underflowed reciprocal."""
     scale = jnp.max(jnp.abs(values))
-    use_exponent_scaling = scale > jnp.asarray(
-        1.0 / _FLOAT32_MIN_NORMAL,
-        dtype=jnp.float32,
+    use_exponent_scaling = jnp.isfinite(scale) & (
+        scale > jnp.asarray(1.0 / _FLOAT32_MIN_NORMAL, dtype=jnp.float32)
     )
     direct_scale = jnp.where((scale > 0.0) & (~use_exponent_scaling), scale, 1.0)
     direct = jnp.where(
@@ -435,8 +434,9 @@ def _normalize_by_largest_magnitude(values: Array) -> tuple[Array, Array]:
         jnp.sign(values),
         values / direct_scale,
     )
-    mantissa, exponent = jnp.frexp(scale)
-    safe_mantissa = jnp.where(scale > 0.0, mantissa, 1.0)
+    safe_scale = jnp.where(use_exponent_scaling, scale, 1.0)
+    mantissa, exponent = jnp.frexp(safe_scale)
+    safe_mantissa = jnp.where(use_exponent_scaling & (scale > 0.0), mantissa, 1.0)
     exponent_scaled = jnp.ldexp(values, -exponent) / safe_mantissa
     normalized = jnp.where(use_exponent_scaling, exponent_scaled, direct)
     return jnp.where(scale > 0.0, normalized, 0.0), scale
@@ -565,9 +565,25 @@ class WorkingMemoryFeaturizer:
     ) -> Array:
         if (not self._config.gated_update) or traces.shape[0] == 0 or value.size == 0:
             return jnp.asarray(1.0, dtype=jnp.float32)
-        surprise = _root_mean_square(value - traces[fast_index])
+        fast_trace = traces[fast_index]
+        raw_diff = value - fast_trace
+        surprise = _root_mean_square(raw_diff)
         temperature = jnp.asarray(self._config.gate_temperature, dtype=jnp.float32)
-        return jax.nn.sigmoid((surprise - threshold) / temperature)
+        raw_logit = (surprise - threshold) / temperature
+        half_diff = jnp.ldexp(value, -1) - jnp.ldexp(fast_trace, -1)
+        half_surprise = _root_mean_square(half_diff)
+        half_threshold = jnp.ldexp(threshold, -1)
+        half_delta = half_surprise - half_threshold
+        scaled_logit = jnp.where(
+            half_delta == 0.0,
+            jnp.asarray(0.0, dtype=jnp.float32),
+            2.0 * (half_delta / temperature),
+        )
+        endpoints_finite = jnp.all(jnp.isfinite(value)) & jnp.all(
+            jnp.isfinite(fast_trace)
+        )
+        use_scaled = endpoints_finite & (~jnp.all(jnp.isfinite(raw_diff)))
+        return jax.nn.sigmoid(jnp.where(use_scaled, scaled_logit, raw_logit))
 
     @staticmethod
     def _update_trace_bank(
@@ -727,17 +743,41 @@ class WorkingMemoryFeaturizer:
             last_gate=jnp.stack([observation_gate, action_gate, reward_gate]),
         )
         previous_checked = state
-        if cfg.observation_decay_rates and all(rate == 0.0 for rate in cfg.observation_decay_rates):
+        if cfg.observation_decay_rates and any(
+            rate == 0.0 for rate in cfg.observation_decay_rates
+        ):
+            obs_zero_mask = (
+                jnp.asarray(cfg.observation_decay_rates, dtype=jnp.float32)[:, None]
+                == 0.0
+            ) & (observation_gate == 1.0)
             previous_checked = previous_checked.replace(  # type: ignore[attr-defined]
-                observation_traces=jnp.zeros_like(state.observation_traces),
+                observation_traces=jnp.where(
+                    obs_zero_mask,
+                    jnp.zeros_like(state.observation_traces),
+                    state.observation_traces,
+                ),
             )
-        if cfg.action_decay_rates and all(rate == 0.0 for rate in cfg.action_decay_rates):
+        if cfg.action_decay_rates and any(rate == 0.0 for rate in cfg.action_decay_rates):
+            act_zero_mask = (
+                jnp.asarray(cfg.action_decay_rates, dtype=jnp.float32)[:, None] == 0.0
+            ) & (action_gate == 1.0)
             previous_checked = previous_checked.replace(  # type: ignore[attr-defined]
-                action_traces=jnp.zeros_like(state.action_traces),
+                action_traces=jnp.where(
+                    act_zero_mask,
+                    jnp.zeros_like(state.action_traces),
+                    state.action_traces,
+                ),
             )
-        if cfg.reward_decay_rates and all(rate == 0.0 for rate in cfg.reward_decay_rates):
+        if cfg.reward_decay_rates and any(rate == 0.0 for rate in cfg.reward_decay_rates):
+            rew_zero_mask = (
+                jnp.asarray(cfg.reward_decay_rates, dtype=jnp.float32)[:, None] == 0.0
+            ) & (reward_gate == 1.0)
             previous_checked = previous_checked.replace(  # type: ignore[attr-defined]
-                reward_traces=jnp.zeros_like(state.reward_traces),
+                reward_traces=jnp.where(
+                    rew_zero_mask,
+                    jnp.zeros_like(state.reward_traces),
+                    state.reward_traces,
+                ),
             )
         update_applied = (
             inputs_valid
