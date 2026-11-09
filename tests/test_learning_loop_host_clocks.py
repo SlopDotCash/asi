@@ -34,7 +34,9 @@ from alberta_framework import (
     TrueOnlineTDLearner,
     create_horde_spec,
     run_learning_loop,
+    run_learning_loop_batched,
     run_mlp_learning_loop,
+    run_mlp_learning_loop_batched,
     run_off_policy_horde_learning_loop,
     run_sarsa_from_arrays,
     run_sarsa_from_arrays_final_state,
@@ -272,3 +274,33 @@ def test_float32_narrowing_drops_the_planted_clocks() -> None:
     assert narrowed_birth != _BIRTH
     assert narrowed_uptime != _UPTIME
     assert narrowed_uptime < _UPTIME
+
+
+def test_linear_learning_loop_batched_preserves_host_clocks() -> None:
+    learner = LinearLearner()
+    state = learner.init(3).replace(birth_timestamp=_BIRTH, uptime_s=_UPTIME)
+    stream = RandomWalkStream(feature_dim=3)
+    keys = jr.split(jr.key(10), 2)
+    result = run_learning_loop_batched(
+        learner, stream, 4, keys, learner_state=state
+    )
+    assert type(result.states.birth_timestamp) is float
+    assert result.states.birth_timestamp == _BIRTH
+    assert type(result.states.uptime_s) is float
+    assert result.states.uptime_s > _UPTIME
+
+
+def test_mlp_learning_loop_batched_preserves_host_clocks() -> None:
+    learner = MLPLearner(hidden_sizes=(4,))
+    state = learner.init(3, key=jr.key(11)).replace(
+        birth_timestamp=_BIRTH, uptime_s=_UPTIME
+    )
+    stream = RandomWalkStream(feature_dim=3)
+    keys = jr.split(jr.key(12), 2)
+    result = run_mlp_learning_loop_batched(
+        learner, stream, 4, keys, learner_state=state
+    )
+    assert type(result.states.birth_timestamp) is float
+    assert result.states.birth_timestamp == _BIRTH
+    assert type(result.states.uptime_s) is float
+    assert result.states.uptime_s > _UPTIME
