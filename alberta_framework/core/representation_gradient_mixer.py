@@ -508,7 +508,8 @@ def _normalize_unit_l2(value: Array, epsilon: float) -> Array:
         scale >= epsilon_value / safe_scaled_norm,
     )
     unit = scaled / safe_scaled_norm
-    below_epsilon = scaled * (scale / epsilon_value)
+    safe_below_scale = jnp.where(at_least_epsilon, jnp.float32(0.0), scale)
+    below_epsilon = scaled * (safe_below_scale / epsilon_value)
     return jnp.where(at_least_epsilon, unit, below_epsilon)
 
 
@@ -555,88 +556,74 @@ def _split_float32(value: Array) -> tuple[Array, Array]:
 def _safe_dot_and_cosine(first: Array, second: Array) -> tuple[Array, Array]:
     """Return finite-saturated dot and cosine diagnostics without product overflow.
 
-    The established scaled reduction remains bit-identical while pairwise
-    products are representable.  Beyond that boundary, power-of-two scaling
-    avoids reciprocal flush at the float32 limits.  A float16 high part plus a
-    float32 residual retains the low product terms, which matter when large
-    positive and negative products nearly cancel.
+    Per-coordinate power-of-two scaling avoids non-power-of-two mantissa
+    division drift on orthogonal vectors and prevents a large coordinate paired
+    with zero from flushing active product terms at other coordinates.  A
+    float16 high part plus a float32 residual retains the low product terms
+    when large positive and negative products nearly cancel.
     """
 
-    first_scale = jnp.max(jnp.abs(first))
-    second_scale = jnp.max(jnp.abs(second))
-    product_overflow = ~jnp.isfinite(first_scale * second_scale)
-
-    def ordinary() -> tuple[Array, Array]:
-        first_scale, first_scaled, first_scaled_norm = _scaled_norm_parts(first)
-        second_scale, second_scaled, second_scaled_norm = _scaled_norm_parts(second)
-        denominator = first_scaled_norm * second_scaled_norm
-        safe_denominator = jnp.where(denominator > 0.0, denominator, jnp.float32(1.0))
-        cosine = jnp.where(
-            denominator > 0.0,
-            jnp.clip(
-                jnp.sum(first_scaled * second_scaled) / safe_denominator,
-                -1.0,
-                1.0,
-            ),
-            jnp.float32(0.0),
-        )
-        first_mantissa, first_exponent = jnp.frexp(first_scale)
-        second_mantissa, second_exponent = jnp.frexp(second_scale)
-        cosine_mantissa, cosine_exponent = jnp.frexp(cosine)
-        # Combine bounded mantissas before restoring units. Intermediate products
-        # can underflow even when the final dot is normal, and saturated individual
-        # norms can lose magnitude even when their dot is representable.
-        mantissa = (
-            cosine_mantissa * first_mantissa * second_mantissa
-            * first_scaled_norm * second_scaled_norm
-        )
-        raw = jnp.ldexp(mantissa, first_exponent + second_exponent + cosine_exponent)
-        dot = jnp.nan_to_num(
-            raw,
-            nan=0.0,
-            posinf=_FLOAT32_MAX,
-            neginf=-_FLOAT32_MAX,
-        )
-        return dot, cosine
-
-    def compensated() -> tuple[Array, Array]:
-        _, first_exponent = jnp.frexp(first_scale)
-        _, second_exponent = jnp.frexp(second_scale)
-        first_scaled = jnp.ldexp(first, -first_exponent)
-        second_scaled = jnp.ldexp(second, -second_exponent)
-        first_high, first_low = _split_float32(first_scaled)
-        second_high, second_low = _split_float32(second_scaled)
-        scaled_dot = (
-            jnp.sum(first_high * second_high)
-            + jnp.sum(first_high * second_low)
-            + jnp.sum(first_low * second_high)
-            + jnp.sum(first_low * second_low)
-        )
-        dot = jnp.nan_to_num(
-            jnp.ldexp(scaled_dot, first_exponent + second_exponent),
-            nan=0.0,
-            posinf=_FLOAT32_MAX,
-            neginf=-_FLOAT32_MAX,
-        )
-        first_norm = jnp.sqrt(jnp.sum(jnp.square(first_scaled)))
-        second_norm = jnp.sqrt(jnp.sum(jnp.square(second_scaled)))
-        denominator = first_norm * second_norm
-        safe_denominator = jnp.where(
-            denominator > 0.0,
-            denominator,
-            jnp.float32(1.0),
-        )
-        cosine = jnp.where(
-            denominator > 0.0,
-            jnp.clip(scaled_dot / safe_denominator, -1.0, 1.0),
-            jnp.float32(0.0),
-        )
-        return dot, cosine
-
-    return cast(
-        tuple[Array, Array],
-        lax.cond(product_overflow, compensated, ordinary),
+    active_pair = jnp.logical_and(first != 0.0, second != 0.0)
+    any_active_pair = jnp.any(active_pair)
+    first_mant, first_exp = jnp.frexp(first)
+    second_mant, second_exp = jnp.frexp(second)
+    pair_exp = jnp.where(active_pair, first_exp + second_exp, jnp.int32(-1024))
+    max_pair_exp = jnp.where(any_active_pair, jnp.max(pair_exp), jnp.int32(0))
+    rel_shift = jnp.where(
+        active_pair,
+        jnp.maximum(pair_exp - max_pair_exp, jnp.int32(-150)),
+        jnp.int32(0),
     )
+    first_high, first_low = _split_float32(
+        jnp.where(active_pair, first_mant, jnp.float32(0.0))
+    )
+    second_high, second_low = _split_float32(
+        jnp.where(active_pair, second_mant, jnp.float32(0.0))
+    )
+    scaled_dot = (
+        jnp.sum(jnp.ldexp(first_high * second_high, rel_shift))
+        + jnp.sum(jnp.ldexp(first_high * second_low, rel_shift))
+        + jnp.sum(jnp.ldexp(first_low * second_high, rel_shift))
+        + jnp.sum(jnp.ldexp(first_low * second_low, rel_shift))
+    )
+    dot_mant, dot_exp = jnp.frexp(scaled_dot)
+    total_dot_exp = max_pair_exp + dot_exp
+    raw_dot = jnp.ldexp(dot_mant, jnp.clip(total_dot_exp, -155, 130))
+    dot = jnp.where(
+        any_active_pair,
+        jnp.nan_to_num(
+            raw_dot,
+            nan=0.0,
+            posinf=_FLOAT32_MAX,
+            neginf=-_FLOAT32_MAX,
+        ),
+        jnp.float32(0.0),
+    )
+
+    _, first_scale_exp = jnp.frexp(jnp.max(jnp.abs(first)))
+    _, second_scale_exp = jnp.frexp(jnp.max(jnp.abs(second)))
+    first_pow2 = jnp.ldexp(first, -first_scale_exp)
+    second_pow2 = jnp.ldexp(second, -second_scale_exp)
+    denominator = jnp.sqrt(jnp.sum(jnp.square(first_pow2))) * jnp.sqrt(
+        jnp.sum(jnp.square(second_pow2))
+    )
+    safe_denominator = jnp.where(
+        denominator > 0.0,
+        denominator,
+        jnp.float32(1.0),
+    )
+    cos_shift = jnp.clip(
+        total_dot_exp - (first_scale_exp + second_scale_exp),
+        -155,
+        130,
+    )
+    raw_cosine = jnp.ldexp(dot_mant / safe_denominator, cos_shift)
+    cosine = jnp.where(
+        jnp.logical_and(any_active_pair, denominator > 0.0),
+        jnp.clip(raw_cosine, -1.0, 1.0),
+        jnp.float32(0.0),
+    )
+    return dot, cosine
 
 
 def mix_representation_gradients(

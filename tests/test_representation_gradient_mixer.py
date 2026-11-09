@@ -874,3 +874,60 @@ def test_dot_diagnostic_restores_units_only_after_mantissa_product(
     assert bool(result.valid)
     assert bool(result.diagnostics.conflict) is (sign < 0)
     np.testing.assert_array_equal(result.gradient, jnp.asarray(first) + jnp.asarray(second))
+
+
+def test_orthogonal_non_power_of_two_and_sparse_extreme_dot_diagnostics() -> None:
+    config3 = RepresentationGradientMixerConfig(representation_dim=3)
+    orthogonal = mix_representation_gradients(
+        config3,
+        jnp.asarray([3.0, 1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray([1.0, -3.0, 5.0], dtype=jnp.float32),
+    )
+    np.testing.assert_array_equal(orthogonal.diagnostics.dot_product, np.float32(0.0))
+    np.testing.assert_array_equal(
+        orthogonal.diagnostics.cosine_similarity, np.float32(0.0)
+    )
+    assert not bool(orthogonal.diagnostics.conflict)
+
+    config2 = RepresentationGradientMixerConfig(representation_dim=2)
+    sparse_extreme = mix_representation_gradients(
+        config2,
+        jnp.asarray([1e-8, 3e38], dtype=jnp.float32),
+        jnp.asarray([-1e8, 0.0], dtype=jnp.float32),
+    )
+    np.testing.assert_allclose(
+        sparse_extreme.diagnostics.dot_product, np.float32(-1.0), rtol=1e-6
+    )
+
+    magnitude = np.float32(1e18)
+    adjacent = np.nextafter(magnitude, np.float32(0.0), dtype=np.float32)
+    near_cancel = mix_representation_gradients(
+        config3,
+        jnp.asarray([magnitude, magnitude, 0.0], dtype=jnp.float32),
+        jnp.asarray([magnitude, -adjacent, np.float32(3e18)], dtype=jnp.float32),
+    )
+    expected_dot = np.float32(
+        np.dot(
+            np.asarray([magnitude, magnitude, 0.0], dtype=np.float64),
+            np.asarray([magnitude, -adjacent, np.float32(3e18)], dtype=np.float64),
+        )
+    )
+    np.testing.assert_array_equal(near_cancel.diagnostics.dot_product, expected_dot)
+
+
+def test_unit_l2_normalization_grad_is_nan_free_at_large_scale() -> None:
+    config = RepresentationGradientMixerConfig(
+        representation_dim=2,
+        mode="behavior_only",
+        behavior_normalization="unit_l2",
+    )
+    behavior = jnp.asarray([3e38, 0.0], dtype=jnp.float32)
+    world = jnp.zeros((2,), dtype=jnp.float32)
+    grad = jax.grad(
+        lambda b: jnp.sum(
+            mix_representation_gradients(config, b, world).gradient
+            * jnp.asarray([2.0, 3.0], dtype=jnp.float32)
+        )
+    )(behavior)
+    assert bool(jnp.all(jnp.isfinite(grad)))
+
