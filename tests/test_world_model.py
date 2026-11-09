@@ -644,3 +644,63 @@ def test_discrete_world_model_update_rejects_boolean_action_before_learning() ->
 
     with pytest.raises(ValueError, match="action must have a real numeric dtype"):
         model.update(state, zero, jnp.array(False), jnp.array(0.0), jnp.array(1.0), zero)
+
+
+def test_one_step_world_model_fails_visible_and_rejects_nonfinite_observation() -> None:
+    """Invalid observation or action must keep public features/predictions NaN and reject update."""
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(2,),
+            leaky_relu_slope=0.0,
+            use_layer_norm=False,
+            predict_delta=False,
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(21))
+    trunk = state.learner_state.trunk_params
+    neg_trunk = dataclasses.replace(
+        trunk,
+        weights=(-jnp.ones_like(trunk.weights[0]),),
+        biases=(jnp.zeros_like(trunk.biases[0]),),
+    )
+    state = dataclasses.replace(
+        state,
+        learner_state=dataclasses.replace(state.learner_state, trunk_params=neg_trunk),
+    )
+
+    inf_obs = jnp.array([jnp.inf, 1.0], dtype=jnp.float32)
+    valid_obs = jnp.array([0.5, 1.0], dtype=jnp.float32)
+    assert bool(jnp.all(jnp.isnan(model.input_features(inf_obs, jnp.int32(0)))))
+    assert bool(jnp.all(jnp.isnan(model.input_features(valid_obs, jnp.int32(5)))))
+
+    for bad_obs, bad_act in ((inf_obs, jnp.int32(0)), (valid_obs, jnp.int32(5))):
+        pred = model.predict(state, bad_obs, bad_act)
+        assert bool(jnp.all(jnp.isnan(pred.next_observation)))
+        assert bool(jnp.isnan(pred.reward))
+        assert bool(jnp.all(jnp.isnan(pred.raw_predictions)))
+
+    res = model.update(
+        state,
+        inf_obs,
+        jnp.int32(0),
+        jnp.float32(1.0),
+        valid_obs,
+    )
+    assert not bool(res.update_applied)
+    assert int(res.state.step_count) == 0
+
+
+def test_world_model_update_preflights_working_set_without_init() -> None:
+    """Calling update directly without init must still enforce the working-set budget."""
+    wm = OneStepWorldModel(
+        WorldModelConfig(observation_dim=11_582, n_actions=2, hidden_sizes=())
+    )
+    small_state = OneStepWorldModel(
+        WorldModelConfig(observation_dim=1, n_actions=2, hidden_sizes=())
+    ).init(jr.key(0))
+    obs = jnp.zeros((11_582,), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="update working set byte count"):
+        wm.update(small_state, obs, jnp.int32(0), jnp.float32(0.0), obs)
