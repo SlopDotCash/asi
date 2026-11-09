@@ -635,8 +635,8 @@ class OffPolicyTDLinearLearner:
         scaled_update = alpha * td_error
         terminal = gamma_s == jnp.asarray(0.0, dtype=jnp.float32)
         proposed_state = OffPolicyTDState(  # type: ignore[call-arg]
-            weights=state.weights + scaled_update * new_e,
-            bias=state.bias + scaled_update * new_e_b,
+            weights=state.weights + _skip_zero_scale(scaled_update, new_e),
+            bias=state.bias + _skip_zero_scale(scaled_update, new_e_b),
             eligibility_traces=jnp.where(terminal, jnp.zeros_like(new_e), new_e),
             bias_eligibility_trace=jnp.where(terminal, jnp.zeros_like(new_e_b), new_e_b),
             previous_gamma=gamma_s,
@@ -879,10 +879,11 @@ class ETDLinearLearner:
         new_e = _skip_zero_scale(rho_s, eligibility_core)
         new_e_b = _skip_zero_scale(rho_s, bias_core)
 
+        scaled_update = alpha * td_error
         terminal = gamma_s == jnp.asarray(0.0, dtype=jnp.float32)
         proposed_state = ETDState(  # type: ignore[call-arg]
-            weights=state.weights + alpha * td_error * new_e,
-            bias=state.bias + alpha * td_error * new_e_b,
+            weights=state.weights + _skip_zero_scale(scaled_update, new_e),
+            bias=state.bias + _skip_zero_scale(scaled_update, new_e_b),
             eligibility_traces=jnp.where(terminal, jnp.zeros_like(new_e), new_e),
             bias_eligibility_trace=jnp.where(terminal, jnp.zeros_like(new_e_b), new_e_b),
             follow_on_trace=jnp.where(terminal, jnp.zeros_like(follow_on), follow_on),
@@ -1113,10 +1114,14 @@ class GradientTDLinearLearner:
         secondary_dot_phi = jnp.dot(state.secondary_weights, phi)
 
         correction_coefficient = gamma_s * (1.0 - lam)
-        scaled_secondary_trace = _skip_zero_scale(correction_coefficient, secondary_dot_trace)
+        scaled_secondary_trace = _skip_zero_scale(
+            alpha * correction_coefficient, secondary_dot_trace
+        )
         bootstrap_correction = _skip_zero_scale(scaled_secondary_trace, next_phi)
-        primary_step = alpha * (td_error * traces - bootstrap_correction)
-        secondary_step = beta * (td_error * traces - secondary_dot_phi * phi)
+        primary_step = _skip_zero_scale(alpha * td_error, traces) - bootstrap_correction
+        secondary_step = _skip_zero_scale(beta * td_error, traces) - _skip_zero_scale(
+            _skip_zero_scale(beta, secondary_dot_phi), phi
+        )
 
         terminal = gamma_s == jnp.asarray(0.0, dtype=jnp.float32)
         proposed_state = GradientTDState(  # type: ignore[call-arg]
