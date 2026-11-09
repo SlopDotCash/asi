@@ -330,6 +330,18 @@ def _mean_squared_distance(diffs: Array, feature_dim: int) -> Array:
     return jnp.where(jnp.isfinite(ordinary) | ~jnp.isfinite(recovered), ordinary, recovered)
 
 
+def _scaled_mean_squared_distance(first: Array, second: Array) -> Array:
+    """Scale-normalized mean squared distance that stays finite across float32."""
+    half_diffs = (
+        jnp.asarray(0.5, dtype=jnp.float32) * first
+        - jnp.asarray(0.5, dtype=jnp.float32) * second
+    )
+    safe_half = jnp.where(jnp.isfinite(half_diffs), half_diffs, jnp.float32(0.0))
+    _, max_exp = jnp.frexp(jnp.max(jnp.abs(safe_half)))
+    scaled_diffs = jnp.ldexp(safe_half, -max_exp)
+    return jnp.mean(scaled_diffs * scaled_diffs, axis=-1)
+
+
 class PrototypeMemoryLearner:
     """Fixed-budget multi-prototype classifier.
 
@@ -471,7 +483,27 @@ class PrototypeMemoryLearner:
         state: PrototypeMemoryState,
         observation: Float[Array, " feature_dim"],
     ) -> Float[Array, " n_classes"]:
-        return _softmax(self._class_logits_jit(state, observation))
+        logits = self._class_logits_jit(state, observation)
+        ordinary = _softmax(logits)
+        x = jnp.asarray(observation)
+        inputs_valid = self._state_is_valid(state) & jnp.all(jnp.isfinite(x))
+        used = state.counts > 0
+        any_active = jnp.any(used)
+        all_logits_neg_inf = (
+            inputs_valid & any_active & ~jnp.any(jnp.isfinite(logits))
+        )
+        scaled_distances = _scaled_mean_squared_distance(
+            state.means, x[None, None, :]
+        )
+        class_scaled_dist = jnp.min(
+            jnp.where(used, scaled_distances, jnp.inf), axis=1
+        )
+        min_class_dist = jnp.min(class_scaled_dist)
+        winners = (class_scaled_dist == min_class_dist).astype(jnp.float32)
+        saturated = winners / jnp.maximum(
+            jnp.sum(winners), jnp.asarray(1.0, dtype=jnp.float32)
+        )
+        return jnp.where(all_logits_neg_inf, saturated, ordinary)
 
     @staticmethod
     def valid_one_hot_target(target: Array) -> Array:
@@ -572,7 +604,18 @@ class PrototypeMemoryLearner:
                 self._config.feature_dim,
             )
             used_distances = jnp.where(used, distances, jnp.inf)
-            nearest_slot = jnp.argmin(used_distances)
+            scaled_head_distances = jnp.where(
+                used,
+                _scaled_mean_squared_distance(
+                    current.means[head], safe_observation[None, :]
+                ),
+                jnp.inf,
+            )
+            nearest_slot = jnp.where(
+                jnp.any(jnp.isfinite(used_distances)),
+                jnp.argmin(used_distances),
+                jnp.argmin(scaled_head_distances),
+            )
             nearest_distance = used_distances[nearest_slot]
             empty_slot = jnp.argmax((~used).astype(jnp.int32))
             replacement_slot = self._replacement_slot(current, head)
@@ -588,10 +631,17 @@ class PrototypeMemoryLearner:
             )
             old_mean = current.means[head, slot]
             eta = jnp.asarray(self._config.update_rate, dtype=jnp.float32)
+            raw_diff = safe_observation - old_mean
+            ema_mean = jnp.where(
+                jnp.isfinite(raw_diff),
+                old_mean + eta * raw_diff,
+                (jnp.asarray(1.0, dtype=jnp.float32) - eta) * old_mean
+                + eta * safe_observation,
+            )
             new_mean = jnp.where(
                 novel,
                 safe_observation,
-                old_mean + eta * (safe_observation - old_mean),
+                ema_mean,
             )
             new_count = jnp.where(
                 novel,

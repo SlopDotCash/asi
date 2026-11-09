@@ -459,3 +459,67 @@ def test_class_distance_mean_preserves_finite_large_components(
         prediction = learner.predict(state, observation)
     np.testing.assert_allclose(logits, expected, rtol=2e-6)
     np.testing.assert_array_equal(prediction, [1.0, 0.0])
+
+
+def test_predict_and_update_remain_finite_when_all_active_logits_underflow() -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(
+            feature_dim=1,
+            n_classes=2,
+            slots_per_class=2,
+            bandwidth=0.01,
+            novelty_threshold=1.0,
+        )
+    )
+    state = learner.init()
+    state = learner.update(
+        state,
+        jnp.asarray([0.0], dtype=jnp.float32),
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    ).state
+
+    far_obs = jnp.asarray([1e19], dtype=jnp.float32)
+    pred = learner.predict(state, far_obs)
+    np.testing.assert_array_equal(pred, jnp.asarray([1.0, 0.0], dtype=jnp.float32))
+
+    updated = learner.update(
+        state,
+        far_obs,
+        jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+    )
+    assert bool(updated.update_applied)
+    assert int(updated.state.counts[1, 0]) == 1
+    np.testing.assert_array_equal(updated.state.means[1, 0], far_obs)
+
+
+def test_opposite_sign_overflowing_differences_preserve_nearer_class() -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(
+            feature_dim=1,
+            n_classes=2,
+            slots_per_class=1,
+            update_rate=0.5,
+            novelty_threshold=float(np.finfo(np.float32).max),
+            bandwidth=1.0,
+        )
+    )
+    state = PrototypeMemoryState(
+        means=jnp.asarray([[[2.0e38]], [[1.8e38]]], dtype=jnp.float32),
+        counts=jnp.asarray([[1], [1]], dtype=jnp.int32),
+        last_update=jnp.asarray([[1], [2]], dtype=jnp.int32),
+        step_count=jnp.asarray(2, dtype=jnp.int32),
+    )
+    obs = jnp.asarray([-2.0e38], dtype=jnp.float32)
+    pred = learner.predict(state, obs)
+    np.testing.assert_array_equal(pred, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
+
+    target = jnp.asarray([0.0, 1.0], dtype=jnp.float32)
+    result = learner.update(state, obs, target)
+    assert bool(result.update_applied)
+    np.testing.assert_array_equal(
+        result.predictions, jnp.asarray([0.0, 1.0], dtype=jnp.float32)
+    )
+    assert float(result.metrics[1]) == 1.0
+    assert bool(jnp.all(jnp.isfinite(result.state.means)))
+
+
