@@ -181,7 +181,15 @@ def _apply_obgd_bound(
     for s in steps:
         total_step = total_step + jnp.sum(jnp.abs(s))
     delta_bar = jnp.maximum(jnp.abs(error_scalar), 1.0)
-    scale = 1.0 / jnp.maximum(kappa * delta_bar * total_step, 1.0)
+    kappa_arr = jnp.asarray(kappa, dtype=total_step.dtype)
+    direct_bound = _skip_zero_scale(kappa_arr, delta_bar * total_step)
+    rearranged_bound = jnp.where(
+        jnp.isfinite(kappa_arr * delta_bar),
+        _skip_zero_scale(kappa_arr * delta_bar, total_step),
+        _skip_zero_scale(kappa_arr * total_step, delta_bar),
+    )
+    bound = jnp.where(jnp.isfinite(direct_bound), direct_bound, rearranged_bound)
+    scale = 1.0 / jnp.maximum(bound, 1.0)
     collapsed = scale == 0
     return (
         tuple(zero_if_collapsed_infinity(scale * step, step, collapsed) for step in steps),
@@ -1881,7 +1889,13 @@ class ObGD(Optimizer[ObGDState]):
 
         # Compute bounding factor: M = alpha * kappa * max(|error|, 1) * z_sum
         delta_bar = jnp.maximum(jnp.abs(error_scalar), 1.0)
-        dot_product = delta_bar * z_sum * alpha * kappa
+        direct_dot = _skip_zero_scale(kappa, delta_bar * z_sum * alpha)
+        rearranged_dot = jnp.where(
+            jnp.isfinite(delta_bar * alpha),
+            _skip_zero_scale(kappa, (delta_bar * alpha) * z_sum),
+            _skip_zero_scale(kappa, delta_bar * (z_sum * alpha)),
+        )
+        dot_product = jnp.where(jnp.isfinite(direct_dot), direct_dot, rearranged_dot)
 
         # Effective step-size: alpha / max(M, 1)
         alpha_eff = alpha / jnp.maximum(dot_product, 1.0)
@@ -1892,15 +1906,51 @@ class ObGD(Optimizer[ObGDState]):
         collapsed = alpha_eff == 0
         raw_weight_step = error_scalar * new_traces
         raw_bias_step = error_scalar * new_bias_trace
-        weight_delta = zero_if_collapsed_infinity(
+        direct_weight_delta = zero_if_collapsed_infinity(
             alpha_eff * raw_weight_step,
-            error_scalar,
+            raw_weight_step,
             collapsed,
         )
-        bias_delta = zero_if_collapsed_infinity(
+        rearranged_weight_delta = jnp.where(
+            jnp.isfinite(alpha_eff * error_scalar),
+            zero_if_collapsed_infinity(
+                (alpha_eff * error_scalar) * new_traces,
+                new_traces,
+                collapsed,
+            ),
+            zero_if_collapsed_infinity(
+                error_scalar * (alpha_eff * new_traces),
+                error_scalar,
+                collapsed,
+            ),
+        )
+        weight_delta = jnp.where(
+            jnp.isfinite(direct_weight_delta),
+            direct_weight_delta,
+            rearranged_weight_delta,
+        )
+        direct_bias_delta = zero_if_collapsed_infinity(
             alpha_eff * raw_bias_step,
-            error_scalar,
+            raw_bias_step,
             collapsed,
+        )
+        rearranged_bias_delta = jnp.where(
+            jnp.isfinite(alpha_eff * error_scalar),
+            zero_if_collapsed_infinity(
+                (alpha_eff * error_scalar) * new_bias_trace,
+                new_bias_trace,
+                collapsed,
+            ),
+            zero_if_collapsed_infinity(
+                error_scalar * (alpha_eff * new_bias_trace),
+                error_scalar,
+                collapsed,
+            ),
+        )
+        bias_delta = jnp.where(
+            jnp.isfinite(direct_bias_delta),
+            direct_bias_delta,
+            rearranged_bias_delta,
         )
 
         candidate_state = ObGDState(
@@ -1911,10 +1961,19 @@ class ObGD(Optimizer[ObGDState]):
             gamma=state.gamma,
             lamda=state.lamda,
         )
+        inputs_finite = (
+            jnp.isfinite(error_scalar)
+            & jnp.all(jnp.isfinite(new_traces))
+            & jnp.isfinite(new_bias_trace)
+        )
         candidate_metrics = {
             "step_size": alpha,
             "effective_step_size": alpha_eff,
-            "bounding_factor": dot_product,
+            "bounding_factor": jnp.where(
+                inputs_finite & jnp.isposinf(dot_product),
+                jnp.asarray(np.finfo(np.float32).max, dtype=jnp.float32),
+                dot_product,
+            ),
         }
 
         previous_checked = state
