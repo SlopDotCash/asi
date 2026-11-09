@@ -168,10 +168,18 @@ def _require_temporal_context_array_steps(observations: object) -> int:
 
 
 def _phase_digit_residues(periods: tuple[float, ...]) -> np.ndarray:
-    """Return ``frac(16**i / p)`` per period and clock digit, rounded to float32."""
+    """Return ``frac(16**i / p)`` per period and clock digit, rounded to float32.
+
+    The residues are exact ratios of the configured period: rounding the
+    period itself to float32 first would encode a different period
+    (``0.7`` -> ``0.69999998807907104``), and the phase would then drift
+    linearly with the step count instead of staying exact across the
+    int32 lifetime. Only each residue is rounded to float32, which bounds
+    the phase error independently of the step count.
+    """
     rows = []
     for period in periods:
-        exact_period = Fraction(float(np.float32(period)))
+        exact_period = Fraction(period)
         rows.append(
             [
                 float((Fraction(1 << (_PHASE_DIGIT_BITS * index)) / exact_period) % 1)
