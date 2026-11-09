@@ -112,6 +112,18 @@ def _bias_correction(decay: float, count: Array) -> Array:
     return -jnp.expm1(count * math.log(decay))
 
 
+def _scaled_trace_step(scale: float | Array, error: Array, trace_term: Array) -> Array:
+    """Compute (scale * error) * trace_term without overflow or 0 * inf NaN."""
+    scale_arr = jnp.asarray(scale, dtype=trace_term.dtype)
+    direct = (scale_arr * error) * trace_term
+    m_s, e_s = jnp.frexp(scale_arr)
+    m_e, e_e = jnp.frexp(error)
+    m_t, e_t = jnp.frexp(trace_term)
+    rescaled = jnp.ldexp((m_s * m_e) * m_t, e_s + e_e + e_t)
+    step = jnp.where(jnp.isfinite(direct), direct, rescaled)
+    return jnp.where(trace_term == 0.0, jnp.zeros_like(trace_term), step)
+
+
 def intentional_td_update(
     weights: Array,
     state: IntentionalTDState,
@@ -149,7 +161,7 @@ def intentional_td_update(
         1, dtype=jnp.int32
     )
     if not config.enabled:
-        changed = weights + (config.eta * td_error) * trace
+        changed = weights + _scaled_trace_step(config.eta, td_error, trace)
         return changed, state.replace(  # type: ignore[attr-defined]
             trace=jnp.where(terminated, jnp.zeros_like(trace), trace), step=step
         )
@@ -176,13 +188,39 @@ def intentional_td_update(
     norm_gradient = jnp.where(
         jnp.isfinite(direct_norm_gradient), direct_norm_gradient, stable_norm_gradient
     )
-    sigma = state.sigma + (1 - decay) * (norm_gradient - state.sigma)
-    sigma_corrected = sigma / _bias_correction(decay, count)
+    sigma_increment = 1.0 - decay
+    direct_sigma_delta = sigma_increment * (norm_gradient - state.sigma)
+    scaled_gradient = math.sqrt(sigma_increment) * gradient
+    stable_sigma_innovation = jnp.sum((scaled_gradient / divisor) * scaled_gradient)
+    fallback_sigma = (
+        state.sigma + (stable_sigma_innovation - sigma_increment * state.sigma)
+        if float(np.float32(decay)) == 1.0
+        else decay * state.sigma + stable_sigma_innovation
+    )
+    sigma = jnp.where(
+        jnp.isfinite(direct_sigma_delta),
+        state.sigma + direct_sigma_delta,
+        fallback_sigma,
+    )
+    sigma_bias = _bias_correction(decay, count)
+    sigma_corrected = sigma / sigma_bias
+    direct_sqrt_sigma = jnp.sqrt(sigma_corrected)
+    stable_sqrt_sigma = jnp.sqrt(sigma) / jnp.sqrt(sigma_bias)
+    sqrt_sigma = jnp.where(jnp.isfinite(direct_sqrt_sigma), direct_sqrt_sigma, stable_sqrt_sigma)
     direct_norm_trace = jnp.sum(trace**2 / divisor)
     stable_norm_trace = jnp.sum((trace / divisor) * trace)
     norm_trace = jnp.where(jnp.isfinite(direct_norm_trace), direct_norm_trace, stable_norm_trace)
+    trace_scale = jnp.max(jnp.abs(trace))
+    safe_trace_scale = jnp.where(trace_scale > 0.0, trace_scale, jnp.ones_like(trace_scale))
+    unit_trace = trace / safe_trace_scale
+    scaled_sqrt_norm_trace = trace_scale * jnp.sqrt(
+        jnp.sum((unit_trace / divisor) * unit_trace)
+    )
+    sqrt_norm_trace = jnp.where(
+        jnp.isfinite(norm_trace), jnp.sqrt(norm_trace), scaled_sqrt_norm_trace
+    )
     direct_normalizer = jnp.sqrt(sigma_corrected * norm_trace)
-    stable_normalizer = jnp.sqrt(sigma_corrected) * jnp.sqrt(norm_trace)
+    stable_normalizer = sqrt_sigma * sqrt_norm_trace
     normalizer = jnp.where(jnp.isfinite(direct_normalizer), direct_normalizer, stable_normalizer)
     step_size = config.eta / jnp.maximum(normalizer, 1e-8)
     clip_second = _stable_weighted_square_ema(
@@ -198,7 +236,14 @@ def intentional_td_update(
     else:
         cap = jnp.array(1.0, dtype=jnp.float32)
     safe_error = jnp.clip(td_error, -cap, cap)
-    changed = weights + (safe_error * step_size) * (trace / divisor)
+    scaled_trace = trace / divisor
+    direct_delta = _scaled_trace_step(step_size, safe_error, scaled_trace)
+    factored_delta = _scaled_trace_step(
+        config.eta / jnp.maximum(sqrt_sigma, 1e-4),
+        safe_error,
+        scaled_trace / jnp.maximum(sqrt_norm_trace, 1e-4),
+    )
+    changed = weights + jnp.where(jnp.isfinite(normalizer), direct_delta, factored_delta)
     return changed, IntentionalTDState(  # type: ignore[call-arg]
         trace=jnp.where(terminated, jnp.zeros_like(trace), trace),
         squared_gradient=second,
