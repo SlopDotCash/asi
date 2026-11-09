@@ -28,11 +28,13 @@ Calibration (measured on this machine, scripts in the session scratchpad):
 
 import sys
 import warnings
+from itertools import permutations
 from typing import Any
 
 import numpy as np
 import pytest
 
+from alberta_framework.utils import statistics as statistics_module
 from alberta_framework.utils.experiments import AggregatedResults
 from alberta_framework.utils.statistics import (
     SignificanceResult,
@@ -94,6 +96,40 @@ class TestComputeStatistics:
         assert summary.ci_upper == 1.0e308
         assert summary.median == 1.0e308
         assert summary.iqr == 0.0
+
+    @pytest.mark.parametrize("values", list(permutations([1e16, 1.0, -1e16])))
+    def test_signed_seed_mean_preserves_cancellation(
+        self, values: tuple[float, ...]
+    ) -> None:
+        """A small residual beside cancelling seeds must survive reduction order."""
+        expected = 1.0 / 3.0
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            summary = compute_statistics(list(values))
+
+        assert summary.mean == pytest.approx(expected)
+        point, _, _ = bootstrap_ci(list(values), statistic="mean", n_bootstrap=8, seed=0)
+        assert point == pytest.approx(expected)
+
+    def test_bootstrap_cancellation_interval_brackets_point(self) -> None:
+        values = [1e16, 1.0, -1e16]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            point, lo, hi = bootstrap_ci(values, statistic="mean", seed=0)
+        assert point == pytest.approx(1.0 / 3.0)
+        assert lo <= point <= hi
+
+    def test_bootstrap_chunked_draws_match_unchunked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Row-chunked rng.integers calls must replay the unchunked stream."""
+        values = [1.0, 2.0, 3.0, 4.0]
+        monkeypatch.setattr(statistics_module, "_BOOTSTRAP_DRAW_CHUNK_ELEMS", 10**12)
+        unchunked = bootstrap_ci(values, statistic="mean", n_bootstrap=21, seed=0)
+        # 8 elements / n=4 => 2 rows per chunk, so 21 replicates span many chunks.
+        monkeypatch.setattr(statistics_module, "_BOOTSTRAP_DRAW_CHUNK_ELEMS", 8)
+        chunked = bootstrap_ci(values, statistic="mean", n_bootstrap=21, seed=0)
+        assert chunked == unchunked
 
     def test_unrepresentable_large_interval_fails_closed_without_warnings(self) -> None:
         values = np.asarray([-1.0e308, 1.0e308], dtype=np.float64)
@@ -432,6 +468,44 @@ class TestTimeseriesStatistics:
         assert mean[0] == 1.0e308
         assert lo[0] == 1.0e308
         assert hi[0] == 1.0e308
+
+    @pytest.mark.parametrize("values", list(permutations([1e16, 1.0, -1e16])))
+    def test_signed_column_mean_preserves_cancellation(
+        self, values: tuple[float, ...]
+    ) -> None:
+        arr = np.asarray(values, dtype=np.float64).reshape(3, 1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mean, lo, hi = compute_timeseries_statistics(arr)
+
+        expected = 1.0 / 3.0
+        summary = compute_statistics(list(values))
+        assert mean[0] == pytest.approx(expected)
+        assert mean[0] == pytest.approx(summary.mean)
+        assert lo[0] == pytest.approx(summary.ci_lower)
+        assert hi[0] == pytest.approx(summary.ci_upper)
+
+    def test_column_mean_recovers_residual_old_fast_gate_accepted(self) -> None:
+        """``np.sum`` drops the 1.0 here, but the old n*32*eps gate still passed."""
+        column = np.asarray([[1e16], [1.0], [-1e16], [1024.0]], dtype=np.float64)
+        naive = float(np.sum(column))
+        abs_total = float(np.sum(np.abs(column)))
+        old_threshold = (
+            column.shape[0] * 32.0 * np.finfo(np.float64).eps * abs_total
+        )
+        assert naive == pytest.approx(1024.0)
+        assert abs(naive) >= old_threshold
+        expected = 1025.0 / 4.0
+        assert naive / float(column.shape[0]) != pytest.approx(expected)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mean, _, _ = compute_timeseries_statistics(column)
+
+        assert mean[0] == pytest.approx(expected)
+        assert mean[0] == pytest.approx(
+            compute_statistics(column.reshape(-1)).mean
+        )
 
     def test_representable_interval_survives_unrepresentable_sample_std(self) -> None:
         """Eight symmetric seeds have finite mean/CI despite an overflowing SD."""
@@ -1366,6 +1440,35 @@ class TestPairwiseComparisons:
 
         assert result.statistic == pytest.approx(9.0)
         assert result.effect_size == pytest.approx(1.0)
+
+    def test_final_window_mean_preserves_signed_cancellation(self) -> None:
+        """A cancelling window must compare equal to its exact residual mean."""
+        cancelling = np.array([[1e16, 1.0, -1e16]] * 3, dtype=np.float64)
+        constant = np.full((3, 3), 1.0 / 3.0, dtype=np.float64)
+        left = AggregatedResults(
+            config_name="cancelling",
+            seeds=[0, 1, 2],
+            metric_arrays={"reward": cancelling},
+            summary={},
+        )
+        right = AggregatedResults(
+            config_name="constant",
+            seeds=[10, 11, 12],
+            metric_arrays={"reward": constant},
+            summary={},
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = pairwise_comparisons(
+                {"cancelling": left, "constant": right},
+                metric="reward",
+                test="mann_whitney",
+                window=3,
+            )[("cancelling", "constant")]
+
+        assert result.effect_size == pytest.approx(0.0)
+        assert not result.significant
 
     @staticmethod
     def _settled_trace(name: str, n_steps: int, transient: float) -> AggregatedResults:
