@@ -127,6 +127,37 @@ def test_sigreg_diagnostics_preserve_std_at_float32_extremes() -> None:
     np.testing.assert_array_equal(diagnostics.projected_std_mean, maximum)
 
 
+def test_sigreg_diagnostics_preserve_mean_at_float32_extremes() -> None:
+    """Naive ``jnp.mean`` sums overflow for same-sign float32 extremes.
+
+    Two ``float32`` maxima have a finite mean (the maximum itself) and a
+    finite mean of per-dimension standard deviations (also the maximum),
+    but ``jnp.mean`` first sums them, overflowing to ``inf``.  The same
+    overflow affects the projected means, so every mean in the
+    diagnostics must be computed with a scaled reduction.
+    """
+    maximum = np.finfo(np.float32).max
+    embeddings = jnp.asarray([[maximum], [maximum]], dtype=jnp.float32)
+    directions = jnp.ones((1, 1), dtype=jnp.float32)
+    diagnostics = sigreg_diagnostics(embeddings, directions, SIGRegConfig(n_projections=1))
+    chex.assert_tree_all_finite(diagnostics)
+    np.testing.assert_array_equal(diagnostics.latent_mean_abs, maximum)
+    np.testing.assert_array_equal(diagnostics.projected_mean_abs, maximum)
+    np.testing.assert_array_equal(diagnostics.latent_std_mean, 0.0)
+    np.testing.assert_array_equal(diagnostics.projected_std_mean, 0.0)
+
+    embeddings = jnp.asarray(
+        [[maximum, maximum], [-maximum, -maximum]], dtype=jnp.float32
+    )
+    directions = jnp.eye(2, dtype=jnp.float32)
+    diagnostics = sigreg_diagnostics(embeddings, directions, SIGRegConfig(n_projections=2))
+    chex.assert_tree_all_finite(diagnostics)
+    np.testing.assert_array_equal(diagnostics.latent_mean_abs, 0.0)
+    np.testing.assert_array_equal(diagnostics.projected_mean_abs, 0.0)
+    np.testing.assert_array_equal(diagnostics.latent_std_mean, maximum)
+    np.testing.assert_array_equal(diagnostics.projected_std_mean, maximum)
+
+
 def _bhep_reference_statistic(samples: np.ndarray, kernel_width: float) -> float:
     """Independent float64 reimplementation of the closed-form BHEP statistic.
 
