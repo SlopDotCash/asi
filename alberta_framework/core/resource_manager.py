@@ -216,6 +216,17 @@ def _mask_unused_history(
     return history.at[context].set(checked)
 
 
+def _center_context_logits(logits: Array) -> Array:
+    """Subtract a finite mean even when the raw float32 sum overflows."""
+    center = jnp.mean(logits)
+    peak = jnp.max(jnp.abs(logits))
+    _, exponent = jnp.frexp(peak)
+    scaled = jnp.ldexp(logits, -exponent)
+    bounded_center = jnp.clip(jnp.mean(scaled), jnp.min(scaled), jnp.max(scaled))
+    center = jnp.where(jnp.isfinite(center), center, jnp.ldexp(bounded_center, exponent))
+    return logits - center
+
+
 def _finite_convex_reduction(weights: Array, values: Array) -> Array:
     """Preserve a finite convex sum when only its float32 reduction overflows."""
     direct = jnp.sum(weights * values)
@@ -289,7 +300,7 @@ def optimal_hedge_learning_rate(
     if n_actions == 1:
         return 0.0
     rate = math.sqrt(8.0 * math.log(n_actions) / horizon) / loss_bound
-    if not math.isfinite(rate):
+    if not math.isfinite(rate) or rate <= 0.0:
         raise ValueError("the theorem preconditions must produce a finite learning rate")
     return rate
 
@@ -321,11 +332,18 @@ def finite_candidate_hedge_regret_bound(
     if learning_rate == 0.0:
         return math.inf
     first_term = math.log(n_actions) / learning_rate
-    # Multiplication intentionally replaces ``loss_bound**2``: finite large
-    # bounds should conservatively saturate to infinity, not raise OverflowError.
-    second_term = learning_rate * loss_bound
-    second_term *= loss_bound
-    second_term *= horizon / 8.0
+    # Combine mantissas and exponents via frexp/ldexp so intermediate products
+    # neither overflow before dividing by 8 nor underflow before scaling by T.
+    lr_m, lr_e = math.frexp(learning_rate)
+    lb_m, lb_e = math.frexp(loss_bound)
+    h_m, h_e = math.frexp(float(horizon))
+    try:
+        second_term = math.ldexp(
+            lr_m * lb_m * lb_m * h_m,
+            lr_e + 2 * lb_e + h_e - 3,
+        )
+    except OverflowError:
+        second_term = math.inf
     return first_term + second_term
 
 
@@ -664,14 +682,7 @@ class LearnedResourceManager:
             _skip_zero_scale(self._discount, old_context_logits) + self._learning_rate * advantages
         )
         # Remove an arbitrary additive constant for numerical stability.
-        center = jnp.mean(new_context_logits)
-        # Compute a bounded mean when a finite row's sum overflows.
-        peak = jnp.max(jnp.abs(new_context_logits))
-        _, exponent = jnp.frexp(peak)
-        scaled = jnp.ldexp(new_context_logits, -exponent)
-        bounded_center = jnp.clip(jnp.mean(scaled), jnp.min(scaled), jnp.max(scaled))
-        center = jnp.where(jnp.isfinite(center), center, jnp.ldexp(bounded_center, exponent))
-        new_context_logits = new_context_logits - center
+        new_context_logits = _center_context_logits(new_context_logits)
         new_log_weights = state.log_weights.at[context].set(new_context_logits)
 
         old_ema = state.loss_ema[context]
@@ -1291,13 +1302,14 @@ class GeneratorMetaResourceManager:
             probability = jnp.maximum(jnp.where(probability_valid, raw_probability, 1.0), 1e-6)
             selection_input_valid = action_valid & probability_valid
             selected_finite = finite[action] & selection_input_valid
+            f32_max = jnp.asarray(float(np.finfo(np.float32).max), dtype=jnp.float32)
             reward_hat = jnp.where(
                 selected_finite,
-                adjusted[action] / probability,
+                jnp.clip(adjusted[action] / probability, -f32_max, f32_max),
                 jnp.array(0.0, dtype=jnp.float32),
             )
             raw_advantages = jnp.zeros_like(adjusted).at[action].set(reward_hat)
-            raw_advantages = raw_advantages - jnp.mean(raw_advantages)
+            raw_advantages = _center_context_logits(raw_advantages)
             advantages = jnp.where(selected_finite, raw_advantages, 0.0)
         else:
             advantages = jnp.where(finite, adjusted - baseline, 0.0)
@@ -1311,7 +1323,7 @@ class GeneratorMetaResourceManager:
         new_context_logits = (
             _skip_zero_scale(self._discount, old_context_logits) + self._learning_rate * advantages
         )
-        new_context_logits = new_context_logits - jnp.mean(new_context_logits)
+        new_context_logits = _center_context_logits(new_context_logits)
         new_log_weights = state.log_weights.at[context].set(new_context_logits)
 
         old_ema = state.reward_ema[context]
