@@ -404,7 +404,9 @@ def _float32_model_delta(weights: Array, observation: Array) -> Array:
     direct = weights @ observation
     gap = jnp.abs(direct - stable)
     limit = jnp.maximum(jnp.abs(stable), jnp.asarray(1.0, dtype=jnp.float32))
-    use_stable = jnp.isfinite(stable) & (gap > limit * jnp.asarray(1024.0, dtype=jnp.float32))
+    use_stable = jnp.isfinite(stable) & (
+        ~jnp.isfinite(direct) | (jnp.ldexp(gap, -10) > jnp.ldexp(limit, 0))
+    )
     return jnp.where(use_stable, stable, direct)
 
 
@@ -1113,9 +1115,16 @@ class OptionSearchControl:
             applied_log,
         ) = jax.lax.fori_loop(0, budget, backup_body, carry)
 
+        restored_learner_state = cast(
+            MultiHeadMLPState,
+            final_learner_state.replace(
+                birth_timestamp=state.base_learner_state.birth_timestamp,
+                uptime_s=state.base_learner_state.uptime_s,
+            ),
+        )
         final_state = cast(
             STOMPState,
-            state.replace(base_learner_state=final_learner_state),
+            state.replace(base_learner_state=restored_learner_state),
         )
         diagnostics = OptionSearchControlDiagnostics(
             decision_observation=jnp.where(

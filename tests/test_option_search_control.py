@@ -1037,3 +1037,51 @@ def test_overflowing_bellman_residual_stays_invalid(sign: float) -> None:
     assert float(diagnostics.candidate_targets[0, 0]) == 0.0
     assert int(diagnostics.selected_option_indices[0]) == -1
     assert not bool(diagnostics.applied[0])
+
+
+def test_float32_model_delta_keeps_finite_cancelled_row_near_float32_max() -> None:
+    """Cancelled model rows above float32_max / 1024 or with NaN direct dot stay finite."""
+    from alberta_framework.core.option_search_control import _float32_model_delta
+
+    weights = jnp.array(
+        [
+            [2.0e38, 2.0e38, -2.0e38, 0.0],
+            [2.0e38, 2.0e38, -2.0e38, -2.0e38],
+        ],
+        dtype=jnp.float32,
+    )
+    observation = jnp.ones((4,), dtype=jnp.float32)
+
+    delta = _float32_model_delta(weights, observation)
+
+    np.testing.assert_array_equal(
+        np.asarray(delta),
+        np.array([2.0e38, 0.0], dtype=np.float32),
+    )
+
+
+def test_apply_preserves_base_learner_host_clocks() -> None:
+    """Eager OptionSearchControl.apply preserves Python float host clocks across fori_loop."""
+    agent = STOMPAgent(_stomp_config())
+    state = _supported_state(agent)
+    birth_ts = 1_700_000_000.125
+    uptime = 42.5
+    state = cast(
+        STOMPState,
+        state.replace(
+            base_learner_state=state.base_learner_state.replace(
+                birth_timestamp=birth_ts,
+                uptime_s=uptime,
+            ),
+        ),
+    )
+
+    result = OptionSearchControl(
+        agent,
+        OptionSearchControlConfig(backup_budget=2),
+    ).apply(state, ANCHOR)
+
+    assert type(result.state.base_learner_state.birth_timestamp) is float
+    assert type(result.state.base_learner_state.uptime_s) is float
+    assert result.state.base_learner_state.birth_timestamp == birth_ts
+    assert result.state.base_learner_state.uptime_s == uptime
