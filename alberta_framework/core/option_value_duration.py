@@ -123,6 +123,92 @@ def _saturating_increment(value: Array) -> Array:
     return jnp.where(value < maximum, value + jnp.asarray(1, dtype=jnp.int32), maximum)
 
 
+def _split_unit_mantissa(mantissa: Array) -> tuple[Array, Array]:
+    """Split a float32 mantissa in ``(-1, 1)`` into exact high and low parts."""
+    high = mantissa.astype(jnp.float16).astype(jnp.float32)
+    return high, mantissa - high
+
+
+def _tier_cancelling_sum(
+    prod_hi: Array,
+    prod_lo: Array,
+    pair_exp: Array,
+    mask: Array,
+) -> Array:
+    """Sum exact mantissa products within one exponent tier using power-of-two scaling."""
+    any_active = jnp.any(mask)
+    max_exp = jnp.max(jnp.where(mask, pair_exp, jnp.int32(-1024)))
+    scale_exp = jnp.where(any_active, max_exp - jnp.int32(60), jnp.int32(0))
+    rel_exp = jnp.clip(pair_exp - scale_exp, -149, 64)
+    scaled_hi = jnp.where(mask, jnp.ldexp(prod_hi, rel_exp), jnp.float32(0.0))
+    scaled_lo = jnp.where(mask, jnp.ldexp(prod_lo, rel_exp), jnp.float32(0.0))
+    total_scaled = jnp.sum(scaled_hi) + jnp.sum(scaled_lo)
+    return jnp.where(any_active, jnp.ldexp(total_scaled, scale_exp), jnp.float32(0.0))
+
+
+def _finite_cancelling_dot(left: Array, right: Array) -> Array:
+    """Dot product that recovers finite results when intermediate products cancel."""
+    left_f32 = jnp.asarray(left, dtype=jnp.float32)
+    right_f32 = jnp.asarray(right, dtype=jnp.float32)
+    if left_f32.size == 0:
+        return jnp.zeros((), dtype=jnp.float32)
+    all_finite = jnp.all(jnp.isfinite(left_f32)) & jnp.all(jnp.isfinite(right_f32))
+    active = (left_f32 != jnp.float32(0.0)) & (right_f32 != jnp.float32(0.0))
+    _, exp_l = jnp.frexp(jnp.where(all_finite, left_f32, jnp.float32(0.0)))
+    _, exp_r = jnp.frexp(jnp.where(all_finite, right_f32, jnp.float32(0.0)))
+    pair_exp = exp_l + exp_r
+    max_pair_exp = jnp.max(jnp.where(active, pair_exp, jnp.int32(-1024)))
+    need_compensated = all_finite & (max_pair_exp > jnp.int32(100))
+
+    def _compensated() -> Array:
+        mant_l, exp_left = jnp.frexp(left_f32)
+        mant_r, exp_right = jnp.frexp(right_f32)
+        p_exp = exp_left + exp_right
+        l_hi, l_lo = _split_unit_mantissa(mant_l)
+        r_hi, r_lo = _split_unit_mantissa(mant_r)
+        prod_hi = mant_l * mant_r
+        prod_lo = ((l_hi * r_hi - prod_hi) + l_hi * r_lo + l_lo * r_hi) + l_lo * r_lo
+        high_mask = active & (p_exp >= max_pair_exp - jnp.int32(90))
+        low_mask = active & (~high_mask)
+        return _tier_cancelling_sum(
+            prod_hi, prod_lo, p_exp, high_mask
+        ) + _tier_cancelling_sum(prod_hi, prod_lo, p_exp, low_mask)
+
+    return cast(
+        Array,
+        jax.lax.cond(
+            need_compensated,
+            _compensated,
+            lambda: jnp.dot(left_f32, right_f32),
+        ),
+    )
+
+
+def _finite_three_factor_product(first: Array, second: Array, third: Array) -> Array:
+    """Multiply three arrays while avoiding intermediate ``first * second`` overflow/underflow."""
+    ab = first * second
+    direct = ab * third
+    factors_finite = (
+        jnp.isfinite(first) & jnp.isfinite(second) & jnp.isfinite(third)
+    )
+    ab_overflowed = ~jnp.isfinite(ab)
+    ab_underflowed = (
+        (ab == jnp.float32(0.0))
+        & (first != jnp.float32(0.0))
+        & (second != jnp.float32(0.0))
+        & (third != jnp.float32(0.0))
+    )
+    use_rescaled = factors_finite & (ab_overflowed | ab_underflowed)
+    safe_first = jnp.where(use_rescaled, first, jnp.float32(1.0))
+    safe_second = jnp.where(use_rescaled, second, jnp.float32(1.0))
+    safe_third = jnp.where(use_rescaled, third, jnp.float32(1.0))
+    m1, e1 = jnp.frexp(safe_first)
+    m2, e2 = jnp.frexp(safe_second)
+    m3, e3 = jnp.frexp(safe_third)
+    rescaled = jnp.ldexp(m1 * m2 * m3, e1 + e2 + e3)
+    return jnp.where(use_rescaled, rescaled, direct)
+
+
 @dataclasses.dataclass(frozen=True)
 class OptionValueDurationConfig:
     """Hyperparameters for the two conventional TD(0) heads.
@@ -364,7 +450,7 @@ class OptionValueDurationLearner:
             raise ValueError("state arrays must expose readable shape and dtype") from error
         if weights_ndim != 3:
             raise ValueError("state.weights must be rank 3")
-        feature_dim = weights_shape[2]
+        feature_dim = _require_int32("feature_dim", weights_shape[2])
         if (
             weights_shape != (self._n_options, N_HEADS, feature_dim)
             or weights_dtype != jnp.float32
@@ -422,7 +508,9 @@ class OptionValueDurationLearner:
             shape=(feature_dim,),
             dtype=jnp.float32,
         )
-        heads = jnp.einsum("ohf,f->oh", state.weights, observation)
+        heads = jax.vmap(
+            jax.vmap(lambda row: _finite_cancelling_dot(row, observation))
+        )(state.weights)
         # Finite weights and observations can still overflow the dot product.
         heads_valid = (
             self._state_values_valid(state)
@@ -496,8 +584,12 @@ class OptionValueDurationLearner:
         )
 
         option_weights = state.weights[safe_option_index]
-        predictions = option_weights @ observation
-        next_predictions = option_weights @ next_observation
+        predictions = jax.vmap(lambda row: _finite_cancelling_dot(row, observation))(
+            option_weights
+        )
+        next_predictions = jax.vmap(
+            lambda row: _finite_cancelling_dot(row, next_observation)
+        )(option_weights)
         cumulants = jnp.stack(
             (reward, jnp.array(1.0, dtype=jnp.float32)),
         )
@@ -526,8 +618,10 @@ class OptionValueDurationLearner:
             ],
             dtype=jnp.float32,
         )
-        proposed_option_weights = (
-            option_weights + step_sizes[:, None] * td_errors[:, None] * observation[None, :]
+        proposed_option_weights = option_weights + _finite_three_factor_product(
+            step_sizes[:, None],
+            td_errors[:, None],
+            observation[None, :],
         )
         source_valid = self._state_values_valid(state)
         next_needed = continuation_discount != 0.0
@@ -607,20 +701,26 @@ def run_option_value_duration_from_arrays(
     if type(learner) is not OptionValueDurationLearner:
         raise ValueError("learner must be an actual OptionValueDurationLearner")
     state, feature_dim = learner._require_state_contract(state)
-    try:
-        observations = jnp.asarray(observations)
-    except Exception as error:
-        raise ValueError("observations must be a readable float32 matrix") from error
-    if observations.ndim != 2 or observations.shape[1] != feature_dim:
+    obs_obj: object = observations
+    actual_obs_type = type(obs_obj)
+    if not (
+        actual_obs_type is np.ndarray
+        or issubclass(actual_obs_type, (jax.Array, jax.core.Tracer))
+    ):
+        raise TypeError("observations must expose trusted array metadata")
+    actual_obs_shape = tuple(observations.shape)
+    actual_obs_dtype = jnp.dtype(observations.dtype)
+    if len(actual_obs_shape) != 2 or actual_obs_shape[1] != feature_dim:
         raise ValueError("observations have an incompatible shape")
-    if observations.dtype != jnp.float32:
+    if actual_obs_dtype != jnp.float32:
         raise ValueError("observations must have dtype float32")
     num_steps = _require_option_duration_scan_steps(
-        "scan sequence length num_steps", observations.shape[0]
+        "scan sequence length num_steps", actual_obs_shape[0]
     )
     output_scalars = num_steps * (4 * learner.n_options + 3)
     if output_scalars > _INT32_MAX or 4 * output_scalars > _INT32_MAX:
         raise ValueError("option value duration scan result bytes must fit signed int32")
+    observations = jnp.asarray(observations)
     next_observations = learner._require_array(
         "next_observations",
         next_observations,

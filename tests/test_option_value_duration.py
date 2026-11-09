@@ -982,3 +982,126 @@ def test_array_runner_finishes_device_work_before_stopping_uptime_clock(
     assert pending_outputs
     assert int(result.state.step_count) == steps
     assert bool(jnp.all(result.updates_applied))
+
+
+def test_state_contract_rejects_zero_feature_dim() -> None:
+    learner = OptionValueDurationLearner(2)
+    zero_dim_state = learner.init(1).replace(
+        weights=jnp.zeros((2, 2, 0), dtype=jnp.float32)
+    )
+    with pytest.raises(ValueError, match="feature_dim"):
+        learner.predict_heads(zero_dim_state, jnp.zeros((0,), dtype=jnp.float32))
+
+
+def test_array_runner_rejects_hostile_or_spoofed_observations_without_hooks() -> None:
+    class _HostileObs:
+        shape_reads = 0
+        conversions = 0
+
+        @property
+        def shape(self) -> tuple[int, ...]:
+            type(self).shape_reads += 1
+            raise AssertionError("shape property must not run")
+
+        def __array__(self, dtype: object = None, copy: object = None) -> np.ndarray:
+            type(self).conversions += 1
+            raise AssertionError("array conversion hook must not run")
+
+    learner = OptionValueDurationLearner(2)
+    state = learner.init(2)
+    option_indices = jnp.zeros((2,), dtype=jnp.int32)
+    rewards = jnp.zeros((2,), dtype=jnp.float32)
+    next_observations = jnp.zeros((2, 2), dtype=jnp.float32)
+    discounts = jnp.zeros((2,), dtype=jnp.float32)
+
+    with pytest.raises(TypeError, match="observations must expose trusted array metadata"):
+        run_option_value_duration_from_arrays(
+            learner,
+            state,
+            _HostileObs(),
+            option_indices,
+            rewards,
+            next_observations,
+            discounts,
+        )
+    assert _HostileObs.shape_reads == 0
+    assert _HostileObs.conversions == 0
+
+
+def test_predict_and_update_preserve_finite_cancelling_feature_dots() -> None:
+    learner = OptionValueDurationLearner(
+        1,
+        OptionValueDurationConfig(reward_step_size=0.5, duration_step_size=0.5),
+    )
+    weights = jnp.array(
+        [[[2.0e38, -2.0e38, 3.0], [2.0e38, -2.0e38, 4.0]]],
+        dtype=jnp.float32,
+    )
+    state = learner.init(3).replace(weights=weights)
+    obs = jnp.array([2.0, 2.0, 1.0], dtype=jnp.float32)
+    next_obs = jnp.array([2.0, 2.0, 2.0], dtype=jnp.float32)
+
+    heads = learner.predict_heads(state, obs)
+    chex.assert_trees_all_close(heads, jnp.array([[3.0, 4.0]], dtype=jnp.float32))
+
+    result = learner.update(
+        state,
+        obs,
+        jnp.array(0, dtype=jnp.int32),
+        jnp.array(1.0, dtype=jnp.float32),
+        next_obs,
+        jnp.array(0.5, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert bool(jnp.all(result.head_updates_applied))
+    chex.assert_trees_all_close(
+        result.predictions, jnp.array([3.0, 4.0], dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(
+        result.next_predictions, jnp.array([6.0, 8.0], dtype=jnp.float32)
+    )
+
+
+def test_update_rescales_three_factor_weight_step_on_intermediate_overflow_or_underflow() -> None:
+    high_lr_learner = OptionValueDurationLearner(
+        1,
+        OptionValueDurationConfig(reward_step_size=100.0, duration_step_size=0.1),
+    )
+    state = high_lr_learner.init(2)
+    obs = jnp.array([1.0e-5, 0.0], dtype=jnp.float32)
+    overflow_step = high_lr_learner.update(
+        state,
+        obs,
+        jnp.array(0, dtype=jnp.int32),
+        jnp.array(2.0e37, dtype=jnp.float32),
+        obs,
+        jnp.array(0.0, dtype=jnp.float32),
+    )
+    assert bool(overflow_step.update_applied)
+    assert bool(jnp.all(overflow_step.head_updates_applied))
+    chex.assert_trees_all_close(
+        overflow_step.state.weights[0, 0],
+        jnp.array([2.0e34, 0.0], dtype=jnp.float32),
+        rtol=1e-6,
+    )
+
+    low_lr_learner = OptionValueDurationLearner(
+        1,
+        OptionValueDurationConfig(reward_step_size=1.0e-25, duration_step_size=1.0e-25),
+    )
+    large_obs = jnp.array([1.0e35], dtype=jnp.float32)
+    underflow_step = low_lr_learner.update(
+        low_lr_learner.init(1),
+        large_obs,
+        jnp.array(0, dtype=jnp.int32),
+        jnp.array(1.0e-25, dtype=jnp.float32),
+        large_obs,
+        jnp.array(0.0, dtype=jnp.float32),
+    )
+    assert bool(underflow_step.update_applied)
+    assert float(underflow_step.state.weights[0, 0, 0]) > 0.0
+    chex.assert_trees_all_close(
+        underflow_step.state.weights[0, 0, 0],
+        jnp.float32(1.0e-15),
+        rtol=1e-5,
+    )
