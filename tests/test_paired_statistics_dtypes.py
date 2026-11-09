@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from alberta_framework.utils.statistics import ttest_comparison
+from alberta_framework.utils.statistics import (
+    _paired_cohens_d,
+    cohens_d,
+    ttest_comparison,
+    wilcoxon_comparison,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -88,3 +93,63 @@ def test_large_integer_differences_retain_sub_float64_variation(dtype: type) -> 
         2.0 * stats.t.sf(abs(expected_statistic), 2), rel=1e-14, abs=0.0
     )
     assert actual.significant
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+def test_independent_ttest_retains_small_differences_at_large_integer_offsets(
+    dtype: type,
+) -> None:
+    offset = 2**60
+    a = np.array([offset + 10, offset + 11, offset + 12, offset + 13], dtype=dtype)
+    b = np.array([offset, offset + 1, offset + 2, offset + 3], dtype=dtype)
+    expected = stats.ttest_ind([10.0, 11.0, 12.0, 13.0], [0.0, 1.0, 2.0, 3.0])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual = ttest_comparison(a, b, paired=False)
+    assert actual.statistic == pytest.approx(float(expected.statistic))
+    assert actual.p_value == pytest.approx(float(expected.pvalue))
+    assert actual.effect_size == pytest.approx(cohens_d(a, b))
+    assert actual.significant
+
+
+def test_independent_ttest_retains_sub_float64_variation_across_opposite_int64_extremes() -> None:
+    a = np.array([2**62, 2**62 + 2, 2**62 + 4], dtype=np.int64)
+    b = np.array([-(2**62), -(2**62) + 2, -(2**62) + 4], dtype=np.int64)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual = ttest_comparison(a, b, paired=False)
+    assert np.isfinite(actual.statistic)
+    assert np.isfinite(actual.effect_size)
+    assert actual.effect_size == pytest.approx(cohens_d(a, b))
+    assert actual.significant
+
+
+def test_wilcoxon_comparison_promotes_float32_and_scales_overflowing_float64_pairs() -> None:
+    a_f32 = np.array([2.0e38, 1.5e38, 1.0e38, 0.5e38, -0.2e38, 0.8e38], dtype=np.float32)
+    b_f32 = np.array([-2.0e38, -1.5e38, -1.0e38, 0.0, 0.1e38, -0.4e38], dtype=np.float32)
+    expected_f32 = wilcoxon_comparison(a_f32.astype(np.float64), b_f32.astype(np.float64))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual_f32 = wilcoxon_comparison(a_f32, b_f32)
+    assert actual_f32.statistic == expected_f32.statistic
+    assert actual_f32.p_value == pytest.approx(expected_f32.p_value)
+
+    base_a = np.array([1.5, 1.2, 0.9, -0.4, 0.7, 1.1], dtype=np.float64)
+    base_b = np.array([-1.5, -1.2, -0.9, 0.2, -0.5, -0.8], dtype=np.float64)
+    expected_f64 = wilcoxon_comparison(base_a, base_b)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual_f64 = wilcoxon_comparison(base_a * 1.0e308, base_b * 1.0e308)
+    assert actual_f64.statistic == expected_f64.statistic
+    assert actual_f64.p_value == pytest.approx(expected_f64.p_value)
+
+
+def test_paired_cohens_d_is_scale_invariant_across_extreme_magnitudes() -> None:
+    a = np.array([2.0, 4.0, 7.0], dtype=np.float64)
+    b = np.array([1.0, 2.0, 4.0], dtype=np.float64)
+    expected = _paired_cohens_d(a, b)
+    for scale in (1.0e200, 1.0e-200, 1.0e307):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert _paired_cohens_d(a * scale, b * scale) == pytest.approx(expected)
+

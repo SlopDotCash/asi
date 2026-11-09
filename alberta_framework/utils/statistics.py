@@ -571,7 +571,14 @@ def _paired_cohens_d(values_a: NDArray[np.float64], values_b: NDArray[np.float64
     by the standard deviation of the differences instead, matching what
     ``scipy.stats.ttest_rel`` actually tests.
     """
-    differences = values_a - values_b
+    with np.errstate(over="ignore", invalid="ignore"):
+        a = np.asarray(values_a, dtype=np.float64)
+        b = np.asarray(values_b, dtype=np.float64)
+        differences = a - b
+    if not np.isfinite(differences).all():
+        scaled_a, scaled_b = _common_binary_scaled(a, b)
+        differences = scaled_a - scaled_b
+    differences, _ = _common_binary_scaled(differences, np.zeros_like(differences))
     mean_difference = float(np.mean(differences))
     difference_std = float(np.std(differences, ddof=1))
     if difference_std == 0.0:
@@ -618,7 +625,9 @@ def ttest_comparison(
     _require_finite_values(a, name="values_a")
     _require_finite_values(b, name="values_b")
 
+    orig_a, orig_b = a, b
     exact_pair_summary: tuple[float, float] | None = None
+    exact_unpaired_summary: tuple[float, float, int] | None = None
     if paired:
         if len(a) != len(b):
             raise ValueError(
@@ -666,15 +675,59 @@ def ttest_comparison(
         )
 
     if not paired:
-        # Independent inference squares deviations too; keep it in the same
-        # float64 measurement domain instead of overflowing finite float32 data.
-        with np.errstate(over="ignore", invalid="ignore"):
-            a = np.asarray(a, dtype=np.float64)
-            b = np.asarray(b, dtype=np.float64)
+        if a.dtype.kind in "iu" and b.dtype.kind in "iu":
+            anchor = int(a[0])
+            shifted_a = [int(x) - anchor for x in a]
+            shifted_b = [int(y) - anchor for y in b]
+            float_a = np.asarray(shifted_a, dtype=np.float64)
+            float_b = np.asarray(shifted_b, dtype=np.float64)
+            if any(
+                int(converted) != original
+                for converted, original in zip(float_a, shifted_a)
+            ) or any(
+                int(converted) != original
+                for converted, original in zip(float_b, shifted_b)
+            ):
+                integers_a = [int(x) for x in a]
+                integers_b = [int(y) for y in b]
+                n_a = len(integers_a)
+                n_b = len(integers_b)
+                pooled_df = n_a + n_b - 2
+                exact_mean_a = Fraction(sum(integers_a), n_a)
+                exact_mean_b = Fraction(sum(integers_b), n_b)
+                centered_a = np.asarray(
+                    [float(Fraction(v) - exact_mean_a) for v in integers_a],
+                    dtype=np.float64,
+                )
+                centered_b = np.asarray(
+                    [float(Fraction(v) - exact_mean_b) for v in integers_b],
+                    dtype=np.float64,
+                )
+                std_a = float(np.std(centered_a, ddof=1)) if n_a > 1 else 0.0
+                std_b = float(np.std(centered_b, ddof=1)) if n_b > 1 else 0.0
+                pooled_std = float(
+                    np.hypot(
+                        math.sqrt((n_a - 1) / pooled_df) * std_a,
+                        math.sqrt((n_b - 1) / pooled_df) * std_b,
+                    )
+                )
+                se = pooled_std * math.sqrt(1.0 / n_a + 1.0 / n_b)
+                exact_unpaired_summary = (
+                    float(exact_mean_a - exact_mean_b),
+                    se,
+                    pooled_df,
+                )
+            a, b = float_a, float_b
+        else:
+            # Independent inference squares deviations too; keep it in the same
+            # float64 measurement domain instead of overflowing finite float32 data.
+            with np.errstate(over="ignore", invalid="ignore"):
+                a = np.asarray(a, dtype=np.float64)
+                b = np.asarray(b, dtype=np.float64)
         _require_finite_values(a, name="values_a")
         _require_finite_values(b, name="values_b")
 
-    if exact_pair_summary is None:
+    if exact_pair_summary is None and exact_unpaired_summary is None:
         if paired:
             # Preserve small residuals in pairs whose huge offsets cancel.
             # Only scale the operands first if a difference exceeds float64.
@@ -698,6 +751,20 @@ def ttest_comparison(
                 stat_val = mean_difference / (difference_std / math.sqrt(len(a)))
             result = (stat_val, 2.0 * stats.t.sf(abs(stat_val), len(a) - 1))
             test_name = "paired t-test"
+        elif exact_unpaired_summary is not None:
+            mean_difference, se, pooled_df = exact_unpaired_summary
+            if se == 0.0:
+                if mean_difference == 0.0:
+                    stat_val = float("nan")
+                    raw_p = float("nan")
+                else:
+                    stat_val = float(np.copysign(np.inf, mean_difference))
+                    raw_p = 0.0
+            else:
+                stat_val = mean_difference / se
+                raw_p = float(2.0 * stats.t.sf(abs(stat_val), pooled_df))
+            result = (stat_val, raw_p)
+            test_name = "independent t-test"
         elif paired:
             result = stats.ttest_rel(a, b)
             test_name = "paired t-test"
@@ -719,8 +786,12 @@ def ttest_comparison(
             if difference_std > 0.0
             else float(np.copysign(np.inf, mean_difference))
         )
+    elif paired:
+        effect = _paired_cohens_d(a, b)
+    elif orig_a.dtype.kind in "iu" and orig_b.dtype.kind in "iu":
+        effect = cohens_d(orig_a, orig_b)
     else:
-        effect = _paired_cohens_d(a, b) if paired else cohens_d(a, b)
+        effect = cohens_d(a, b)
 
     return SignificanceResult(
         test_name=test_name,
@@ -898,7 +969,16 @@ def wilcoxon_comparison(
             ])
             result = stats.wilcoxon(rank_input, alternative="two-sided")
         else:
-            result = stats.wilcoxon(a, b, alternative="two-sided")
+            with np.errstate(over="ignore", invalid="ignore"):
+                float_a = np.asarray(a, dtype=np.float64)
+                float_b = np.asarray(b, dtype=np.float64)
+            _require_finite_values(float_a, name="values_a")
+            _require_finite_values(float_b, name="values_b")
+            with np.errstate(over="ignore"):
+                paired_deltas = float_a - float_b
+            if not np.isfinite(paired_deltas).all():
+                float_a, float_b = _common_binary_scaled(float_a, float_b)
+            result = stats.wilcoxon(float_a, float_b, alternative="two-sided")
         # scipy returns (statistic, pvalue) tuple
         stat_val = float(result[0])
         p_val = _require_p_value(
