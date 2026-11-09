@@ -961,9 +961,14 @@ def test_update_preserves_mean_squared_error_diagnostics(
             jnp.zeros(1, dtype=jnp.float32),
             jnp.full(2, magnitude, dtype=jnp.float32),
         )
-        if np.isnan(magnitude):
-            assert np.isnan(float(result.squared_error))
-            assert np.isnan(float(result.state.prediction_error_ema))
+        if np.isnan(magnitude) or np.isinf(magnitude):
+            # A non-finite target is rejected outright: the state is left
+            # unchanged and the diagnostics are neutralized to zero, so one
+            # bad transition cannot poison the lifetime statistics.
+            assert bool(result.update_applied) is False
+            assert int(result.state.step_count) == 0
+            assert float(result.squared_error) == 0.0
+            assert float(result.state.prediction_error_ema) == 0.0
         elif abs(magnitude) > 1e19 and abs(magnitude) != 1.5e19:
             assert np.isinf(float(result.squared_error))
             assert np.isinf(float(result.state.prediction_error_ema))
@@ -971,3 +976,92 @@ def test_update_preserves_mean_squared_error_diagnostics(
             expected = float(np.float32(magnitude)) ** 2
             assert float(result.squared_error) == pytest.approx(expected, rel=2e-6)
             assert float(result.state.prediction_error_ema) == pytest.approx(expected, rel=2e-6)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        pytest.param(
+            "observation",
+            jnp.array([jnp.inf, 0.0], dtype=jnp.float32),
+            id="inf-observation",
+        ),
+        pytest.param(
+            "observation",
+            jnp.array([jnp.nan, 0.0], dtype=jnp.float32),
+            id="nan-observation",
+        ),
+        pytest.param(
+            "action",
+            jnp.array([jnp.nan, 0.0], dtype=jnp.float32),
+            id="nan-action",
+        ),
+        pytest.param(
+            "next_observation",
+            jnp.array([jnp.nan, 0.0], dtype=jnp.float32),
+            id="nan-next-observation",
+        ),
+        pytest.param(
+            "next_observation",
+            jnp.array([jnp.inf, 0.0], dtype=jnp.float32),
+            id="inf-next-observation",
+        ),
+    ],
+)
+def test_update_rejects_nonfinite_transition_without_poisoning_state(
+    field: str, bad_value: jax.Array
+) -> None:
+    model = SparseFTLWorldModel(SparseFTLWorldModelConfig(observation_dim=2, action_dim=2))
+    state = model.init(jr.key(0))
+    transition = {
+        "observation": jnp.array([0.5, 0.5], dtype=jnp.float32),
+        "action": jnp.array([1.0, 0.0], dtype=jnp.float32),
+        "next_observation": jnp.array([0.6, 0.4], dtype=jnp.float32),
+    }
+    transition[field] = bad_value
+
+    result = model.update(
+        state,
+        transition["observation"],
+        transition["action"],
+        transition["next_observation"],
+    )
+
+    assert bool(result.update_applied) is False
+    assert int(result.state.step_count) == 0
+    chex.assert_trees_all_close(result.state.gram, state.gram)
+    chex.assert_trees_all_close(result.state.cross, state.cross)
+    chex.assert_trees_all_close(result.state.weights, state.weights)
+    assert bool(jnp.all(jnp.isfinite(result.state.gram)))
+    assert bool(jnp.all(jnp.isfinite(result.state.cross)))
+    assert bool(jnp.all(jnp.isfinite(result.state.weights)))
+    assert float(result.squared_error) == 0.0
+
+    good = model.update(
+        result.state,
+        jnp.array([0.5, 0.5], dtype=jnp.float32),
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+        jnp.array([0.6, 0.4], dtype=jnp.float32),
+    )
+    assert bool(good.update_applied) is True
+    assert bool(jnp.all(jnp.isfinite(good.prediction.delta)))
+    assert bool(jnp.all(jnp.isfinite(good.state.weights)))
+
+
+def test_scan_skips_nonfinite_row_without_poisoning_later_steps() -> None:
+    model = SparseFTLWorldModel(SparseFTLWorldModelConfig(observation_dim=2, action_dim=2))
+    state = model.init(jr.key(0))
+    observations = jnp.array(
+        [[0.5, 0.5], [0.5, 0.5], [jnp.nan, 0.5], [0.5, 0.5], [0.5, 0.5]],
+        dtype=jnp.float32,
+    )
+    actions = jnp.ones((5, 2), dtype=jnp.float32)
+    next_observations = jnp.full((5, 2), 0.0, dtype=jnp.float32)
+    next_observations = next_observations.at[:, 0].set(0.6)
+    next_observations = next_observations.at[:, 1].set(0.4)
+
+    result = run_sparse_ftl_world_model(model, state, observations, actions, next_observations)
+
+    assert int(result.state.step_count) == 4
+    assert bool(jnp.all(jnp.isfinite(result.state.weights)))
+    assert bool(jnp.all(jnp.isfinite(result.squared_errors)))
