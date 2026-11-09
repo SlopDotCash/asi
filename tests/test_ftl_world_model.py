@@ -971,3 +971,115 @@ def test_update_preserves_mean_squared_error_diagnostics(
             expected = float(np.float32(magnitude)) ** 2
             assert float(result.squared_error) == pytest.approx(expected, rel=2e-6)
             assert float(result.state.prediction_error_ema) == pytest.approx(expected, rel=2e-6)
+
+
+def test_model_rejects_non_exact_config_and_non_1d_transition_vectors() -> None:
+    class ConfigSubclass(SparseFTLWorldModelConfig):
+        pass
+
+    with pytest.raises(TypeError, match="config must be an exact SparseFTLWorldModelConfig"):
+        SparseFTLWorldModel(None)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="config must be an exact SparseFTLWorldModelConfig"):
+        SparseFTLWorldModel(ConfigSubclass(observation_dim=2, action_dim=1))
+
+    model = SparseFTLWorldModel(SparseFTLWorldModelConfig(observation_dim=2, action_dim=1))
+    state = model.init(jr.key(11))
+    valid_obs = jnp.zeros((2,), dtype=jnp.float32)
+    valid_act = jnp.zeros((1,), dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match=r"observation must have shape \(2,\)"):
+        model.predict(state, jnp.zeros((1, 2), dtype=jnp.float32), valid_act)
+    with pytest.raises(ValueError, match=r"action must have shape \(1,\)"):
+        model.predict(state, valid_obs, jnp.zeros((1, 1), dtype=jnp.float32))
+    with pytest.raises(ValueError, match=r"next_observation must have shape \(2,\)"):
+        model.update(state, valid_obs, valid_act, jnp.zeros((2, 1), dtype=jnp.float32))
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_update_preserves_representable_mse_when_component_square_overflows(
+    disable_jit: bool,
+) -> None:
+    model = SparseFTLWorldModel(
+        SparseFTLWorldModelConfig(
+            observation_dim=2,
+            action_dim=1,
+            projection_dim=2,
+            bins=3,
+        )
+    )
+    state = model.init(jr.key(12))
+    next_obs = jnp.array([2.0e19, 0.0], dtype=jnp.float32)
+    with jax.disable_jit(disable_jit):
+        result = model.update(
+            state,
+            jnp.zeros((2,), dtype=jnp.float32),
+            jnp.zeros((1,), dtype=jnp.float32),
+            next_obs,
+        )
+    expected = (float(np.float32(2.0e19)) ** 2) / 2.0
+    assert np.isfinite(float(result.squared_error))
+    assert float(result.squared_error) == pytest.approx(expected, rel=2e-6)
+    assert float(result.state.prediction_error_ema) == pytest.approx(expected, rel=2e-6)
+
+
+def test_boundary_zero_feature_slots_do_not_multiply_by_infinity_or_produce_nan() -> None:
+    config = SparseFTLWorldModelConfig(
+        observation_dim=1,
+        action_dim=1,
+        projection_dim=2,
+        bins=3,
+    )
+    model = SparseFTLWorldModel(config)
+    state = model.init(jr.key(13)).replace(  # type: ignore[attr-defined]
+        projection=jnp.ones((config.projection_dim, config.input_dim), dtype=jnp.float32)
+    )
+    # At observation=0, action=0, sigmoid(0)=0.5 so location=(3-1)*0.5=1.0:
+    # lower=1 (weight 1.0) and upper=2 (weight 0.0) in each 3-bin block.
+    features = model.sparse_features(
+        state,
+        jnp.array([0.0], dtype=jnp.float32),
+        jnp.array([0.0], dtype=jnp.float32),
+    )
+    zero_mask = features.values == 0.0
+    assert bool(jnp.any(zero_mask))
+
+    weights_with_boundary_inf = jnp.zeros(
+        (config.feature_dim, config.observation_dim), dtype=jnp.float32
+    ).at[features.indices[zero_mask]].set(jnp.inf)
+    prediction = model.predict(
+        state.replace(weights=weights_with_boundary_inf),  # type: ignore[attr-defined]
+        jnp.array([0.0], dtype=jnp.float32),
+        jnp.array([0.0], dtype=jnp.float32),
+    )
+    assert bool(jnp.all(jnp.isfinite(prediction.delta)))
+    assert float(prediction.delta[0]) == 0.0
+
+    inf_update = model.update(
+        state,
+        jnp.array([0.0], dtype=jnp.float32),
+        jnp.array([0.0], dtype=jnp.float32),
+        jnp.array([jnp.inf], dtype=jnp.float32),
+    )
+    zero_slot_cross = inf_update.state.cross[features.indices[zero_mask]]
+    assert not bool(jnp.any(jnp.isnan(zero_slot_cross)))
+    assert bool(jnp.all(zero_slot_cross == 0.0))
+
+
+def test_sparse_features_clamps_indices_within_bin_bounds_on_nan_input() -> None:
+    config = SparseFTLWorldModelConfig(
+        observation_dim=1,
+        action_dim=1,
+        projection_dim=3,
+        bins=5,
+    )
+    model = SparseFTLWorldModel(config)
+    state = model.init(jr.key(14))
+    features = model.sparse_features(
+        state,
+        jnp.array([jnp.nan], dtype=jnp.float32),
+        jnp.array([0.0], dtype=jnp.float32),
+    )
+    expected_offsets = (jnp.arange(config.projection_dim, dtype=jnp.int32) * config.bins).repeat(2)
+    assert bool(jnp.all(features.indices >= expected_offsets))
+    assert bool(jnp.all(features.indices < expected_offsets + config.bins))
+

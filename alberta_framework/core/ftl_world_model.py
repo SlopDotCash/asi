@@ -91,6 +91,22 @@ def _float32_array_without_complex(name: str, value: object) -> Array:
     return jnp.asarray(array, dtype=jnp.float32)
 
 
+def _vector_without_complex(
+    name: str,
+    value: object,
+    dim: int,
+    *,
+    allow_scalar: bool = False,
+) -> Array:
+    """Validate a 1D transition vector without silently flattening higher-rank arrays."""
+    array = _float32_array_without_complex(name, value)
+    if array.shape == (dim,):
+        return array
+    if allow_scalar and dim == 1 and array.shape == ():
+        return array.reshape((1,))
+    raise ValueError(f"{name} must have shape ({dim},)")
+
+
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
     if not _has_exact_type(value, _ACTUAL_INT_TYPES):
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
@@ -392,6 +408,8 @@ class SparseFTLWorldModel:
     """One-dimensional sparse active-block ridge model with lifetime statistics."""
 
     def __init__(self, config: SparseFTLWorldModelConfig):
+        if type(config) is not SparseFTLWorldModelConfig:
+            raise TypeError("config must be an exact SparseFTLWorldModelConfig")
         self._config = config
 
     @property
@@ -463,10 +481,10 @@ class SparseFTLWorldModel:
 
     def _input(self, observation: Array, action: Array) -> Array:
         cfg = self._config
-        obs = _float32_array_without_complex("observation", observation).reshape(
-            (cfg.observation_dim,)
+        obs = _vector_without_complex("observation", observation, cfg.observation_dim)
+        act = _vector_without_complex(
+            "action", action, cfg.action_dim, allow_scalar=True
         )
-        act = _float32_array_without_complex("action", action).reshape((cfg.action_dim,))
         return jnp.concatenate((obs, act))
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -480,8 +498,9 @@ class SparseFTLWorldModel:
         cfg = self._config
         projected = jax.nn.sigmoid(state.projection @ self._input(observation, action))
         location = (cfg.bins - 1) * projected
-        lower = jnp.minimum(
+        lower = jnp.clip(
             jnp.floor(location).astype(jnp.int32),
+            jnp.asarray(0, dtype=jnp.int32),
             jnp.asarray(cfg.bins - 2, dtype=jnp.int32),
         )
         fraction = location - lower.astype(jnp.float32)
@@ -502,12 +521,14 @@ class SparseFTLWorldModel:
     ) -> SparseFTLWorldModelPrediction:
         """Predict the next observation without changing model state."""
         cfg = self._config
-        obs = _float32_array_without_complex("observation", observation).reshape(
-            (cfg.observation_dim,)
-        )
+        obs = _vector_without_complex("observation", observation, cfg.observation_dim)
         features = self.sparse_features(state, obs, action)
+        weighted_support = _skip_zero_scale(
+            features.values[:, None],
+            state.weights[features.indices],
+        )
         delta = jnp.clip(
-            features.values @ state.weights[features.indices],
+            jnp.sum(weighted_support, axis=0),
             -cfg.prediction_clip,
             cfg.prediction_clip,
         )
@@ -527,20 +548,29 @@ class SparseFTLWorldModel:
     ) -> SparseFTLWorldModelUpdateResult:
         """Predict, then incorporate exactly one real transition."""
         cfg = self._config
-        obs = _float32_array_without_complex("observation", observation).reshape(
-            (cfg.observation_dim,)
-        )
-        next_obs = _float32_array_without_complex("next_observation", next_observation).reshape(
-            (cfg.observation_dim,)
+        obs = _vector_without_complex("observation", observation, cfg.observation_dim)
+        next_obs = _vector_without_complex(
+            "next_observation", next_observation, cfg.observation_dim
         )
         prediction = self.predict(state, obs, action)
         target_delta = next_obs - obs
         error = target_delta - prediction.delta
         squared_components = error**2
         squared_error = jnp.mean(squared_components)
-        # Recover reduction overflow only when each squared component is finite.
-        recover = jnp.isinf(squared_error) & jnp.all(jnp.isfinite(squared_components))
-        bounded_mean = jnp.sum(squared_components / cfg.observation_dim)
+        # Recover reduction or single-component square overflow when the mean fits float32.
+        finite_components = jnp.all(jnp.isfinite(squared_components))
+        bounded_mean = jnp.where(
+            finite_components,
+            jnp.sum(squared_components / cfg.observation_dim),
+            jnp.sum(
+                (
+                    error
+                    / jnp.sqrt(jnp.asarray(cfg.observation_dim, dtype=jnp.float32))
+                )
+                ** 2
+            ),
+        )
+        recover = jnp.isinf(squared_error) & jnp.all(jnp.isfinite(error))
         squared_error = jnp.where(recover, bounded_mean, squared_error)
 
         decay = jnp.asarray(cfg.statistics_decay, dtype=jnp.float32)
@@ -549,7 +579,9 @@ class SparseFTLWorldModel:
         indices = prediction.features.indices
         values = prediction.features.values
         gram = gram.at[indices[:, None], indices[None, :]].add(values[:, None] * values[None, :])
-        cross = cross.at[indices].add(values[:, None] * target_delta[None, :])
+        cross = cross.at[indices].add(
+            _skip_zero_scale(values[:, None], target_delta[None, :])
+        )
 
         # Exact minimizer for the active block with all inactive weights held
         # at their previous values:
