@@ -916,3 +916,89 @@ def test_nonzero_meta_trace_still_rejects_overflow_atomically():
     ):
         np.testing.assert_array_equal(before, after)
     np.testing.assert_array_equal(result.weight_delta, jnp.zeros(2))
+
+
+def test_nonzero_meta_trace_handles_zero_error_and_rescaled_finite_meta_step() -> None:
+    optimizer = SwiftTD(
+        initial_step_size=2.0e-38,
+        eta_min=2.0e-38,
+        eta=0.1,
+        meta_step_size=10.0,
+    )
+    state = optimizer.init(2).replace(p_traces=jnp.ones(3, dtype=jnp.float32))
+    obs = jnp.array([1.0, -0.5], dtype=jnp.float32)
+
+    zero_err_res = jax.jit(optimizer.update)(
+        state, jnp.float32(0.0), obs, jnp.zeros(2, dtype=jnp.float32), jnp.float32(0.0)
+    )
+    assert bool(zero_err_res.update_applied)
+    np.testing.assert_array_equal(
+        zero_err_res.new_state.log_step_sizes, state.log_step_sizes
+    )
+
+    small_trace_state = state.replace(p_traces=jnp.full(3, 1.0e-5, dtype=jnp.float32))
+    rescaled_res = jax.jit(optimizer.update)(
+        small_trace_state,
+        jnp.float32(1.0e-5),
+        obs,
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.float32(0.0),
+    )
+    assert bool(rescaled_res.update_applied)
+    assert float(rescaled_res.new_state.log_step_sizes[0]) == pytest.approx(
+        float(jnp.log(jnp.float32(0.1))), rel=1e-6
+    )
+
+
+def test_meta_step_recovers_td_error_absorbed_by_large_v_delta_and_cancelling_dots() -> None:
+    optimizer = SwiftTD(
+        initial_step_size=0.01,
+        meta_step_size=0.01,
+        eta=0.1,
+        trace_decay=0.5,
+    )
+    state = optimizer.init(2).replace(
+        prev_weight_update=jnp.array([2.0e38, -2.0e38, 1.0e10], dtype=jnp.float32),
+        p_traces=jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32),
+    )
+    obs = jnp.array([2.0, 2.0], dtype=jnp.float32)
+    result = jax.jit(optimizer.update)(
+        state,
+        jnp.float32(1.0),
+        obs,
+        obs,
+        jnp.float32(0.0),
+    )
+    assert bool(result.update_applied)
+    assert float(result.new_state.log_step_sizes[0]) > float(state.log_step_sizes[0])
+
+    trace_state = optimizer.init(2).replace(
+        eligibility_traces=jnp.array([2.0e38, -2.0e38, 0.5], dtype=jnp.float32),
+    )
+    trace_res = jax.jit(optimizer.update)(
+        trace_state,
+        jnp.float32(1.0),
+        obs,
+        obs,
+        jnp.float32(0.0),
+    )
+    assert bool(trace_res.update_applied)
+    chex.assert_tree_all_finite(trace_res.new_state)
+
+
+def test_fresh_trace_extension_avoids_zero_times_inf_from_large_h_old_trace() -> None:
+    optimizer = SwiftTD(
+        initial_step_size=1.0e-35,
+        eta_min=1.0e-35,
+        eta=10.0,
+        meta_step_size=0.0,
+    )
+    state = optimizer.init(1).replace(
+        h_old_traces=jnp.array([1.0e25, 0.0], dtype=jnp.float32)
+    )
+    obs = jnp.array([1.0e15], dtype=jnp.float32)
+    result = jax.jit(optimizer.update)(
+        state, jnp.float32(1.0), obs, obs, jnp.float32(0.0)
+    )
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result.new_state)
