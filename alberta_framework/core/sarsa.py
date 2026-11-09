@@ -1145,9 +1145,20 @@ class SARSAAgent:
             step_count=new_step_count,
         )
         candidate_valid = _floating_tree_is_finite(proposed_state)
-        zero_decay_trace_recovery = jnp.asarray(
-            self._lamda > 0.0 and gamma == 0.0,
-            dtype=jnp.bool_,
+        # The zero-decay recovery exists only to repair poisoned
+        # eligibility traces: with gamma == 0 the trace decay is 0, so the
+        # update replaces inf traces with zeros instead of multiplying
+        # 0 * inf. It must fire only when the source traces are actually
+        # non-finite; an unconditional recovery would also rescue a genuine
+        # Horde rejection (e.g. an overflowing candidate) and commit a step
+        # that learned nothing.
+        traces_need_recovery = ~_floating_tree_is_finite(state.learner_state.head_traces)
+        zero_decay_trace_recovery = (
+            jnp.asarray(
+                self._lamda > 0.0 and gamma == 0.0,
+                dtype=jnp.bool_,
+            )
+            & traces_need_recovery
         )
         transaction_applied = (
             state_valid
