@@ -218,6 +218,24 @@ def _scaled_float64_values(
     return work / divisors, divisors
 
 
+def _compensated_total(values: NDArray[np.float64]) -> float | Fraction:
+    """Sum the original binary values without discarding a cancelling residual."""
+    try:
+        return math.fsum(float(value) for value in values)
+    except OverflowError:
+        # A finite mean (or a cancelling total) may have an unrepresentable
+        # intermediate sum. Keep the original binary values exact on that path.
+        return sum((Fraction.from_float(float(value)) for value in values), Fraction())
+
+
+def _compensated_mean(values: NDArray[np.float64], *, name: str) -> float:
+    """Return the arithmetic mean, keeping residuals that max-abs scaling erases."""
+    result = float(_compensated_total(values) / values.size)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} cannot be represented as finite float64 statistics")
+    return result
+
+
 def _common_binary_scaled(
     a: NDArray[np.float64], b: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -347,11 +365,13 @@ def compute_statistics(
     _require_finite_values(arr, name="values")
     confidence_level = _validate_confidence_level(confidence_level)
 
+    work = np.asarray(arr, dtype=np.float64)
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
-    ordered = np.sort(np.asarray(arr, dtype=np.float64))
+    ordered = np.sort(work)
     with np.errstate(over="ignore", invalid="ignore"):
-        mean = float(np.mean(scaled) * scale)
+        # Scaling first can erase a small residual beside cancelling large seeds.
+        mean = _compensated_mean(work, name="values")
         std = float(np.std(scaled, ddof=1) * scale) if n > 1 else 0.0
         sem = std / np.sqrt(n) if n > 1 else 0.0
         median = _summary_quartile(ordered, 2)
@@ -424,9 +444,13 @@ def compute_timeseries_statistics(
         raise ValueError("metric_array must contain at least one time step")
     _require_finite_values(metric_array, name="metric_array")
     confidence_level = _validate_confidence_level(confidence_level)
+    work = np.asarray(metric_array, dtype=np.float64)
     scaled, scales = _scaled_float64_values(metric_array, name="metric_array", axis=0)
     scale = scales[0]
-    mean = np.mean(scaled, axis=0) * scale
+    # Column-wise compensated means stay aligned with compute_statistics.
+    mean = np.empty(work.shape[1], dtype=np.float64)
+    for step in range(work.shape[1]):
+        mean[step] = _compensated_mean(work[:, step], name="metric_array")
 
     if n_seeds == 1:
         # One seed has no between-seed spread estimate; return the degenerate
@@ -1250,9 +1274,14 @@ def bootstrap_ci(
     rng = np.random.default_rng(_require_bootstrap_seed(seed))
 
     stat_func = np.mean if statistic == "mean" else np.median
+    work = np.asarray(arr, dtype=np.float64)
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
-    point_estimate = float(stat_func(scaled) * scale)
+    point_estimate = (
+        _compensated_mean(work, name="values")
+        if statistic == "mean"
+        else float(stat_func(scaled) * scale)
+    )
 
     # Generate bootstrap samples
     bootstrap_stats_list: list[float] = []
