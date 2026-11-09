@@ -1612,18 +1612,22 @@ def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
     product even when it differs by a few ulp of the exact sum.
     """
 
-    products = matrix * vector
-    max_abs = jnp.max(jnp.abs(products), axis=-1, keepdims=True)
-    # Scale by a power of two. Dividing by max_abs compiles to a reciprocal
-    # multiply, and the reciprocal of a value above 2**126 flushes to zero.
-    _, exponent = jnp.frexp(max_abs)
-    row_exponent = exponent
+    _, matrix_exponent = jnp.frexp(matrix)
+    _, vector_exponent = jnp.frexp(vector)
+    nonzero = (matrix != 0.0) & (vector != 0.0) & jnp.isfinite(matrix) & jnp.isfinite(vector)
+    pair_exponents = jnp.where(nonzero, matrix_exponent + vector_exponent, -1024)
+    max_pair_exponent = jnp.max(pair_exponents, axis=-1, keepdims=True)
+    row_exponent = jnp.where(jnp.any(nonzero, axis=-1, keepdims=True), max_pair_exponent, 0)
     scaled_sum = _error_corrected_scaled_sum(matrix, vector, row_exponent)
     row_exponent = row_exponent[..., 0]
     stable = jnp.ldexp(scaled_sum, row_exponent)
     direct = matrix @ vector
     scaled_direct = jnp.ldexp(direct, -row_exponent)
-    use_stable = _prefer_scaled_sum(scaled_direct, scaled_sum) & jnp.isfinite(stable)
+    finite_inputs = jnp.all(jnp.isfinite(matrix), axis=-1) & jnp.all(jnp.isfinite(vector))
+    use_stable = (
+        _prefer_scaled_sum(scaled_direct, scaled_sum)
+        | (finite_inputs & ~jnp.isfinite(direct))
+    ) & jnp.isfinite(stable)
     return jnp.where(use_stable, stable, direct)
 
 
@@ -1637,7 +1641,9 @@ def _finite_product_matvec_jvp(
     matrix, vector = primals
     matrix_tangent, vector_tangent = tangents
     value = _finite_product_matvec(matrix, vector)
-    tangent = matrix_tangent @ vector + matrix @ vector_tangent
+    tangent = _finite_product_matvec(matrix_tangent, vector) + _finite_product_matvec(
+        matrix, vector_tangent
+    )
     return value, tangent
 
 
@@ -1730,7 +1736,9 @@ class OnlineGatedStateBuilder:
                 candidate_bias,
             ]
         )
-        if not bool(jnp.all(jnp.isfinite(parameters))):
+        if not isinstance(parameters, jax.core.Tracer) and not bool(
+            jnp.all(jnp.isfinite(parameters))
+        ):
             raise ValueError(
                 "initialization_scale produced non-finite parameters for the supplied key"
             )
@@ -1772,7 +1780,11 @@ class OnlineGatedStateBuilder:
         )
         gate = jax.nn.sigmoid(_finite_product_matvec(gate_weights, event) + gate_bias)
         candidate = jnp.tanh(_finite_product_matvec(candidate_weights, event) + candidate_bias)
-        return hidden + gate * (candidate - hidden)
+        return jnp.where(
+            gate == 1.0,
+            candidate,
+            jnp.where(gate == 0.0, hidden, hidden + gate * (candidate - hidden)),
+        )
 
     def _event(
         self,

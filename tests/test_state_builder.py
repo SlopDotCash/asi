@@ -1758,3 +1758,51 @@ def test_online_builder_init_returns_a_valid_state_at_normal_scale() -> None:
     state = builder.init(jr.key(0))
 
     assert bool(builder.state_valid(state))
+
+
+def test_finite_product_matvec_rescues_cancelling_overflowed_pairwise_products() -> None:
+    matrix = jnp.asarray([[2.0e25, -2.0e25, 3.0e18], [2.0e25, -2.0e25, 0.0]], dtype=jnp.float32)
+    vector = jnp.asarray([2.0e20, 2.0e20, 4.0e18], dtype=jnp.float32)
+    assert not bool(jnp.all(jnp.isfinite(matrix @ vector)))
+    result = _finite_product_matvec(matrix, vector)
+    compiled = jax.jit(_finite_product_matvec)(matrix, vector)
+    expected = np.asarray([1.2e37, 0.0], dtype=np.float32)
+    np.testing.assert_allclose(np.asarray(result), expected, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(compiled), expected, rtol=1e-6)
+
+
+def test_finite_product_matvec_jvp_compensates_cancelling_and_overflowing_tangents() -> None:
+    scale = jnp.asarray(1.0e12, dtype=jnp.float32)
+    matrix = jnp.zeros((1, 3), dtype=jnp.float32)
+    vector = jnp.asarray([scale, scale, 1.0], dtype=jnp.float32)
+    matrix_tangent = jnp.asarray([[scale, -scale, 0.0]], dtype=jnp.float32)
+    vector_tangent = jnp.zeros((3,), dtype=jnp.float32)
+    _, tangent_out = jax.jvp(
+        _finite_product_matvec, (matrix, vector), (matrix_tangent, vector_tangent)
+    )
+    assert float(tangent_out[0]) == 0.0
+
+
+def test_online_builder_transition_guards_saturated_gates_against_zero_times_inf() -> None:
+    builder = OnlineGatedStateBuilder(
+        OnlineGatedStateBuilderConfig(observation_dim=1, n_actions=0, hidden_dim=1)
+    )
+    state = builder.init(jr.key(0))
+    params_zero_gate = jnp.zeros_like(state.parameters).at[3].set(-100.0)
+    event = jnp.zeros((3,), dtype=jnp.float32)
+    hidden_large = jnp.asarray([2.5e38], dtype=jnp.float32)
+    out_zero = builder._transition(params_zero_gate, hidden_large, event)  # noqa: SLF001
+    assert float(out_zero[0]) == float(hidden_large[0])
+
+    params_one_gate = jnp.zeros_like(state.parameters).at[3].set(100.0)
+    hidden_inf = jnp.asarray([jnp.inf], dtype=jnp.float32)
+    out_one = builder._transition(params_one_gate, hidden_inf, event)  # noqa: SLF001
+    assert float(out_one[0]) == 0.0
+
+
+def test_online_builder_init_supports_jit_and_vmap() -> None:
+    builder = OnlineGatedStateBuilder(
+        OnlineGatedStateBuilderConfig(observation_dim=2, initialization_scale=0.2)
+    )
+    jitted_state = jax.jit(builder.init)(jr.key(0))
+    assert bool(builder.state_valid(jitted_state))
