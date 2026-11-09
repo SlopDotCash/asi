@@ -1655,3 +1655,76 @@ def test_gradient_scan_preserves_initialized_host_clocks(reject: bool) -> None:
         assert int(result.state.step_count) == (0 if reject else 2 * (batch + 1))
         assert bool(jnp.all(result.updates_applied == (not reject)))
         current = result.state
+
+
+def test_gradient_td_zero_secondary_step_size_skips_overflowed_secondary_dot_phi() -> None:
+    fmax = jnp.finfo(jnp.float32).max
+    learner = GradientTDLinearLearner(step_size=0.01, secondary_step_size=0.0)
+    state = learner.init(2).replace(
+        weights=jnp.array([0.0, 0.0, float(fmax)], dtype=jnp.float32),
+        secondary_weights=jnp.array([float(fmax), 0.0, float(fmax)], dtype=jnp.float32),
+    )
+    result = learner.update(
+        state,
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(fmax, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result.state)
+    chex.assert_trees_all_equal(result.state.secondary_weights, state.secondary_weights)
+
+
+@pytest.mark.parametrize(
+    "learner_type",
+    [OffPolicyTDLinearLearner, ETDLinearLearner, GradientTDLinearLearner],
+)
+def test_terminal_zero_td_error_skips_overflowed_trace_product(learner_type) -> None:
+    learner = learner_type(step_size=0.1, trace_decay=1.0)
+    initial = learner.init(2)
+    state = initial.replace(
+        eligibility_traces=jnp.full_like(initial.eligibility_traces, 3e38),
+        previous_gamma=jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    result = learner.update(
+        state,
+        jnp.array([3e38, 0.0], dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result.state)
+    chex.assert_trees_all_equal(result.state.weights, state.weights)
+    chex.assert_trees_all_equal(
+        result.state.eligibility_traces, jnp.zeros_like(state.eligibility_traces)
+    )
+
+
+def test_gradient_td_scales_td_error_by_step_size_before_trace_product() -> None:
+    learner = GradientTDLinearLearner(
+        step_size=1e-25, secondary_step_size=1e-25, trace_decay=1.0
+    )
+    initial = learner.init(2)
+    state = initial.replace(
+        eligibility_traces=jnp.full_like(initial.eligibility_traces, 1e25),
+        previous_gamma=jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    result = learner.update(
+        state,
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.asarray(1e15, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result.state)
+    chex.assert_trees_all_close(
+        result.state.weights,
+        jnp.full_like(initial.weights, 1e15),
+    )
+
