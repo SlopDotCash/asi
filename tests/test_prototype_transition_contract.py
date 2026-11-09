@@ -148,6 +148,7 @@ def _explicit_transition(
     truncated: object = False,
     horde_cumulants: object | None = None,
     horde_discounts: object | None = None,
+    next_decision_observation: object | None = None,
 ) -> PrototypeTransition:
     """Build an owned explicit transition from the state's decision cache."""
     discount_array = jnp.asarray(discount, dtype=jnp.float32)
@@ -160,7 +161,11 @@ def _explicit_transition(
         terminated=(discount_array == 0.0 if terminated is None else terminated),
         truncated=truncated,
         next_observation=next_observation,
-        next_decision_observation=next_observation,
+        next_decision_observation=(
+            next_observation
+            if next_decision_observation is None
+            else next_decision_observation
+        ),
         horde_cumulants=horde_cumulants,
         horde_discounts=horde_discounts,
     )
@@ -522,6 +527,131 @@ def test_terminal_horde_discount_drops_carried_eligibility() -> None:
             fresh_agent.start(fresh_agent.init(jr.key(4)), third),
             reward=0.0,
             next_observation=jnp.array([0.2, 0.2], dtype=jnp.float32),
+            discount=0.5,
+            horde_cumulants=cumulants,
+        ),
+    )
+    chex.assert_trees_all_close(
+        resumed.state.horde_state.head_traces,
+        fresh.state.horde_state.head_traces,
+        atol=1e-6,
+    )
+
+
+@pytest.mark.parametrize(
+    ("discount", "terminated", "truncated", "horde_discounts"),
+    [
+        pytest.param(0.5, False, True, None, id="truncated"),
+        pytest.param(
+            0.0,
+            True,
+            False,
+            jnp.array([0.5], dtype=jnp.float32),
+            id="terminated-explicit-horde-discount",
+        ),
+    ],
+)
+def test_episode_boundary_drops_carried_horde_eligibility(
+    discount: float,
+    terminated: bool,
+    truncated: bool,
+    horde_discounts: jax.Array | None,
+) -> None:
+    """A boundary with a positive GVF discount still ends the episode.
+
+    A time-limit truncation bootstraps from ``next_observation`` with a
+    positive discount, and an explicit ``horde_discounts`` entry can keep a
+    demon's bootstrap at a terminal. Either way the agent restarts at
+    ``next_decision_observation``, so the stored trace must not credit the
+    next episode's first update with the previous one.
+    """
+
+    agent = PrototypeAgent(
+        PrototypeAgentConfig(
+            oak=OaKConfig(stomp=_stomp_config()),
+            horde_spec=create_horde_spec(
+                (
+                    GVFSpec(
+                        name="traced",
+                        demon_type=DemonType.PREDICTION,
+                        gamma=0.5,
+                        lamda=0.8,
+                        cumulant_index=-1,
+                    ),
+                )
+            ),
+            horde_hidden_sizes=(),
+            horde_step_size=0.1,
+        )
+    )
+    first = jnp.array([0.4, -0.2], dtype=jnp.float32)
+    second = jnp.array([0.1, 0.3], dtype=jnp.float32)
+    final = jnp.array([-0.7, 0.2], dtype=jnp.float32)
+    reset = jnp.array([0.6, 0.5], dtype=jnp.float32)
+    after_reset = jnp.array([0.2, 0.2], dtype=jnp.float32)
+    cumulants = jnp.array([1.0], dtype=jnp.float32)
+    started = agent.start(agent.init(jr.key(4)), first)
+    carried = agent.update_transition(
+        started,
+        _explicit_transition(
+            started,
+            reward=0.0,
+            next_observation=second,
+            discount=0.5,
+            horde_cumulants=cumulants,
+        ),
+    ).state
+    assert float(_horde_trace_abs_sum(carried)) > 0.0
+
+    # The episode ends at ``final``; the next decision is a reset observation.
+    boundary_transition = _explicit_transition(
+        carried,
+        reward=0.0,
+        next_observation=final,
+        next_decision_observation=reset,
+        discount=discount,
+        terminated=terminated,
+        truncated=truncated,
+        horde_cumulants=cumulants,
+        horde_discounts=horde_discounts,
+    )
+    boundary = agent.update_transition(carried, boundary_transition)
+    assert bool(boundary.transition_diagnostics.valid)
+    chex.assert_trees_all_close(
+        _horde_trace_abs_sum(boundary.state),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+
+    # The boundary update itself still applies the trace it carried in.
+    from_fresh_trace = agent.update_transition(
+        _zero_horde_traces(carried), boundary_transition
+    )
+    weight_gap = jnp.max(
+        jnp.abs(
+            boundary.state.horde_state.head_params.weights[0]
+            - from_fresh_trace.state.horde_state.head_params.weights[0]
+        )
+    )
+    assert float(weight_gap) > 1.0e-4
+
+    resumed = agent.update_transition(
+        boundary.state,
+        _explicit_transition(
+            boundary.state,
+            reward=0.0,
+            next_observation=after_reset,
+            discount=0.5,
+            horde_cumulants=cumulants,
+        ),
+    )
+    fresh_agent = PrototypeAgent(agent.config)
+    fresh_started = fresh_agent.start(fresh_agent.init(jr.key(4)), reset)
+    fresh = fresh_agent.update_transition(
+        fresh_started,
+        _explicit_transition(
+            fresh_started,
+            reward=0.0,
+            next_observation=after_reset,
             discount=0.5,
             horde_cumulants=cumulants,
         ),
