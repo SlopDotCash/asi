@@ -942,3 +942,22 @@ def test_independent_loop_preserves_initialized_host_clocks() -> None:
     assert restored.uptime_s > uptime
     for demon in restored.demon_states:
         assert demon.uptime_s == uptime
+
+
+def test_independent_horde_finite_layer_norm_nonpow2_constant_extremes_and_grad() -> None:
+    from alberta_framework.core.independent_demon_horde import _finite_layer_norm
+
+    for width in (2, 3, 7):
+        values = jnp.full((width,), 2.0e38, dtype=jnp.float32)
+        normalized = _finite_layer_norm(values)
+        np.testing.assert_array_equal(
+            np.asarray(normalized),
+            np.zeros((width,), dtype=np.float32),
+        )
+        weights = jnp.arange(1, width + 1, dtype=jnp.float32)
+        grad = jax.grad(lambda v: jnp.sum(_finite_layer_norm(v) * weights))(values)
+        assert bool(jnp.all(jnp.isfinite(grad)))
+        expected_grad = (weights - jnp.mean(weights)) * jax.lax.rsqrt(
+            jnp.asarray(1e-5, dtype=jnp.float32)
+        )
+        np.testing.assert_allclose(grad, expected_grad, rtol=1e-6, atol=1e-5)

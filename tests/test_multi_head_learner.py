@@ -1934,3 +1934,20 @@ def test_multi_head_loop_preserves_exact_birth_timestamp() -> None:
     result = run_multi_head_learning_loop(learner, state, observations, targets)
     assert result.state.birth_timestamp == birth
     assert type(result.state.birth_timestamp) is float
+
+
+def test_finite_layer_norm_preserves_zero_and_finite_grad_for_nonpow2_constant_extremes() -> None:
+    for width in (2, 3, 7):
+        values = jnp.full((width,), 2.0e38, dtype=jnp.float32)
+        normalized = _finite_layer_norm(values)
+        np.testing.assert_array_equal(
+            np.asarray(normalized),
+            np.zeros((width,), dtype=np.float32),
+        )
+        weights = jnp.arange(1, width + 1, dtype=jnp.float32)
+        grad = jax.grad(lambda v: jnp.sum(_finite_layer_norm(v) * weights))(values)
+        assert bool(jnp.all(jnp.isfinite(grad)))
+        expected_grad = (weights - jnp.mean(weights)) * jax.lax.rsqrt(
+            jnp.asarray(1e-5, dtype=jnp.float32)
+        )
+        np.testing.assert_allclose(grad, expected_grad, rtol=1e-6, atol=1e-5)
