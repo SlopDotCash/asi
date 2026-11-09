@@ -638,3 +638,103 @@ def test_finite_small_scores_keep_order_alongside_overflow(compiled: bool) -> No
         replaced = discovery.maybe_replace(state)
     np.testing.assert_array_equal(np.asarray(replaced.ages), [1, 0, 1])
     np.testing.assert_array_equal(np.asarray(replaced.weights), [[1.0], [0.0], [1.0]])
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_cumulants_and_step_cancel_opposite_sign_extreme_observations(
+    compiled: bool,
+) -> None:
+    discovery = CumulantDiscovery(
+        raw_dim=2,
+        n_candidates=1,
+        decay_rate=0.99,
+        predictor_step_size=1.0,
+    )
+    state = discovery.init(jr.key(0)).replace(
+        projections=jnp.asarray([[0.7, 0.7]], dtype=jnp.float32),
+        weights=jnp.asarray([[2.0, 2.0]], dtype=jnp.float32),
+    )
+    obs = jnp.asarray([2.0e38, -2.0e38], dtype=jnp.float32)
+    with jax.disable_jit(not compiled):
+        cumulant = discovery.cumulants(state, obs)
+        updated = discovery.step(state, obs, obs)
+
+    np.testing.assert_array_equal(np.asarray(cumulant), np.asarray([0.0], dtype=np.float32))
+    np.testing.assert_array_equal(np.asarray(updated.ages), np.asarray([1], dtype=np.int32))
+    np.testing.assert_array_equal(np.asarray(updated.utility), np.asarray([0.0], dtype=np.float32))
+    np.testing.assert_array_equal(np.asarray(updated.weights), np.asarray(state.weights))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_step_reassociates_overflowing_td_sum_and_cancelling_bias(
+    compiled: bool,
+) -> None:
+    discovery = CumulantDiscovery(
+        raw_dim=2,
+        n_candidates=2,
+        decay_rate=0.99,
+        predictor_step_size=1.0e-20,
+        gamma=1.0,
+    )
+    state = discovery.init(jr.key(0)).replace(
+        projections=jnp.asarray([[0.0, 1.0], [0.0, 0.0]], dtype=jnp.float32),
+        weights=jnp.asarray([[1.0, 0.0], [1.0, 1.0]], dtype=jnp.float32),
+        biases=jnp.asarray([2.0e38, 2.0e38], dtype=jnp.float32),
+    )
+    obs = jnp.asarray([2.0e38, 0.0], dtype=jnp.float32)
+    next_obs = jnp.asarray([0.0, 2.0e38], dtype=jnp.float32)
+    with jax.disable_jit(not compiled):
+        updated = discovery.step(state, obs, next_obs)
+
+    np.testing.assert_array_equal(np.asarray(updated.ages), np.asarray([1, 1], dtype=np.int32))
+    expected_utility = np.asarray([0.0, 0.0], dtype=np.float32)
+    np.testing.assert_array_equal(np.asarray(updated.utility), expected_utility)
+    assert bool(jnp.all(jnp.isfinite(updated.weights)))
+    assert bool(jnp.all(jnp.isfinite(updated.biases)))
+
+
+@pytest.mark.parametrize("mode", ["underflow", "overflow"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_step_outer_product_preserves_subnormal_and_sparse_overflow_updates(
+    mode: str,
+    compiled: bool,
+) -> None:
+    if mode == "underflow":
+        discovery = CumulantDiscovery(
+            raw_dim=2,
+            n_candidates=1,
+            decay_rate=0.99,
+            predictor_step_size=1.0e-25,
+            gamma=0.0,
+        )
+        state = discovery.init(jr.key(0)).replace(
+            projections=jnp.asarray([[0.0, 1.0]], dtype=jnp.float32),
+            weights=jnp.zeros((1, 2), dtype=jnp.float32),
+            biases=jnp.zeros(1, dtype=jnp.float32),
+        )
+        obs = jnp.asarray([1.0e30, 0.0], dtype=jnp.float32)
+        next_obs = jnp.asarray([0.0, 1.0e-25], dtype=jnp.float32)
+    else:
+        discovery = CumulantDiscovery(
+            raw_dim=2,
+            n_candidates=1,
+            decay_rate=0.99,
+            predictor_step_size=2.0e20,
+            gamma=1.0,
+        )
+        state = discovery.init(jr.key(0)).replace(
+            projections=jnp.asarray([[0.0, 1.0]], dtype=jnp.float32),
+            weights=jnp.zeros((1, 2), dtype=jnp.float32),
+            biases=jnp.asarray([-3.0e38], dtype=jnp.float32),
+        )
+        obs = jnp.asarray([1.0e-3, 0.0], dtype=jnp.float32)
+        next_obs = jnp.asarray([0.0, 2.0e18], dtype=jnp.float32)
+
+    with jax.disable_jit(not compiled):
+        updated = discovery.step(state, obs, next_obs)
+
+    np.testing.assert_array_equal(np.asarray(updated.ages), np.asarray([1], dtype=np.int32))
+    assert bool(jnp.all(jnp.isfinite(updated.weights)))
+    assert float(updated.weights[0, 0]) > 0.0
+    assert float(updated.weights[0, 1]) == 0.0
+    assert bool(jnp.all(jnp.isfinite(updated.biases)))
