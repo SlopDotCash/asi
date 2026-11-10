@@ -688,3 +688,146 @@ class TestStep3RoutingDispatch:
         cfg = Step3HordeConfig(routing="mixed")
         restored = Step3HordeConfig.from_dict(cfg.to_dict())
         assert restored.routing == "mixed"
+
+
+@pytest.mark.parametrize("obs_value", [0.25, float("nan")], ids=["accepted", "rejected"])
+def test_mixed_horde_update_preserves_host_clocks(obs_value: float) -> None:
+    """Single-step MixedHorde.update must retain Python-float lifecycle clocks."""
+    horde = MixedHorde(
+        horde_spec=create_horde_spec(
+            [
+                _gamma0_demon("d0", 0),
+                _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+            ]
+        ),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+    )
+    state = horde.init(3, jr.key(0))
+    birth = 1_700_000_000.125
+    uptime = float(2**24) + 0.25
+    assert state.shared_state is not None
+    assert state.independent_state is not None
+    demon_states = tuple(
+        demon.replace(birth_timestamp=birth, uptime_s=uptime)
+        for demon in state.independent_state.demon_states
+    )
+    state = state.replace(
+        birth_timestamp=birth,
+        uptime_s=uptime,
+        shared_state=state.shared_state.replace(
+            birth_timestamp=birth,
+            uptime_s=uptime,
+        ),
+        independent_state=state.independent_state.replace(
+            birth_timestamp=birth,
+            uptime_s=uptime,
+            demon_states=demon_states,
+        ),
+    )
+    obs = jnp.full((3,), obs_value, dtype=jnp.float32)
+    cumulants = jnp.array([1.0, 0.5], dtype=jnp.float32)
+    next_obs = jnp.zeros((3,), dtype=jnp.float32)
+
+    result = horde.update(state, obs, cumulants, next_obs)
+    restored = result.state
+    assert restored.shared_state is not None
+    assert restored.independent_state is not None
+    for clock in (
+        restored,
+        restored.shared_state,
+        restored.independent_state,
+        restored.independent_state.demon_states[0],
+    ):
+        assert type(clock.birth_timestamp) is float
+        assert type(clock.uptime_s) is float
+        assert clock.birth_timestamp == birth
+        assert clock.uptime_s == uptime
+
+
+@pytest.mark.parametrize(
+    "bad_cumulants",
+    [
+        jnp.array([jnp.nan, jnp.inf], dtype=jnp.float32),
+        jnp.array([jnp.inf, jnp.nan], dtype=jnp.float32),
+    ],
+    ids=["shared_inactive_indep_inf", "shared_inf_indep_inactive"],
+)
+def test_mixed_horde_rejects_when_only_requested_partition_fails(
+    bad_cumulants: jax.Array,
+) -> None:
+    """An all-NaN partition must not mask a rejected active partition."""
+    horde = MixedHorde(
+        horde_spec=create_horde_spec(
+            [
+                _gamma0_demon("d0", 0),
+                _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+            ]
+        ),
+        hidden_sizes=(4,),
+        step_size=0.05,
+        sparsity=0.0,
+    )
+    state = horde.init(3, jr.key(17))
+    obs = jnp.ones((3,), dtype=jnp.float32)
+    next_obs = jnp.zeros((3,), dtype=jnp.float32)
+
+    rejected = horde.update(state, obs, bad_cumulants, next_obs)
+    assert not bool(rejected.update_applied)
+    assert not bool(jnp.any(rejected.head_updates_applied))
+    assert float(rejected.trunk_bounding_metric) == 0.0
+    chex.assert_trees_all_equal(
+        rejected.predictions, jnp.zeros((2,), dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(rejected.state, state)
+
+
+def test_mixed_horde_loop_finishes_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_mixed_horde_learning_loop must synchronize device outputs before timing."""
+    import time
+    from types import SimpleNamespace
+
+    import alberta_framework.core.horde as module
+
+    horde = MixedHorde(
+        horde_spec=create_horde_spec(
+            [
+                _gamma0_demon("d0", 0),
+                _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+            ]
+        ),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+        step_size=0.05,
+    )
+    state = horde.init(3, jr.key(0))
+    observations = jnp.full((32, 3), 0.1, dtype=jnp.float32)
+    cumulants = jnp.full((32, 2), 0.2, dtype=jnp.float32)
+    scan_outputs: list[object] = []
+    real_scan = jax.lax.scan
+    real_time = time.time
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        result = real_scan(*args, **kwargs)
+        scan_outputs.extend(jax.tree.leaves(result))
+        return result
+
+    def clock() -> float:
+        if scan_outputs:
+            assert all(
+                leaf.is_ready()
+                for leaf in scan_outputs
+                if isinstance(leaf, jax.Array)
+            )
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+    result = run_mixed_horde_learning_loop(
+        horde, state, observations, cumulants, observations
+    )
+    assert scan_outputs
+    assert int(result.state.step_count) == 32
+    assert bool(jnp.all(result.updates_applied))
