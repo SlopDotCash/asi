@@ -28,6 +28,7 @@ _ACTUAL_DECAY_TYPES = frozenset(
         *(np.dtype(code).type for code in "bBhHiIlLqQpefdg"),
     }
 )
+_FLOAT32_MAX = float(np.finfo(np.float32).max)
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -553,12 +554,38 @@ def normalize_future_utility_signal(
         direct_second_moment,
         recovered_second_moment,
     )
+    # A second moment no float32 can hold (a finite signal near 1e30 with a
+    # small innovation weight) must not poison the stored history: saturate
+    # it so the next step still normalizes. Only positive infinity is
+    # saturated; NaN inputs stay visible as NaN.
+    stored_second_moment = jnp.where(
+        jnp.isposinf(new_second_moment),
+        jnp.full_like(new_second_moment, _FLOAT32_MAX),
+        new_second_moment,
+    )
     normalized = signal
     mode = _require_exact_mode(mode)
     if mode in {"uncertainty", "uncertainty_age"}:
-        normalized = normalized / jnp.sqrt(new_second_moment + 1e-6)
+        direct_normalized = signal / jnp.sqrt(new_second_moment + 1e-6)
+        # The direct quotient collapses to zero once the moment overflows,
+        # even though signal / RMS stays representable. Recover it in a
+        # rescaled domain: divide numerator and denominator by the peak so
+        # every term stays in [0, 1]. Only a finite history can overflow
+        # through the current innovation; an already-infinite history keeps
+        # the limiting zero.
+        history_rms = jnp.sqrt(decayed_second_moment)
+        peak = jnp.maximum(jnp.abs(signal), history_rms)
+        safe_peak = jnp.where(peak > 0.0, peak, jnp.ones_like(peak))
+        scaled_signal = signal / safe_peak
+        scaled_rms = history_rms / safe_peak
+        scaled_moment = scaled_rms * scaled_rms + innovation_weight * scaled_signal * scaled_signal
+        scaled_normalized = scaled_signal / jnp.sqrt(scaled_moment)
+        recoverable = (
+            jnp.isposinf(new_second_moment) & jnp.isfinite(decayed_second_moment) & (peak > 0.0)
+        )
+        normalized = jnp.where(recoverable, scaled_normalized, direct_normalized)
 
-    return normalized, new_second_moment
+    return normalized, stored_second_moment
 
 
 def bias_correct_future_utility(
