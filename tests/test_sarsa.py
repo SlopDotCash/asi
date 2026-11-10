@@ -1772,6 +1772,75 @@ class TestSARSALambdaTraces:
         assert delta[0] != 0.0
         np.testing.assert_array_equal(delta[1:], 0.0)
 
+    def test_truncated_episode_does_not_leak_prediction_demon_traces(self):
+        """A truncation also ends prediction-demon traces, like a terminal does.
+
+        ``update`` clears prediction-demon traces at a terminal transition,
+        but ``run_sarsa_episode`` ends a truncated episode through
+        ``reset_control_traces``, which clears only control heads. The
+        prediction trace then survives the boundary, and the next episode's
+        first TD error credits the dead episode's features.
+        """
+        from alberta_framework import run_sarsa_episode
+
+        class _TruncatingCorridor:
+            """One-hot three-state corridor that truncates after three steps."""
+
+            def __init__(self) -> None:
+                self._t = 0
+
+            def reset(self):
+                self._t = 0
+                return np.eye(3, dtype=np.float32)[0], {}
+
+            def step(self, action: int):
+                self._t += 1
+                obs = np.eye(3, dtype=np.float32)[min(self._t, 2)]
+                return obs, 1.0, False, self._t >= 3, {}
+
+        pred_demons = [
+            GVFSpec(
+                name="pred_0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.9,
+                cumulant_index=0,
+            ),
+        ]
+        agent = _make_agent(
+            n_actions=1,
+            prediction_demons=pred_demons,
+            hidden_sizes=(),
+            gamma=0.9,
+            epsilon_start=0.0,
+            lamda=0.8,
+        )
+        state = agent.init(feature_dim=3, key=jr.key(3))
+        # Build a nonzero prediction trace with a direct update: the episode
+        # runner itself never forwards prediction cumulants.
+        obs = jnp.ones(3, dtype=jnp.float32)
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(0, dtype=jnp.int32),
+            last_observation=obs,
+        )
+        state = agent.update(
+            state,
+            jnp.array(1.0),
+            jnp.full(3, 0.5, dtype=jnp.float32),
+            jnp.array(0.0),
+            jnp.array(0, dtype=jnp.int32),
+            prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+        ).state
+        pred_w_trace, _ = state.learner_state.head_traces[1]
+        assert float(jnp.max(jnp.abs(pred_w_trace))) > 0.0
+
+        result = run_sarsa_episode(agent, state, _TruncatingCorridor(), max_steps=10)
+        assert result.num_steps == 3
+
+        w_trace, b_trace = result.state.learner_state.head_traces[1]
+        assert jnp.allclose(w_trace, 0.0), "prediction-demon w-trace leaked across truncation"
+        assert jnp.allclose(b_trace, 0.0), "prediction-demon b-trace leaked across truncation"
+
     def test_max_steps_cutoff_does_not_leak_traces_into_the_next(self):
         """Running out of ``max_steps`` also ends the episode, so traces must not survive it.
 
