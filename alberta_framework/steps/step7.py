@@ -103,7 +103,10 @@ class Step7DynaConfig:
     The real transition update always happens first. Planning then performs a
     fixed number of model-generated one-step backups, gated by model warmup.
     Each imagined rollout starts from empty eligibility traces, and the
-    real-experience traces are restored afterwards.
+    real-experience traces are restored afterwards. Planning backups improve
+    value estimates only: by default they never move the average-reward
+    estimate, which is a property of actual behavior in the real environment
+    (see ``planning_update_average_reward``).
     """
 
     control: Step6DifferentialSARSAConfig = field(
@@ -117,6 +120,7 @@ class Step7DynaConfig:
     planning_strategy: Step7PlanningStrategy = "random"
     planning_importance_ratio_clip: float = 10.0
     planning_apply_importance_correction: bool = True
+    planning_update_average_reward: bool = False
     planning_priority_propagation: float = 1.0
     planning_utility_step_size: float = 0.2
 
@@ -175,6 +179,7 @@ _STEP7_CONFIG_FIELDS = frozenset(
         "planning_strategy",
         "planning_importance_ratio_clip",
         "planning_apply_importance_correction",
+        "planning_update_average_reward",
         "planning_priority_propagation",
         "planning_utility_step_size",
     }
@@ -305,6 +310,8 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
     )
     if type(config.planning_apply_importance_correction) is not bool:
         raise ValueError("planning_apply_importance_correction must be a built-in bool")
+    if type(config.planning_update_average_reward) is not bool:
+        raise ValueError("planning_update_average_reward must be a built-in bool")
     strategy = config.planning_strategy
     if type(strategy) is not str:
         raise ValueError("planning_strategy must be an actual string")
@@ -354,6 +361,11 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
         config,
         "planning_apply_importance_correction",
         bool(config.planning_apply_importance_correction),
+    )
+    object.__setattr__(
+        config,
+        "planning_update_average_reward",
+        bool(config.planning_update_average_reward),
     )
     object.__setattr__(config, "planning_strategy", canonical_strategy)
 
@@ -1202,11 +1214,20 @@ def step7_update(
                 prediction.reward,
                 prediction.next_observation,
             )
+            planned_state = planned.state
+            if not config.planning_update_average_reward:
+                # Planning backups improve value estimates only: restore the
+                # pre-backup reward-rate estimate so imagined rewards can
+                # never move rbar (Step 9 documents the same doctrine in
+                # ``dreams_update_average_reward``).
+                planned_state = planned_state.replace(  # type: ignore[attr-defined]
+                    average_reward=temp_state.average_reward
+                )
             return (
-                planned.state,
+                planned_state,
                 prediction.next_observation,
                 planned.action,
-                planned.state.rng_key,
+                planned_state.rng_key,
             ), (planned.td_error, prediction.reward, planned.update_applied)
 
         # An imagined rollout starts from empty eligibility: the real traces
