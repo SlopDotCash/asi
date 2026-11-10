@@ -2669,9 +2669,11 @@ class CompositionalFeatureLearner:
             state.theta,
             observation,
         )
-        # Indexing clamps a wrong-width observation onto the wrong raw inputs.
+        # Indexing clamps a wrong-width observation onto the wrong raw inputs,
+        # and FEATURE_VALUE_CLIP would otherwise clip +/-inf into finite values.
         return jnp.where(
-            _observation_width_matches(state.ops, state.parent_a, observation),
+            _observation_width_matches(state.ops, state.parent_a, observation)
+            & jnp.all(jnp.isfinite(observation)),
             values,
             jnp.nan,
         )
@@ -3017,7 +3019,6 @@ class CompositionalFeatureLearner:
         )
         return result[:8]
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: CompositionalFeatureState,
@@ -3026,6 +3027,29 @@ class CompositionalFeatureLearner:
         context_id: Array | int = 0,
     ) -> CompositionalFeatureUpdateResult:
         """Perform one temporally-uniform compositional-feature update."""
+        result = self._update_compiled(
+            state,
+            observation,
+            targets,
+            context_id=context_id,
+        )
+        if not isinstance(result.state.step_count, jax.core.Tracer):
+            result = result.replace(
+                state=result.state.replace(
+                    birth_timestamp=state.birth_timestamp,
+                    uptime_s=state.uptime_s,
+                ),
+            )
+        return cast(CompositionalFeatureUpdateResult, result)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_compiled(
+        self,
+        state: CompositionalFeatureState,
+        observation: Array,
+        targets: Array,
+        context_id: Array | int = 0,
+    ) -> CompositionalFeatureUpdateResult:
         previous_checked = state
         if self._utility_decay == 0.0:
             previous_checked = previous_checked.replace(  # type: ignore[attr-defined]
@@ -4945,6 +4969,8 @@ def run_compositional_arrays(
 
     t0 = time.time()
     final_state, (metrics, updates_applied) = jax.lax.scan(step_fn, state, (observations, targets))
+    if not isinstance(metrics, jax.core.Tracer):
+        metrics.block_until_ready()
     elapsed = time.time() - t0
     # The scan carries host clocks through the traced update and narrows them
     # to float32. Restore the incoming Python values and add this scan's time
@@ -4995,6 +5021,8 @@ def run_compositional_loop(
     (final_state, _), (metrics, updates_applied) = jax.lax.scan(
         step_fn, (learner_state, stream_state), jnp.arange(num_steps)
     )
+    if not isinstance(metrics, jax.core.Tracer):
+        metrics.block_until_ready()
     elapsed = time.time() - t0
     # Restore the incoming host clocks narrowed by the scan, as in
     # run_compositional_arrays.
