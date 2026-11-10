@@ -406,10 +406,31 @@ class HiddenStateAR2Stream:
         return self._visible_dim
 
     def init(self, key: Array) -> HiddenStateAR2State:
-        """Initialize AR state."""
+        """Initialize AR state from the stationary distribution.
+
+        The two lags are drawn jointly from the stationary bivariate
+        normal: ``x_prev`` has variance ``gamma0`` and ``x_prev2`` is
+        correlated with it at lag-1 autocorrelation ``rho1``. Drawing
+        independent unit-variance lags would start the stream far above
+        its stationary variance (about 18x under the default
+        coefficients) with zero lag correlation. With zero innovation
+        there is no stationary variance to draw from (the stationary
+        law is degenerate, or arbitrary for the deterministic-copy
+        case), so the existing unit-variance start is kept.
+        """
         key, k1, k2 = jr.split(_require_threefry_key(key), 3)
-        x_prev = jr.normal(k1, (self._feature_dim,), dtype=jnp.float32)
-        x_prev2 = jr.normal(k2, (self._feature_dim,), dtype=jnp.float32)
+        z1 = jr.normal(k1, (self._feature_dim,), dtype=jnp.float32)
+        z2 = jr.normal(k2, (self._feature_dim,), dtype=jnp.float32)
+        if self._innovation_std == 0.0:
+            return HiddenStateAR2State(key=key, x_prev=z1, x_prev2=z2)
+        rho1 = self._phi1 / (1.0 - self._phi2)
+        rho2 = self._phi1 * rho1 + self._phi2
+        gamma0 = self._innovation_std**2 / (
+            1.0 - self._phi1 * rho1 - self._phi2 * rho2
+        )
+        std0 = math.sqrt(gamma0)
+        x_prev = std0 * z1
+        x_prev2 = rho1 * x_prev + std0 * math.sqrt(1.0 - rho1**2) * z2
         return HiddenStateAR2State(key=key, x_prev=x_prev, x_prev2=x_prev2)
 
     def step(
