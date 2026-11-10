@@ -1874,3 +1874,91 @@ def test_compositional_exact_observation_width_still_updates() -> None:
 
     assert bool(result.update_applied)
     assert bool(jnp.all(jnp.isfinite(learner.predict(result.state, observation))))
+
+
+@pytest.mark.parametrize("obs_value", [0.25, float("nan")], ids=["accepted", "rejected"])
+def test_compositional_update_preserves_host_clocks(obs_value: float) -> None:
+    """Single-step CompositionalFeatureLearner.update must retain Python-float clocks."""
+    learner = CompositionalFeatureLearner(
+        n_features=4,
+        n_tasks=1,
+        candidate_count=0,
+        replacement_interval=100_000,
+        min_feature_age=100_000,
+    )
+    birth = 1_700_000_000.125
+    uptime = float(2**24) + 0.25
+    state = learner.init(feature_dim=2, key=jr.key(0)).replace(
+        birth_timestamp=birth,
+        uptime_s=uptime,
+    )
+    obs = jnp.full((2,), obs_value, dtype=jnp.float32)
+    targets = jnp.zeros((1,), dtype=jnp.float32)
+
+    result = learner.update(state, obs, targets)
+    assert type(result.state.birth_timestamp) is float
+    assert type(result.state.uptime_s) is float
+    assert result.state.birth_timestamp == birth
+    assert result.state.uptime_s == uptime
+
+
+@pytest.mark.parametrize("bad_value", [float("inf"), float("-inf"), float("nan")])
+def test_compositional_nonfinite_observation_fails_visible(bad_value: float) -> None:
+    """Non-finite observations must not clip into finite compositional features."""
+    learner = CompositionalFeatureLearner(n_features=5, n_tasks=2)
+    state = learner.init(3, jr.key(0))
+    obs = jnp.array([bad_value, 0.5, -0.25], dtype=jnp.float32)
+
+    assert bool(jnp.all(jnp.isnan(learner.constructed_features(state, obs))))
+    assert bool(jnp.all(jnp.isnan(learner.augmented_observation(state, obs)[3:])))
+    assert bool(jnp.all(jnp.isnan(learner.predict(state, obs))))
+
+
+def test_compositional_runners_finish_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compositional scan runners must synchronize device outputs before timing."""
+    import time
+    from types import SimpleNamespace
+
+    import alberta_framework.core.compositional_features as module
+
+    learner = CompositionalFeatureLearner(
+        n_features=4,
+        n_tasks=1,
+        candidate_count=0,
+        replacement_interval=100_000,
+        min_feature_age=100_000,
+    )
+    state = learner.init(feature_dim=2, key=jr.key(0))
+    observations = jnp.zeros((16, 2), dtype=jnp.float32)
+    targets = jnp.zeros((16, 1), dtype=jnp.float32)
+    scan_outputs: list[object] = []
+    real_scan = jax.lax.scan
+    real_time = time.time
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        result = real_scan(*args, **kwargs)
+        scan_outputs.extend(jax.tree.leaves(result))
+        return result
+
+    def clock() -> float:
+        if scan_outputs:
+            assert all(
+                leaf.is_ready()
+                for leaf in scan_outputs
+                if hasattr(leaf, "is_ready")
+                and not isinstance(leaf, jax.core.Tracer)
+            )
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+
+    res_arrays = run_compositional_arrays(learner, state, observations, targets)
+    assert int(res_arrays.state.step_count) == 16
+
+    scan_outputs.clear()
+    stream = CompositionalStream(feature_dim=2, n_tasks=1)
+    res_loop = run_compositional_loop(learner, stream, 16, jr.key(1), learner_state=state)
+    assert int(res_loop.state.step_count) == 16
