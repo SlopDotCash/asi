@@ -1253,7 +1253,7 @@ def step7_update(
             lambda: restored_state,
         )
         next_state = _maybe_accept_planning_state(
-            planning_ready,
+            rollout_accepted,
             corrected_state,
             carry_state,
         )
@@ -1276,7 +1276,7 @@ def step7_update(
             config.planning_priority_propagation,
         )
         next_queue_priorities = jnp.where(
-            planning_ready & (config.planning_strategy == "prioritized"),
+            rollout_accepted & (config.planning_strategy == "prioritized"),
             propagated_queue_priorities,
             queue_priorities,
         )
@@ -1287,7 +1287,7 @@ def step7_update(
             config.planning_utility_step_size,
         )
         next_utility_values = jnp.where(
-            planning_ready & (config.planning_strategy == "learned"),
+            rollout_accepted & (config.planning_strategy == "learned"),
             updated_utility_values,
             utility_values,
         )
