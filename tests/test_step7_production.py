@@ -972,6 +972,43 @@ def test_step7_planning_accepted_tracks_the_core_learner_rollback() -> None:
     assert smoke.planning_acceptance_count == sum(replayed)
 
 
+def test_step7_partially_rejected_rollout_applies_nothing() -> None:
+    """A rollout with a rolled-back step must not move the control state.
+
+    ``planning_accepted`` already reports False when any imagined step is
+    rolled back, but the state commit was gated only on the warmup gate, so
+    the steps that did apply still landed in the control weights. At depth 1
+    a rejection is a no-op, so this needs depth 2 to show: one imagined step
+    applies, the next is rolled back by the core learner.
+    """
+    cfg = Step7DynaConfig(
+        control=Step6DifferentialSARSAConfig(n_actions=2, q_step_size=1.0, trace_decay=0.99),
+        world_model=Step8WorldModelConfig(
+            observation_dim=3, n_actions=2, hidden_sizes=(), step_size=0.05,
+            use_layer_norm=False,
+        ),
+        planning_steps=1,
+        planning_rollout_depth=2,
+        planning_warmup_steps=0,
+        planning_memory_size=1,
+        planning_strategy="random",
+    )
+    agent, model = make_step7_components(cfg)
+    huge = jnp.array([1e30, 0.0, 0.0], dtype=jnp.float32)
+    state = init_step7_state(
+        agent, model, key=jr.key(0), initial_observation=huge, memory_size=1
+    )
+    for _ in range(2):
+        state = step7_update(cfg, agent, model, state, jnp.array(0.0), huge).state
+    result = step7_update(cfg, agent, model, state, jnp.array(0.0), huge)
+    assert not bool(result.real_control_result.update_applied)
+    assert not bool(result.planning_accepted[0])
+    chex.assert_trees_all_equal(
+        result.state.control_state.q_weights,
+        result.real_control_result.state.q_weights,
+    )
+
+
 def test_step7_planning_backup_starts_from_empty_eligibility() -> None:
     """An imagined backup must leave the real-experience traces untouched.
 
