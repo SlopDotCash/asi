@@ -1161,7 +1161,7 @@ class FixedBudgetFeatureLearner:
         """
         self._validate_static_contract(state, observation)
         features, _ = self._features(state.feature_weights, state.feature_biases, observation)
-        return features
+        return jnp.where(jnp.all(jnp.isfinite(observation)), features, jnp.nan)
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def augmented_observation(
@@ -1178,7 +1178,6 @@ class FixedBudgetFeatureLearner:
         features = self.constructed_features(state, observation)
         return state.output_weights @ features + state.output_biases
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: FeatureDiscoveryState,
@@ -1186,6 +1185,23 @@ class FixedBudgetFeatureLearner:
         targets: Array,
     ) -> FeatureDiscoveryUpdateResult:
         """Perform one temporally-uniform feature-discovery update."""
+        result = self._update_compiled(state, observation, targets)
+        if not isinstance(result.state.step_count, jax.core.Tracer):
+            result = result.replace(
+                state=result.state.replace(
+                    birth_timestamp=state.birth_timestamp,
+                    uptime_s=state.uptime_s,
+                ),
+            )
+        return cast(FeatureDiscoveryUpdateResult, result)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_compiled(
+        self,
+        state: FeatureDiscoveryState,
+        observation: Array,
+        targets: Array,
+    ) -> FeatureDiscoveryUpdateResult:
         self._validate_static_contract(state, observation, targets)
         previous_checked = state
         utility_history_discarded = self._utility_decay == 0.0 and (
