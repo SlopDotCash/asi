@@ -552,6 +552,45 @@ def _rollback_multi_head_result(
     )
 
 
+def _restore_update_result_learner_host_clocks(
+    result: LatentWorldModelUpdateResult,
+    source_learner_state: MultiHeadMLPState,
+) -> LatentWorldModelUpdateResult:
+    """Restore Python-float learner clocks on an update result outside tracing."""
+    if isinstance(result.state.step_count, jax.core.Tracer):
+        return result
+    restored_learner = cast(
+        MultiHeadMLPState,
+        dataclasses.replace(
+            cast(Any, result.learner_result.state),
+            birth_timestamp=source_learner_state.birth_timestamp,
+            uptime_s=source_learner_state.uptime_s,
+        ),
+    )
+    restored_state = cast(
+        LatentWorldModelState,
+        dataclasses.replace(
+            cast(Any, result.state),
+            learner_state=restored_learner,
+        ),
+    )
+    restored_learner_result = cast(
+        MultiHeadMLPUpdateResult,
+        dataclasses.replace(
+            cast(Any, result.learner_result),
+            state=restored_learner,
+        ),
+    )
+    return cast(
+        LatentWorldModelUpdateResult,
+        dataclasses.replace(
+            cast(Any, result),
+            state=restored_state,
+            learner_result=restored_learner_result,
+        ),
+    )
+
+
 class LatentWorldModel:
     """Latent model for ``(z_t, a_t) -> (z_{t+1}, r, gamma)``.
 
@@ -702,9 +741,12 @@ class LatentWorldModel:
     ) -> Float[Array, " latent_dim"]:
         """Encode one observation with explicit (differentiable) encoder params."""
         obs = _float32_operand("observation", observation, (self._config.observation_dim,))
+        obs_valid = jnp.all(jnp.isfinite(obs))
+        safe_obs = jnp.where(obs_valid, obs, jnp.zeros_like(obs))
         scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
-        scaled = obs / scale
-        return jnp.tanh(scaled @ encoder_matrix + encoder_bias)
+        scaled = safe_obs / scale
+        encoded = jnp.tanh(scaled @ encoder_matrix + encoder_bias)
+        return jnp.where(obs_valid, encoded, jnp.full_like(encoded, jnp.nan))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def encode(
@@ -776,10 +818,16 @@ class LatentWorldModel:
         """Build ``[next_latent_or_delta, reward, discount]`` targets."""
         latent = self.encode(state, observation)
         next_latent = self.encode(state, next_observation)
-        latent_target = jnp.where(
+        latent_valid = jnp.all(jnp.isfinite(latent)) & jnp.all(jnp.isfinite(next_latent))
+        raw_latent_target = jnp.where(
             self._config.predict_delta,
             next_latent - latent,
             next_latent,
+        )
+        latent_target = jnp.where(
+            latent_valid,
+            raw_latent_target,
+            jnp.full_like(raw_latent_target, jnp.nan),
         )
         reward_arr = _float32_operand("reward", reward, ())
         discount_arr = _float32_operand("discount", discount, ())
@@ -911,7 +959,6 @@ class LatentWorldModel:
         encoder_bias = jnp.where(applied, candidate_bias, state.encoder_bias)
         return encoder_matrix, encoder_bias, applied, gate_blocked, gradient_norm
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: LatentWorldModelState,
@@ -929,6 +976,26 @@ class LatentWorldModel:
         ``encoder_learning=False`` the computation is exactly the
         fixed-encoder path.
         """
+        result = self._update(
+            state,
+            observation,
+            action,
+            reward,
+            discount,
+            next_observation,
+        )
+        return _restore_update_result_learner_host_clocks(result, state.learner_state)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update(
+        self,
+        state: LatentWorldModelState,
+        observation: Array,
+        action: Array,
+        reward: Array,
+        discount: Array,
+        next_observation: Array,
+    ) -> LatentWorldModelUpdateResult:
         observation_arr = _float32_operand(
             "observation",
             observation,

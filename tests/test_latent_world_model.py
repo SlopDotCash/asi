@@ -1178,3 +1178,86 @@ def test_latent_update_surprise_reduction_preserves_finite_errors(
         assert not bool(result.update_applied)
         assert int(result.state.step_count) == 0
         assert float(result.surprise) == 0.0
+
+
+@pytest.mark.parametrize("obs_value", [0.25, float("nan")], ids=["accepted", "rejected"])
+def test_latent_world_model_update_preserves_learner_host_clocks(
+    obs_value: float,
+) -> None:
+    """Host update calls must retain Python-float learner clocks."""
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=3,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(19))
+    birth, uptime = 1_700_000_000.125, 16_777_216.25
+    state = dataclasses.replace(  # type: ignore[type-var]
+        state,
+        learner_state=dataclasses.replace(  # type: ignore[type-var]
+            state.learner_state,
+            birth_timestamp=birth,
+            uptime_s=uptime,
+        ),
+    )
+    obs = jnp.full((2,), obs_value, dtype=jnp.float32)
+    next_obs = jnp.array([0.5, -0.25], dtype=jnp.float32)
+
+    for step in (1, 2):
+        result = model.update(
+            state,
+            obs,
+            jnp.int32(1),
+            jnp.float32(0.5),
+            jnp.float32(0.99),
+            next_obs,
+        )
+        for learner_state in (result.state.learner_state, result.learner_result.state):
+            assert type(learner_state.birth_timestamp) is float
+            assert type(learner_state.uptime_s) is float
+            assert learner_state.birth_timestamp == birth
+            assert learner_state.uptime_s == uptime
+        expected_step = step if math.isfinite(obs_value) else 0
+        assert int(result.state.step_count) == expected_step
+        state = result.state
+
+
+@pytest.mark.parametrize("predict_delta", [True, False])
+def test_latent_world_model_nonfinite_observation_fails_visible(
+    predict_delta: bool,
+) -> None:
+    """Infinite observations must not saturate tanh into finite latents or predictions."""
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=3,
+            hidden_sizes=(),
+            sparsity=0.0,
+            predict_delta=predict_delta,
+        )
+    )
+    state = model.init(jr.key(23))
+    inf_obs = jnp.array([jnp.inf, 1.0], dtype=jnp.float32)
+    valid_obs = jnp.array([0.25, -0.5], dtype=jnp.float32)
+    action = jnp.int32(0)
+    reward = jnp.float32(0.5)
+    discount = jnp.float32(0.99)
+
+    assert bool(jnp.all(jnp.isnan(model.encode(state, inf_obs))))
+    assert bool(jnp.all(jnp.isnan(model.input_features(state, inf_obs, action))))
+
+    prediction = model.predict(state, inf_obs, action)
+    assert bool(jnp.all(jnp.isnan(prediction.latent)))
+    assert bool(jnp.all(jnp.isnan(prediction.next_latent)))
+    assert bool(jnp.isnan(prediction.reward))
+    assert bool(jnp.isnan(prediction.discount))
+    assert bool(jnp.all(jnp.isnan(prediction.raw_predictions)))
+
+    for bad_obs, bad_next in ((inf_obs, valid_obs), (valid_obs, inf_obs)):
+        built_targets = model.targets(state, bad_obs, reward, discount, bad_next)
+        assert bool(jnp.all(jnp.isnan(built_targets[: model.config.latent_dim])))
