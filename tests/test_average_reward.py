@@ -143,6 +143,39 @@ def test_differential_gtd_infinite_reward_does_not_poison_weights() -> None:
     assert bool(recovered.update_applied)
 
 
+def test_differential_gtd_negative_importance_ratio_is_atomic_and_neutral() -> None:
+    learner = DifferentialGTDLearner(
+        DifferentialGTDConfig(
+            value_step_size=0.1,
+            secondary_step_size=0.01,
+            average_reward_step_size=0.02,
+        )
+    )
+    state = learner.init(1).replace(
+        secondary_weights=jnp.asarray([1.0], dtype=jnp.float32),
+    )
+
+    result = learner.update(
+        state,
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([2.0], dtype=jnp.float32),
+        jnp.asarray(-0.25, dtype=jnp.float32),
+    )
+
+    # JIT tracing narrows the incidental host clock; compare the learning state.
+    chex.assert_trees_all_equal(
+        result.state.replace(birth_timestamp=state.birth_timestamp),
+        state,
+    )
+    assert not bool(result.update_applied)
+    assert float(result.prediction) == 0.0
+    assert float(result.next_prediction) == 0.0
+    assert float(result.td_error) == 0.0
+    assert float(result.rho_clipped) == 0.0
+    chex.assert_trees_all_equal(result.metrics, jnp.zeros_like(result.metrics))
+
+
 @pytest.mark.parametrize("secondary_weight", [7e18, 1e38, 3e38])
 def test_differential_gtd_reports_finite_large_secondary_rms(
     secondary_weight: float,
@@ -996,6 +1029,53 @@ def test_differential_sarsa_config_scalar_validation() -> None:
     assert cfg.epsilon_decay_steps == 100
 
 
+def test_differential_sarsa_config_rejects_rising_epsilon_schedule() -> None:
+    # The linear schedule only decays.  With epsilon_end above epsilon_start it
+    # would climb past epsilon_end and past 1, and the agent would then reject
+    # every update.  SARSAConfig refuses the same schedule.
+    with pytest.raises(ValueError, match="epsilon_end must not exceed epsilon_start"):
+        DifferentialSARSAConfig(
+            n_actions=2,
+            epsilon_start=0.1,
+            epsilon_end=0.5,
+            epsilon_decay_steps=4,
+        )
+
+    flat = DifferentialSARSAConfig(
+        n_actions=2,
+        epsilon_start=0.3,
+        epsilon_end=0.3,
+        epsilon_decay_steps=4,
+    )
+    assert flat.epsilon_end == flat.epsilon_start
+    # Without decay, epsilon_end is never read and epsilon stays at epsilon_start.
+    constant = DifferentialSARSAConfig(n_actions=2, epsilon_start=0.1, epsilon_end=0.5)
+    assert constant.epsilon_decay_steps == 0
+
+
+def test_differential_sarsa_decaying_epsilon_stays_between_its_endpoints() -> None:
+    agent = DifferentialSARSAAgent(
+        DifferentialSARSAConfig(
+            n_actions=2,
+            epsilon_start=0.5,
+            epsilon_end=0.1,
+            epsilon_decay_steps=4,
+        )
+    )
+    state, _ = agent.start(
+        agent.init(2, jr.key(5, impl="threefry2x32")),
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+    )
+    epsilons = []
+    for _ in range(8):
+        result = agent.update(state, jnp.asarray(0.5), jnp.array([0.0, 1.0], dtype=jnp.float32))
+        assert bool(result.update_applied)
+        state = result.state
+        epsilons.append(float(state.epsilon))
+
+    np.testing.assert_allclose(epsilons, [0.4, 0.3, 0.2, 0.1, 0.1, 0.1, 0.1, 0.1], rtol=1e-6)
+
+
 _NUMPY_INTEGER_TYPES = tuple(dict.fromkeys(np.dtype(code).type for code in "bhilqBHILQpP"))
 
 
@@ -1257,7 +1337,9 @@ def test_average_reward_actor_preflights_state_before_allocation() -> None:
 
 def test_differential_sarsa_preflights_state_before_allocation() -> None:
     agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=1))
-    last_legal_feature_dim = (2**29 - 1 - 10) // 3
+    # One action owns 3 * feature_dim + 5 float32 scalars (bias, bias trace,
+    # previous_discount, average_reward, epsilon) plus 6 fixed integer words.
+    last_legal_feature_dim = (2**29 - 1 - 11) // 3
 
     with pytest.raises(ValueError, match="state bytes"):
         agent.init(last_legal_feature_dim + 1, jr.key(0))
@@ -1576,6 +1658,31 @@ class TestAverageRewardSequenceCeiling:
         assert seen == []
 
 
+@pytest.mark.parametrize("temperature,bias,expected", [
+    (1e-10, [1e30, 1e30], [0.5, 0.5]),
+    (1e-10, [1e30, -1e30], [1.0, 0.0]),
+    (4.0, [3e38, -3e38], [1.0, 0.0]),
+    (1e-20, [20.0, 20.0], [0.5, 0.5]),
+])
+def test_average_reward_actor_temperature_policy_is_finite(
+    temperature: float, bias: list[float], expected: list[float]
+) -> None:
+    agent = AverageRewardHordeActorCriticAgent(AverageRewardHordeActorCriticConfig(
+        n_actions=2, hidden_sizes=(), temperature=temperature, logit_clip=3e38, epsilon=0.2,
+    ))
+    state = agent.init(1, jr.key(0)).replace(actor_bias=jnp.asarray(bias, dtype=jnp.float32))
+    observation = jnp.ones(1, dtype=jnp.float32)
+    for disable_jit in (True, False):
+        with jax.disable_jit(disable_jit):
+            target = agent.policy(state, observation)
+            np.testing.assert_allclose(target, expected, rtol=1e-6, atol=1e-6)
+            behavior = agent.behavior_policy(state, observation)
+            np.testing.assert_allclose(behavior, 0.8 * np.asarray(expected) + 0.1, atol=1e-6)
+            sample, _ = agent.sample_policy(state, observation)
+            np.testing.assert_allclose(sample.target_policy, target, atol=1e-6)
+            np.testing.assert_allclose(sample.behavior_policy, behavior, atol=1e-6)
+
+
 def _assert_host_clocks_preserved(state: object, *, initial_uptime: float) -> None:
     """Host clocks must survive the device scan as exact Python floats."""
 
@@ -1664,3 +1771,19 @@ def test_differential_sarsa_arrays_preserve_initialized_host_clocks() -> None:
         jnp.array([[0.0, 1.0], [1.0, 1.0]], dtype=jnp.float32),
     )
     _assert_host_clocks_preserved(result.state, initial_uptime=12.5)
+
+
+def test_differential_sarsa_rejected_arrays_keep_incoming_host_uptime() -> None:
+    agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=2))
+    started, _ = agent.start(agent.init(2, jr.key(1)), jnp.array([1.0, 0.0], dtype=jnp.float32))
+    # Past 2**24 seconds a float32 cannot hold the fractional part.
+    state = started.replace(birth_timestamp=1700000000.125, uptime_s=20000000.5)
+    result = run_differential_sarsa_from_arrays(
+        agent,
+        state,
+        jnp.full((2,), jnp.nan, dtype=jnp.float32),
+        jnp.array([[0.0, 1.0], [1.0, 1.0]], dtype=jnp.float32),
+    )
+    assert not bool(jnp.any(result.updates_applied))
+    _assert_host_clocks_preserved(result.state, initial_uptime=20000000.5)
+    assert result.state.uptime_s == 20000000.5
