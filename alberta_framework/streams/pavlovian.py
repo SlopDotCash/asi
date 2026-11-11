@@ -635,7 +635,9 @@ class ClassicalConditioningStream:
         """
         key_array = _require_typed_threefry_key(key, name="key")
         key, k_iti = jr.split(key_array)
-        iti = jr.randint(k_iti, (), self._iti_min, self._iti_max + 1)
+        # Pin int32: without a dtype, x64 mode draws an int64 counter that
+        # ``step``'s state contract rejects.
+        iti = jr.randint(k_iti, (), self._iti_min, self._iti_max + 1, dtype=jnp.int32)
         return PavlovianState(
             key=key,
             cs_active_steps_remaining=jnp.zeros(self._n_cs, dtype=jnp.int32),
