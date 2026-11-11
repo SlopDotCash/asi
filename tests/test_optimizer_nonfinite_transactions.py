@@ -409,6 +409,39 @@ def test_obgd_bounders_only_zero_actual_collapsed_infinities() -> None:
     chex.assert_trees_all_equal(dynamic, tuple(jnp.zeros_like(step) for step in steps))
 
 
+def test_upgd_obgd_bound_keeps_finite_huge_steps() -> None:
+    """Finite steps whose L1 total overflows the bound must rescale, not vanish.
+
+    With steps of 1e38 the exact ObGD scale is ~1.67e-39, so the bounded
+    steps are ~1/6; the direct ``kappa * total`` product overflows float32
+    and previously collapsed the scale to zero, discarding the update.
+    The scale itself is subnormal and flushes to zero under FTZ, so only
+    the factored steps carry the fix -- assert on them, not on the scale.
+    """
+    steps = (jnp.array([1e38, 1e38, 1e38], dtype=jnp.float32),)
+    bounded, _scale = jax.jit(UPGDLearner._obgd_bound_with_kappa)(
+        steps, jnp.array(1.0, dtype=jnp.float32), jnp.array(2.0, dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(
+        bounded[0],
+        jnp.full(3, 1.0 / 6.0, dtype=jnp.float32),
+        rtol=1e-5,
+        atol=1e-7,
+    )
+
+    # The same overflow through a large kappa on moderate steps.
+    steps = (jnp.array([1e37, 1e37, 1e37], dtype=jnp.float32),)
+    bounded, _scale = jax.jit(UPGDLearner._obgd_bound_with_kappa)(
+        steps, jnp.array(1.0, dtype=jnp.float32), jnp.array(200.0, dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(
+        bounded[0],
+        jnp.full(3, 1.0 / 600.0, dtype=jnp.float32),
+        rtol=1e-5,
+        atol=1e-7,
+    )
+
+
 def test_bounders_do_not_launder_arbitrary_nan() -> None:
     nan_step = (jnp.array([jnp.nan, 0.5]),)
     params = (jnp.ones(2),)
