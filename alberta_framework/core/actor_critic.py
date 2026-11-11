@@ -835,6 +835,7 @@ class ActorCriticAgent:
         observation: Array,
         terminated: Array | None = None,
         discount: Array | None = None,
+        truncated: Array | bool | None = None,
     ) -> ActorCriticUpdateResult:
         """Update actor and critic from one transition.
 
@@ -854,6 +855,11 @@ class ActorCriticAgent:
                 Use this for continuing logs, variable discounts, time-limit
                 truncation semantics, and pre-collected trajectories.
                 Traces decay on the prior accepted transition's discount.
+            truncated: Optional scalar flag for a time-limit truncation. The
+                transition still bootstraps with ``discount``, but the
+                episode ends for credit assignment, so no eligibility trace
+                is carried into the next episode. Without it a truncated
+                transition's traces leak into the next episode's first update.
 
         Returns:
             ``ActorCriticUpdateResult`` containing the updated state and metrics.
@@ -864,6 +870,10 @@ class ActorCriticAgent:
             terminated = _array("terminated", terminated, (), jnp.bool_)
         if discount is not None:
             discount = _array("discount", discount, (), jnp.float32)
+        if truncated is not None:
+            truncated = _array("truncated", truncated, (), jnp.bool_)
+        else:
+            truncated = jnp.asarray(False, dtype=jnp.bool_)
         cfg = self._config
         prev_obs = state.last_observation
         action = state.last_action
@@ -952,7 +962,7 @@ class ActorCriticAgent:
         actor_steps = tuple(td_error * step for step in actor_steps)
         critic_steps = tuple(td_error * step for step in critic_steps)
 
-        carry_traces = discount != 0.0
+        carry_traces = (discount != 0.0) & ~truncated
         stored_actor_trace_weights = jnp.where(
             carry_traces, actor_trace_weights, jnp.zeros_like(actor_trace_weights)
         )
@@ -974,7 +984,11 @@ class ActorCriticAgent:
             actor_trace_bias=stored_actor_trace_bias,
             critic_trace_weights=stored_critic_trace_weights,
             critic_trace_bias=stored_critic_trace_bias,
-            previous_discount=discount,
+            previous_discount=jnp.where(
+                truncated,
+                jnp.asarray(0.0, dtype=jnp.float32),
+                discount,
+            ),
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
         )
         # Reject the complete transition if its inputs or proposed persistent
@@ -1053,6 +1067,7 @@ def run_actor_critic_from_arrays(
     next_observations: Float[Array, "num_steps feature_dim"],
     actions: Int[Array, " num_steps"] | None = None,
     discounts: Float[Array, " num_steps"] | None = None,
+    truncated: Float[Array, " num_steps"] | None = None,
 ) -> ActorCriticArrayResult:
     """Run actor-critic updates over arrays with ``jax.lax.scan``.
 
@@ -1076,6 +1091,9 @@ def run_actor_critic_from_arrays(
             behavior-policy probabilities are not known; returned ``policies``
             are the current agent policy evaluated before each update.
         discounts: Optional transition discounts, shape ``(num_steps,)``.
+        truncated: Optional time-limit truncation flags, shape ``(num_steps,)``.
+            A truncated row still bootstraps with its discount but carries no
+            eligibility trace into the next row's episode.
 
     Returns:
         ``ActorCriticArrayResult`` with final state and per-step metrics.
@@ -1103,6 +1121,8 @@ def run_actor_critic_from_arrays(
         raise ValueError("terminated must have shape (num_steps,)")
     if discounts is not None and _trusted_shape("discounts", discounts) != (num_steps,):
         raise ValueError("discounts must have shape (num_steps,)")
+    if truncated is not None and _trusted_shape("truncated", truncated) != (num_steps,):
+        raise ValueError("truncated must have shape (num_steps,)")
     if actions is not None and _trusted_shape("actions", actions) != (num_steps,):
         raise ValueError("actions must have shape (num_steps,)")
     _require_discrete_scan_resources(
@@ -1121,6 +1141,10 @@ def run_actor_critic_from_arrays(
         terminated = jnp.zeros_like(rewards, dtype=jnp.bool_)
     if discounts is None:
         discounts = jnp.where(terminated, 0.0, agent.config.gamma).astype(jnp.float32)
+    if truncated is None:
+        truncated = jnp.zeros_like(rewards, dtype=jnp.bool_)
+    else:
+        truncated = jnp.asarray(_checked_terminated("truncated", truncated), dtype=jnp.bool_)
     if actions is None:
         actions = jnp.full_like(rewards, -1, dtype=jnp.int32)
         actions_valid = jnp.ones((num_steps,), dtype=jnp.bool_)
@@ -1137,9 +1161,11 @@ def run_actor_critic_from_arrays(
 
     def _scan_fn(
         carry: ActorCriticState,
-        inputs: tuple[Array, Array, Array, Array, Array, Array],
+        inputs: tuple[Array, Array, Array, Array, Array, Array, Array],
     ) -> tuple[ActorCriticState, tuple[Array, Array, Array, Array, Array]]:
-        obs, reward, term_discount, next_obs, fixed_action, fixed_action_valid = inputs
+        obs, reward, term_discount, next_obs, fixed_action, fixed_action_valid, row_truncated = (
+            inputs
+        )
         if use_fixed_actions:
             started_state = carry.replace(  # type: ignore[attr-defined]
                 last_observation=obs,
@@ -1154,6 +1180,7 @@ def run_actor_critic_from_arrays(
             reward,
             next_obs,
             discount=term_discount,
+            truncated=row_truncated,
         )
         update_applied = result.update_applied & fixed_action_valid
         next_carry = jax.lax.cond(
@@ -1180,7 +1207,15 @@ def run_actor_critic_from_arrays(
     final_state, (actions, policies, values, td_errors, updates_applied) = jax.lax.scan(
         _scan_fn,
         state,
-        (observations, rewards, discounts, next_observations, actions, actions_valid),
+        (
+            observations,
+            rewards,
+            discounts,
+            next_observations,
+            actions,
+            actions_valid,
+            truncated,
+        ),
     )
     return ActorCriticArrayResult(  # type: ignore[call-arg]
         state=final_state,
@@ -1729,6 +1764,7 @@ class ContinuousActorCriticAgent:
         observation: Array,
         terminated: Array | None = None,
         discount: Array | None = None,
+        truncated: Array | bool | None = None,
     ) -> ContinuousActorCriticUpdateResult:
         """Update actor and critic from one transition.
 
@@ -1746,6 +1782,11 @@ class ContinuousActorCriticAgent:
                 ``config.gamma``. Ignored when ``discount`` is provided.
             discount: Optional scalar bootstrap discount ``gamma_{t+1}``.
                 Traces decay on the prior accepted transition's discount.
+            truncated: Optional scalar flag for a time-limit truncation. The
+                transition still bootstraps with ``discount``, but the
+                episode ends for credit assignment, so no eligibility trace
+                is carried into the next episode. Without it a truncated
+                transition's traces leak into the next episode's first update.
 
         Returns:
             ``ContinuousActorCriticUpdateResult`` containing the updated state.
@@ -1756,6 +1797,10 @@ class ContinuousActorCriticAgent:
             terminated = _array("terminated", terminated, (), jnp.bool_)
         if discount is not None:
             discount = _array("discount", discount, (), jnp.float32)
+        if truncated is not None:
+            truncated = _array("truncated", truncated, (), jnp.bool_)
+        else:
+            truncated = jnp.asarray(False, dtype=jnp.bool_)
         cfg = self._config
         prev_obs = state.last_observation
         # Score the Gaussian sample, not the clipped action that was executed:
@@ -1863,7 +1908,7 @@ class ContinuousActorCriticAgent:
         actor_steps = tuple(td_error * step for step in actor_steps)
         critic_steps = tuple(td_error * step for step in critic_steps)
 
-        carry_traces = discount != 0.0
+        carry_traces = (discount != 0.0) & ~truncated
         stored_mean_trace_weights = jnp.where(
             carry_traces, mean_trace_weights, jnp.zeros_like(mean_trace_weights)
         )
@@ -1895,7 +1940,11 @@ class ContinuousActorCriticAgent:
             log_sigma_trace=stored_log_sigma_trace,
             critic_trace_weights=stored_critic_trace_weights,
             critic_trace_bias=stored_critic_trace_bias,
-            previous_discount=discount,
+            previous_discount=jnp.where(
+                truncated,
+                jnp.asarray(0.0, dtype=jnp.float32),
+                discount,
+            ),
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
         )
         inputs_valid = (
@@ -1972,6 +2021,7 @@ def run_continuous_actor_critic_from_arrays(
     next_observations: Float[Array, "num_steps feature_dim"],
     actions: Float[Array, "num_steps action_dim"] | None = None,
     discounts: Float[Array, " num_steps"] | None = None,
+    truncated: Float[Array, " num_steps"] | None = None,
 ) -> ContinuousActorCriticArrayResult:
     """Run continuous actor-critic updates over arrays with ``jax.lax.scan``.
 
@@ -1989,6 +2039,9 @@ def run_continuous_actor_critic_from_arrays(
         next_observations: Next observations, shape ``(num_steps, feature_dim)``.
         actions: Optional fixed current actions, shape ``(num_steps, action_dim)``.
         discounts: Optional transition discounts, shape ``(num_steps,)``.
+        truncated: Optional time-limit truncation flags, shape ``(num_steps,)``.
+            A truncated row still bootstraps with its discount but carries no
+            eligibility trace into the next row's episode.
 
     Returns:
         ``ContinuousActorCriticArrayResult`` with final state and per-step metrics.
@@ -2017,6 +2070,8 @@ def run_continuous_actor_critic_from_arrays(
         raise ValueError("terminated must have shape (num_steps,)")
     if discounts is not None and _trusted_shape("discounts", discounts) != (num_steps,):
         raise ValueError("discounts must have shape (num_steps,)")
+    if truncated is not None and _trusted_shape("truncated", truncated) != (num_steps,):
+        raise ValueError("truncated must have shape (num_steps,)")
     if actions is not None and _trusted_shape("actions", actions) != (num_steps, action_dim):
         raise ValueError("actions must have shape (num_steps, action_dim)")
     _require_continuous_scan_resources(
@@ -2035,6 +2090,10 @@ def run_continuous_actor_critic_from_arrays(
         terminated = jnp.zeros_like(rewards, dtype=jnp.bool_)
     if discounts is None:
         discounts = jnp.where(terminated, 0.0, agent.config.gamma).astype(jnp.float32)
+    if truncated is None:
+        truncated = jnp.zeros_like(rewards, dtype=jnp.bool_)
+    else:
+        truncated = jnp.asarray(_checked_terminated("truncated", truncated), dtype=jnp.bool_)
     if actions is None:
         actions = jnp.zeros((rewards.shape[0], action_dim), dtype=jnp.float32)
         use_fixed_actions = False
@@ -2044,12 +2103,12 @@ def run_continuous_actor_critic_from_arrays(
 
     def _scan_fn(
         carry: ContinuousActorCriticState,
-        inputs: tuple[Array, Array, Array, Array, Array],
+        inputs: tuple[Array, Array, Array, Array, Array, Array],
     ) -> tuple[
         ContinuousActorCriticState,
         tuple[Array, Array, Array, Array, Array, Array],
     ]:
-        obs, reward, term_discount, next_obs, fixed_action = inputs
+        obs, reward, term_discount, next_obs, fixed_action, row_truncated = inputs
         if use_fixed_actions:
             started_state = carry.replace(  # type: ignore[attr-defined]
                 last_observation=obs,
@@ -2065,6 +2124,7 @@ def run_continuous_actor_critic_from_arrays(
             reward,
             next_obs,
             discount=term_discount,
+            truncated=row_truncated,
         )
         next_carry = jax.lax.cond(
             result.update_applied,
@@ -2094,7 +2154,7 @@ def run_continuous_actor_critic_from_arrays(
     ) = jax.lax.scan(
         _scan_fn,
         state,
-        (observations, rewards, discounts, next_observations, actions),
+        (observations, rewards, discounts, next_observations, actions, truncated),
     )
     return ContinuousActorCriticArrayResult(  # type: ignore[call-arg]
         state=final_state,
