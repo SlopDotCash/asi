@@ -1030,6 +1030,62 @@ class TestObGD:
         chex.assert_trees_all_close(result.new_state.traces, observation)
         assert bool(jnp.isfinite(result.new_state.bias_trace))
 
+    def test_huge_traces_keep_finite_bounded_step(self):
+        """A bound that overflows float32 must rescale, not drop the update.
+
+        With traces of 1e30 and step_size 1e30 the true bound is 6e60, so
+        the direct product overflows float32, the effective step-size
+        collapsed to zero, and the inf ``bounding_factor`` metric vetoed
+        the whole transaction. The factored bound keeps the finite ``1/6``
+        weight step and the ``1.67e-31`` bias step and effective step-size.
+        This is the optimizer counterpart of the standalone-bounder fix
+        for the same overflow class (open PR #3811 covers only the UPGD
+        bounder).
+        """
+        optimizer = ObGD(step_size=1e30, kappa=2.0, gamma=0.0, lamda=0.0)
+        state = optimizer.init(3)
+        result = optimizer.update(
+            state,
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.array([1e30, 1e30, 1e30], dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_trees_all_close(
+            result.weight_delta,
+            jnp.full(3, 1.0 / 6.0, dtype=jnp.float32),
+            rtol=1e-5,
+            atol=1e-7,
+        )
+        assert float(result.bias_delta) == pytest.approx(1.0 / 6e30, rel=1e-5)
+        assert float(result.metrics["effective_step_size"]) == pytest.approx(
+            1.0 / 6e30, rel=1e-5
+        )
+        chex.assert_trees_all_close(result.new_state.traces, jnp.full(3, 1e30))
+
+    def test_huge_trace_sum_keeps_finite_bounded_step(self):
+        """An overflowing L1 trace sum must rescale, not drop the update.
+
+        Ten traces of 1e38 sum to 1e39, past float32 max, so the true
+        weight steps are 1e38 / (2 * 1e39) = 0.05 each. The bias step's
+        true value is subnormal and flushes to zero under FTZ, so only its
+        magnitude is asserted.
+        """
+        optimizer = ObGD(step_size=1e30, kappa=2.0, gamma=0.0, lamda=0.0)
+        state = optimizer.init(10)
+        result = optimizer.update(
+            state,
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.full((10,), 1e38, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_trees_all_close(
+            result.weight_delta,
+            jnp.full((10,), 0.05, dtype=jnp.float32),
+            rtol=1e-5,
+            atol=1e-7,
+        )
+        assert abs(float(result.bias_delta)) <= 1e-38
+
 
 class TestAdaptiveObGDBounding:
     """Tests for the adaptive ObGD bounder."""
