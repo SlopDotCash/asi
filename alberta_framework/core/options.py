@@ -359,7 +359,10 @@ class STOMPState:
             Sections 12.7-12.8). Only the
             bootstrap uses the current transition's discount. A fresh state
             stores ``1.0``; its traces are zero. On option termination the
-            stored value becomes the option's cumulative discount.
+            stored value becomes the option's cumulative discount. On an
+            execution boundary it becomes ``0.0``: the next decision state
+            belongs to a new episode, so the carried traces must decay away
+            instead of crediting it, exactly like a terminal transition.
         base_last_obs: Most recent observation seen by the base agent.
         base_last_action: Last extended action index taken (0..K+N-1).
         last_primitive_action: Primitive action most recently selected for
@@ -2416,7 +2419,11 @@ class STOMPAgent:
             )
         )
         reward = jnp.asarray(env_reward, dtype=jnp.float32).reshape(())
-        _ = jnp.asarray(execution_boundary, dtype=jnp.bool_).reshape(())
+        # A boundary ends the episode even though the Bellman discount
+        # stays one: the stored prior discount becomes zero below, so the
+        # next update decays the carried traces away instead of crediting
+        # the next episode, exactly like a terminal transition.
+        boundary = jnp.asarray(execution_boundary, dtype=jnp.bool_).reshape(())
         input_values_valid = (
             jnp.isfinite(reward)
             & jnp.all(jnp.isfinite(bootstrap_obs))
@@ -2536,7 +2543,11 @@ class STOMPAgent:
         proposed_state = STOMPState(
             base_learner_state=new_base_state,
             base_average_reward=new_average_reward,
-            base_previous_discount=primitive_discount,
+            base_previous_discount=jnp.where(
+                boundary,
+                jnp.asarray(0.0, dtype=jnp.float32),
+                primitive_discount,
+            ),
             base_last_obs=decision_obs,
             base_last_action=next_action,
             last_primitive_action=next_action,
@@ -2655,7 +2666,12 @@ class STOMPAgent:
         for censored episode truncations: the observed transition updates the
         intra-option policy and the base option value, then option traces are
         cleared, but the partial execution is not recorded as a completed
-        option-model outcome.
+        option-model outcome. The base learner's traces end the same way:
+        the stored prior discount becomes zero, so the next update decays
+        the carried traces away before its TD error instead of crediting
+        the next episode's first transition with the dead episode's features.
+        A terminal discount already does this; a boundary discount of one
+        would otherwise keep the traces alive.
 
         ``discount`` is the effective continuation multiplier for this
         transition.  Explicit callers should always supply it.  ``None`` is a
@@ -3172,10 +3188,17 @@ class STOMPAgent:
             # the next decision state: this transition's discount for a
             # primitive step, the option's cumulative discount on lifecycle
             # end. Mid-option steps perform no base update, so the stored
-            # discount into the option start state is preserved.
+            # discount into the option start state is preserved. A boundary
+            # stores zero instead: the next decision state belongs to a new
+            # episode, so the carried base traces must decay away on the
+            # next update rather than credit it, like a terminal transition.
             base_previous_discount=jnp.where(
                 should_update_base,
-                base_discount,
+                jnp.where(
+                    boundary,
+                    jnp.asarray(0.0, dtype=jnp.float32),
+                    base_discount,
+                ),
                 state.base_previous_discount,
             ),
             base_last_obs=decision_obs,
