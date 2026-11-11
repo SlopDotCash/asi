@@ -1959,7 +1959,10 @@ class UPGDLearner:
         ``|delta|`` back in as a second factor would count the error twice.
         The scale is written as ``m / max(kappa * total, m)`` with
         ``m = min(|delta|, 1)`` so it cannot overflow for tiny errors; a zero
-        error carries zero steps, where the bound is moot.
+        error carries zero steps, where the bound is moot. The quotient is
+        evaluated by splitting the step total into mantissa and exponent so
+        a finite-but-huge total still rescales the steps instead of
+        overflowing the bound and discarding the whole update.
         """
         error_scalar = jnp.squeeze(error)
         total_step = jnp.array(0.0, dtype=jnp.float32)
@@ -1967,10 +1970,70 @@ class UPGDLearner:
             total_step = total_step + jnp.sum(jnp.abs(step))
         abs_error = jnp.abs(error_scalar)
         error_unit = jnp.where(abs_error > 0.0, jnp.minimum(abs_error, 1.0), 1.0)
-        scale = error_unit / jnp.maximum(kappa * total_step, error_unit)
-        collapsed = scale == 0
+        # Evaluate ``error_unit / max(kappa * total_step, error_unit)`` without
+        # forming ``kappa * total_step``: the product overflows float32 when
+        # the true bound exceeds float32 max even though every input is
+        # finite, which collapsed the scale to zero and silently discarded
+        # the whole update. Compare the bound against the error unit in
+        # exponent space instead, then apply the exact scale to the steps in
+        # factored form -- with ``total_step = mantissa * 2**exponent`` the
+        # scale is ``ratio * 2**-exponent`` for
+        # ``ratio = error_unit / (kappa * mantissa)``, and rescaling each
+        # step by ``2**-exponent`` first keeps the product in normal range.
+        # The scale itself is subnormal exactly in this regime and flushes
+        # to zero under FTZ, so only the factored steps carry the fix; the
+        # reported scale stays zero there, as before.
+        kappa_nonneg = jnp.maximum(kappa, jnp.asarray(0.0, dtype=jnp.float32))
+        total_mant, total_exp = jnp.frexp(total_step)
+        kappa_mant, kappa_exp = jnp.frexp(kappa_nonneg)
+        unit_mant, unit_exp = jnp.frexp(error_unit)
+        product_mant = kappa_mant * total_mant
+        product_exp = kappa_exp + total_exp
+        product_mant, product_exp = (
+            jnp.where(
+                product_mant < jnp.asarray(0.5, dtype=jnp.float32),
+                product_mant * jnp.asarray(2.0, dtype=jnp.float32),
+                product_mant,
+            ),
+            jnp.where(
+                product_mant < jnp.asarray(0.5, dtype=jnp.float32),
+                product_exp - 1,
+                product_exp,
+            ),
+        )
+        bounding_needed = (
+            (product_mant != jnp.asarray(0.0, dtype=jnp.float32))
+            & (
+                (product_exp > unit_exp)
+                | (
+                    (product_exp == unit_exp)
+                    & (product_mant > unit_mant)
+                )
+                | jnp.isinf(product_mant)
+            )
+        )
+        nan_case = jnp.isnan(total_step) | jnp.isnan(kappa_nonneg)
+        no_bound = ~bounding_needed & ~nan_case
+        ratio = error_unit / (kappa_nonneg * total_mant)
+        collapsed = jnp.isinf(total_step)
+        scale = jnp.where(
+            no_bound,
+            jnp.asarray(1.0, dtype=jnp.float32),
+            jnp.minimum(
+                jnp.ldexp(ratio, -total_exp), jnp.asarray(1.0, dtype=jnp.float32)
+            ),
+        )
         return (
-            tuple(zero_if_collapsed_infinity(scale * step, step, collapsed) for step in steps),
+            tuple(
+                zero_if_collapsed_infinity(
+                    jnp.where(
+                        no_bound, step, jnp.ldexp(ratio * step, -total_exp)
+                    ),
+                    step,
+                    collapsed,
+                )
+                for step in steps
+            ),
             scale,
         )
 
