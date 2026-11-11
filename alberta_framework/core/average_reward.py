@@ -996,13 +996,26 @@ class AverageRewardHordeActorCriticAgent:
         sample, key = self.sample_policy(state, observation)
         return sample.action, key
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: AverageRewardHordeActorCriticState,
         observation: Array,
     ) -> tuple[AverageRewardHordeActorCriticState, Int[Array, ""]]:
         """Select and store the first action."""
+        started, action = self._start_jit(state, observation)
+        if not isinstance(started.step_count, jax.core.Tracer):
+            started = started.replace(
+                birth_timestamp=state.birth_timestamp,
+                uptime_s=state.uptime_s,
+            )
+        return started, action
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start_jit(
+        self,
+        state: AverageRewardHordeActorCriticState,
+        observation: Array,
+    ) -> tuple[AverageRewardHordeActorCriticState, Int[Array, ""]]:
         sample, key = self.sample_policy(state, observation)
         return state.replace(
             last_observation=observation,
@@ -1011,7 +1024,6 @@ class AverageRewardHordeActorCriticAgent:
             rng_key=key,
         ), sample.action
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: AverageRewardHordeActorCriticState,
@@ -1019,6 +1031,23 @@ class AverageRewardHordeActorCriticAgent:
         next_observation: Array,
     ) -> AverageRewardHordeActorCriticUpdateResult:
         """Apply one average-reward actor-critic update."""
+        result = self._update_jit(state, reward, next_observation)
+        if not isinstance(result.state.step_count, jax.core.Tracer):
+            result = result.replace(
+                state=result.state.replace(
+                    birth_timestamp=state.birth_timestamp,
+                    uptime_s=state.uptime_s,
+                ),
+            )
+        return cast(AverageRewardHordeActorCriticUpdateResult, result)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jit(
+        self,
+        state: AverageRewardHordeActorCriticState,
+        reward: Array,
+        next_observation: Array,
+    ) -> AverageRewardHordeActorCriticUpdateResult:
         action_valid = (state.last_action >= 0) & (state.last_action < self._config.n_actions)
         safe_last_action = jnp.clip(
             state.last_action,
@@ -1265,7 +1294,6 @@ class AverageRewardHordeLearner:
         """Predict all average-reward GVF heads."""
         return cast(Array, self._learner.predict(state.learner_state, observation))
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: AverageRewardHordeState,
@@ -1274,6 +1302,24 @@ class AverageRewardHordeLearner:
         next_observation: Array,
     ) -> AverageRewardHordeUpdateResult:
         """Apply one shared-trunk differential Horde update."""
+        result = self._update_jit(state, observation, cumulants, next_observation)
+        if not isinstance(result.state.step_count, jax.core.Tracer):
+            result = result.replace(
+                state=result.state.replace(
+                    birth_timestamp=state.birth_timestamp,
+                    uptime_s=state.uptime_s,
+                ),
+            )
+        return cast(AverageRewardHordeUpdateResult, result)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jit(
+        self,
+        state: AverageRewardHordeState,
+        observation: Array,
+        cumulants: Array,
+        next_observation: Array,
+    ) -> AverageRewardHordeUpdateResult:
         cumulants = jnp.asarray(cumulants)
         expected_shape = (self._n_demons,)
         if cumulants.shape != expected_shape:
@@ -1459,7 +1505,6 @@ class DifferentialGTDLearner:
         """Compute the scalar differential value estimate."""
         return jnp.dot(state.weights, observation) + state.bias
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: DifferentialGTDState,
@@ -1469,6 +1514,25 @@ class DifferentialGTDLearner:
         rho: Array,
     ) -> DifferentialGTDUpdateResult:
         """Apply one off-policy average-reward GTD/TDC update."""
+        result = self._update_jit(state, observation, reward, next_observation, rho)
+        if not isinstance(result.state.step_count, jax.core.Tracer):
+            result = result.replace(
+                state=result.state.replace(
+                    birth_timestamp=state.birth_timestamp,
+                    uptime_s=state.uptime_s,
+                ),
+            )
+        return cast(DifferentialGTDUpdateResult, result)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jit(
+        self,
+        state: DifferentialGTDState,
+        observation: Array,
+        reward: Array,
+        next_observation: Array,
+        rho: Array,
+    ) -> DifferentialGTDUpdateResult:
         cfg = self._config
         alpha = jnp.asarray(cfg.value_step_size, dtype=jnp.float32)
         beta = jnp.asarray(cfg.secondary_step_size, dtype=jnp.float32)
@@ -1657,7 +1721,6 @@ class DifferentialTDLearner:
             value,
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: DifferentialTDState,
@@ -1666,6 +1729,24 @@ class DifferentialTDLearner:
         next_observation: Array,
     ) -> DifferentialTDUpdateResult:
         """Apply one continuing differential TD update."""
+        result = self._update_jit(state, observation, reward, next_observation)
+        if not isinstance(result.state.step_count, jax.core.Tracer):
+            result = result.replace(
+                state=result.state.replace(
+                    birth_timestamp=state.birth_timestamp,
+                    uptime_s=state.uptime_s,
+                ),
+            )
+        return cast(DifferentialTDUpdateResult, result)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jit(
+        self,
+        state: DifferentialTDState,
+        observation: Array,
+        reward: Array,
+        next_observation: Array,
+    ) -> DifferentialTDUpdateResult:
         cfg = self._config
         alpha = jnp.asarray(cfg.step_size, dtype=jnp.float32)
         beta = jnp.asarray(cfg.average_reward_step_size, dtype=jnp.float32)
@@ -2410,13 +2491,26 @@ class DifferentialSARSAAgent:
             jax.lax.cond(policy_valid, lambda: key, lambda: state.rng_key),
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: DifferentialSARSAState,
         observation: Array,
     ) -> tuple[DifferentialSARSAState, Int[Array, ""]]:
         """Select and store the first action for a continuing stream."""
+        started, action = self._start_jit(state, observation)
+        if not isinstance(started.step_count, jax.core.Tracer):
+            started = started.replace(
+                birth_timestamp=state.birth_timestamp,
+                uptime_s=state.uptime_s,
+            )
+        return started, action
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start_jit(
+        self,
+        state: DifferentialSARSAState,
+        observation: Array,
+    ) -> tuple[DifferentialSARSAState, Int[Array, ""]]:
         action, key = self.select_action(state, observation)
         observation_f = jnp.asarray(observation, dtype=jnp.float32)
         accepted = action >= 0
@@ -2430,7 +2524,6 @@ class DifferentialSARSAAgent:
             rng_key=key,
         ), action
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start_with_action(
         self,
         state: DifferentialSARSAState,
@@ -2448,6 +2541,21 @@ class DifferentialSARSAAgent:
         ``[0, n_actions)``; integrated protocols must validate that invariant
         in their own fail-closed diagnostics.
         """
+        started, stored_action = self._start_with_action_jit(state, observation, action)
+        if not isinstance(started.step_count, jax.core.Tracer):
+            started = started.replace(
+                birth_timestamp=state.birth_timestamp,
+                uptime_s=state.uptime_s,
+            )
+        return started, stored_action
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start_with_action_jit(
+        self,
+        state: DifferentialSARSAState,
+        observation: Array,
+        action: Array,
+    ) -> tuple[DifferentialSARSAState, Int[Array, ""]]:
         observation_f = jnp.asarray(observation, dtype=jnp.float32)
         action_i = jnp.asarray(action)
         if action_i.shape != ():
@@ -2523,7 +2631,6 @@ class DifferentialSARSAAgent:
             q_prev,
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: DifferentialSARSAState,
@@ -2544,6 +2651,32 @@ class DifferentialSARSAAgent:
             discount: Continuation discount for this transition. The default
                 ``1.0`` preserves the original continuing-task behavior.
         """
+        result = self._update_jit(
+            state,
+            reward,
+            next_observation,
+            next_action,
+            discount=discount,
+        )
+        if not isinstance(result.state.step_count, jax.core.Tracer):
+            result = result.replace(
+                state=result.state.replace(
+                    birth_timestamp=state.birth_timestamp,
+                    uptime_s=state.uptime_s,
+                ),
+            )
+        return cast(DifferentialSARSAUpdateResult, result)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jit(
+        self,
+        state: DifferentialSARSAState,
+        reward: Array,
+        next_observation: Array,
+        next_action: Array | None = None,
+        *,
+        discount: Array | float = 1.0,
+    ) -> DifferentialSARSAUpdateResult:
         cfg = self._config
         feature_dim = self._require_state_contract(state)
         raw_next_observation = jnp.asarray(next_observation)
