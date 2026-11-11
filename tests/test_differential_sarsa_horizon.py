@@ -128,10 +128,16 @@ def test_word_carry_scans_and_all_ones_exhaustion_is_atomic() -> None:
 
 def test_counter_corruption_refuses_parameter_trace_and_rng_mutation() -> None:
     agent = _agent()
+    # The outer jax.jit narrows host-only clock floats before the update
+    # runs, so pin them to float32-exact values here; exact clock
+    # preservation through the eager single-step update is covered by the
+    # host-clock tests in test_average_reward.py.
     invalid = cast(
         DifferentialSARSAState,
         _primed_state(agent).replace(  # type: ignore[attr-defined]
             step_count=jnp.asarray(1, dtype=jnp.int32),
+            birth_timestamp=0.0,
+            uptime_s=0.0,
         ),
     )
     result = jax.jit(agent.update)(
