@@ -170,12 +170,50 @@ class Bounder(ABC):
         ...
 
 
+def _renormalize_mantissa(
+    mantissa: Array, exponent: Array
+) -> tuple[Array, Array]:
+    """Shift a [0.125, 1) mantissa into [0.5, 1), adjusting its exponent.
+
+    Products of two ``frexp`` mantissas land in [0.25, 1); the extra
+    quarter-range case covers a second such product. Zero, infinite, and
+    NaN mantissas pass through unchanged (their comparisons are false).
+    """
+    doubled = jnp.where(
+        mantissa < 0.25,
+        mantissa * 4.0,
+        jnp.where(mantissa < 0.5, mantissa * 2.0, mantissa),
+    )
+    shifted = jnp.where(
+        mantissa < 0.25,
+        exponent - 2,
+        jnp.where(mantissa < 0.5, exponent - 1, exponent),
+    )
+    return doubled, shifted
+
+
 def _apply_obgd_bound(
     steps: tuple[Array, ...],
     error: Array,
     kappa: float,
 ) -> tuple[tuple[Array, ...], Array]:
-    """Apply the ObGD global bounding formula. Returns (bounded_steps, scale)."""
+    """Apply the ObGD global bounding formula. Returns (bounded_steps, scale).
+
+    The bound is ``scale = 1 / max(kappa * max(|error|, 1) * total, 1)``
+    with ``total`` the L1 norm of all steps. The direct product overflows
+    float32 when the true bound exceeds float32 max even though every
+    input is finite, which collapsed the scale to zero and silently
+    discarded the whole update. The factored path evaluates the same
+    quotient in mantissa/exponent form -- with
+    ``kappa * max(|error|, 1) = kd_mant * 2**kd_exp`` and
+    ``total = total_mant * 2**total_exp``, each bounded step is
+    ``ldexp(ldexp(step, -total_exp) / (kd_mant * total_mant), -kd_exp)``
+    -- so a finite-but-huge total still rescales the steps instead of
+    vanishing. The factored path runs only when the direct scale collapsed
+    to zero on finite inputs; every other input keeps the historical
+    direct arithmetic bit-identical, and an actually infinite step still
+    collapses to zero through :func:`zero_if_collapsed_infinity`.
+    """
     error_scalar = jnp.squeeze(error)
     total_step = jnp.array(0.0)
     for s in steps:
@@ -183,10 +221,54 @@ def _apply_obgd_bound(
     delta_bar = jnp.maximum(jnp.abs(error_scalar), 1.0)
     scale = 1.0 / jnp.maximum(kappa * delta_bar * total_step, 1.0)
     collapsed = scale == 0
-    return (
-        tuple(zero_if_collapsed_infinity(scale * step, step, collapsed) for step in steps),
-        scale,
+    direct = tuple(
+        zero_if_collapsed_infinity(scale * step, step, collapsed) for step in steps
     )
+    all_steps_finite = jnp.asarray(True, dtype=jnp.bool_)
+    for s in steps:
+        all_steps_finite = all_steps_finite & jnp.all(jnp.isfinite(s))
+    use_factored = collapsed & all_steps_finite & jnp.isfinite(error_scalar)
+    # Mantissa/exponent split of the step total. The direct sum can itself
+    # overflow to inf, so fall back to a max-scaled sum whose product with
+    # the max reconstructs the same total. The rescaling uses ldexp, not
+    # division: XLA evaluates a division through its reciprocal, and the
+    # reciprocal of a huge max is subnormal and flushes to zero.
+    direct_mant, direct_exp = jnp.frexp(total_step)
+    max_abs = jnp.asarray(0.0, dtype=jnp.float32)
+    for s in steps:
+        if s.size:
+            max_abs = jnp.maximum(max_abs, jnp.max(jnp.abs(s)))
+    max_mant, max_exp = jnp.frexp(max_abs)
+    scaled_total = jnp.asarray(0.0, dtype=jnp.float32)
+    for s in steps:
+        if s.size:
+            scaled_total = scaled_total + jnp.sum(
+                jnp.ldexp(jnp.abs(s), -max_exp) / max_mant
+            )
+    scaled_mant, scaled_exp = jnp.frexp(scaled_total)
+    prod_mant, prod_exp = _renormalize_mantissa(
+        max_mant * scaled_mant, max_exp + scaled_exp
+    )
+    total_mant = jnp.where(jnp.isfinite(total_step), direct_mant, prod_mant)
+    total_exp = jnp.where(jnp.isfinite(total_step), direct_exp, prod_exp)
+    kappa_mant, kappa_exp = jnp.frexp(jnp.asarray(kappa, dtype=jnp.float32))
+    delta_mant, delta_exp = jnp.frexp(delta_bar)
+    kd_mant, kd_exp = _renormalize_mantissa(
+        kappa_mant * delta_mant, kappa_exp + delta_exp
+    )
+    factored_scale = jnp.ldexp(
+        1.0 / (kd_mant * total_mant), -(kd_exp + total_exp)
+    )
+    factored = tuple(
+        jnp.ldexp(
+            jnp.ldexp(step, -total_exp) / (kd_mant * total_mant), -kd_exp
+        )
+        for step in steps
+    )
+    bounded = tuple(
+        jnp.where(use_factored, f, d) for f, d in zip(factored, direct, strict=True)
+    )
+    return bounded, jnp.where(use_factored, factored_scale, scale)
 
 
 class ObGDBounding(Bounder):
