@@ -53,6 +53,32 @@ _UINT32_MAX = 2**32 - 1
 # README / package-init public scan last-fit. Origin handed ``10**12`` to
 # ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
 _INTERACTION_FEATURE_LOOP_MAX_STEPS = 10_000
+
+
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases.
+
+    Only JSON values are compared exactly: ``dict``/``list``/``tuple`` (a
+    tuple compares equal to the list a JSON round-trip turns it into),
+    ``str``, ``int``, ``float``, ``bool`` and ``None``. Any other type (for
+    example an ``ndarray``) compares unequal, so the check fails closed
+    instead of raising an ambiguous-truth-value error. Other checkpoint
+    loaders carry their own copy of this helper; consolidating them into
+    one shared helper is a separate refactor.
+    """
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _exact_json_equal(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            _exact_json_equal(item, other) for item, other in zip(left, right)
+        )
+    if isinstance(left, (str, int, float, bool)) or left is None:
+        return type(left) is type(right) and left == right
+    return False
+
+
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -3986,7 +4012,9 @@ def load_interaction_feature_checkpoint(
         raise ValueError("interaction-feature checkpoint replacement phase is invalid")
     if not bool(learner._state_values_valid(restored, feature_dim=feature_dim)):
         raise ValueError("interaction-feature checkpoint state values are invalid")
-    if learner.memory_accounting(restored) != metadata.get("memory_accounting"):
+    if not _exact_json_equal(
+        learner.memory_accounting(restored), metadata.get("memory_accounting")
+    ):
         raise ValueError("interaction-feature checkpoint resource contract does not match")
     return learner, cast(InteractionFeatureState, restored)
 
