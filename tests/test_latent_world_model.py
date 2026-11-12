@@ -26,6 +26,7 @@ from alberta_framework.core.latent_world_model import (
     SCIENTIFIC_PROMOTION_ALLOWED,
     LatentWorldModel,
     LatentWorldModelConfig,
+    _restore_update_result_learner_host_clocks,
     run_latent_world_model_learning_loop,
 )
 
@@ -1178,3 +1179,165 @@ def test_latent_update_surprise_reduction_preserves_finite_errors(
         assert not bool(result.update_applied)
         assert int(result.state.step_count) == 0
         assert float(result.surprise) == 0.0
+
+
+@pytest.mark.parametrize(
+    "obs_value",
+    [0.25, float("nan"), float("inf")],
+    ids=["accepted", "rejected_nan", "rejected_inf"],
+)
+def test_latent_world_model_update_preserves_learner_host_clocks(
+    obs_value: float,
+) -> None:
+    """Host update calls must retain Python-float learner clocks and reject non-finite obs."""
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=3,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(19))
+    birth, uptime = 1_700_000_000.125, 16_777_216.25
+    state = dataclasses.replace(  # type: ignore[type-var]
+        state,
+        learner_state=dataclasses.replace(  # type: ignore[type-var]
+            state.learner_state,
+            birth_timestamp=birth,
+            uptime_s=uptime,
+        ),
+    )
+    obs = jnp.full((2,), obs_value, dtype=jnp.float32)
+    next_obs = jnp.array([0.5, -0.25], dtype=jnp.float32)
+
+    for step in (1, 2):
+        result = model.update(
+            state,
+            obs,
+            jnp.int32(1),
+            jnp.float32(0.5),
+            jnp.float32(0.99),
+            next_obs,
+        )
+        assert result.state.learner_state is not result.learner_result.state
+        for learner_state in (result.state.learner_state, result.learner_result.state):
+            assert type(learner_state.birth_timestamp) is float
+            assert type(learner_state.uptime_s) is float
+            assert learner_state.birth_timestamp == birth
+            assert learner_state.uptime_s == uptime
+        expected_step = step if math.isfinite(obs_value) else 0
+        assert bool(result.update_applied) is math.isfinite(obs_value)
+        assert int(result.state.step_count) == expected_step
+        state = result.state
+
+
+def test_restore_update_result_learner_host_clocks_keeps_slots_independent() -> None:
+    """Clock repair must patch each learner slot from its own state without cross-copying."""
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=3,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    retained_world_state = model.init(jr.key(29))
+    birth, uptime = 1_700_000_000.125, 16_777_216.25
+    source_learner_state = dataclasses.replace(  # type: ignore[type-var]
+        retained_world_state.learner_state,
+        birth_timestamp=birth,
+        uptime_s=uptime,
+    )
+    accepted = model.update(
+        retained_world_state,
+        jnp.array([0.25, -0.5], dtype=jnp.float32),
+        jnp.int32(0),
+        jnp.float32(0.5),
+        jnp.float32(0.99),
+        jnp.array([0.5, -0.25], dtype=jnp.float32),
+    )
+    retained_learner_narrowed = dataclasses.replace(  # type: ignore[type-var]
+        retained_world_state.learner_state,
+        step_count=jnp.int32(0),
+        birth_timestamp=jnp.float32(birth),
+        uptime_s=jnp.float32(uptime),
+    )
+    candidate_learner_narrowed = dataclasses.replace(  # type: ignore[type-var]
+        accepted.learner_result.state,
+        step_count=jnp.int32(7),
+        birth_timestamp=jnp.float32(birth),
+        uptime_s=jnp.float32(uptime),
+    )
+    diverged_result = dataclasses.replace(  # type: ignore[type-var]
+        accepted,
+        state=dataclasses.replace(  # type: ignore[type-var]
+            retained_world_state,
+            learner_state=retained_learner_narrowed,
+        ),
+        learner_result=dataclasses.replace(  # type: ignore[type-var]
+            accepted.learner_result,
+            state=candidate_learner_narrowed,
+        ),
+    )
+
+    repaired = _restore_update_result_learner_host_clocks(
+        diverged_result,
+        source_learner_state,
+    )
+
+    assert repaired.state.learner_state is not repaired.learner_result.state
+    assert int(repaired.state.learner_state.step_count) == 0
+    assert int(repaired.learner_result.state.step_count) == 7
+    chex.assert_trees_all_equal(
+        repaired.state.learner_state.head_params,
+        retained_world_state.learner_state.head_params,
+    )
+    chex.assert_trees_all_equal(
+        repaired.learner_result.state.head_params,
+        accepted.learner_result.state.head_params,
+    )
+    for learner_state in (repaired.state.learner_state, repaired.learner_result.state):
+        assert type(learner_state.birth_timestamp) is float
+        assert type(learner_state.uptime_s) is float
+        assert learner_state.birth_timestamp == birth
+        assert learner_state.uptime_s == uptime
+
+
+@pytest.mark.parametrize("predict_delta", [True, False])
+def test_latent_world_model_nonfinite_observation_fails_visible(
+    predict_delta: bool,
+) -> None:
+    """Infinite observations must not saturate tanh into finite latents or predictions."""
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=3,
+            hidden_sizes=(),
+            sparsity=0.0,
+            predict_delta=predict_delta,
+        )
+    )
+    state = model.init(jr.key(23))
+    inf_obs = jnp.array([jnp.inf, 1.0], dtype=jnp.float32)
+    valid_obs = jnp.array([0.25, -0.5], dtype=jnp.float32)
+    action = jnp.int32(0)
+    reward = jnp.float32(0.5)
+    discount = jnp.float32(0.99)
+
+    assert bool(jnp.all(jnp.isnan(model.encode(state, inf_obs))))
+    assert bool(jnp.all(jnp.isnan(model.input_features(state, inf_obs, action))))
+
+    prediction = model.predict(state, inf_obs, action)
+    assert bool(jnp.all(jnp.isnan(prediction.latent)))
+    assert bool(jnp.all(jnp.isnan(prediction.next_latent)))
+    assert bool(jnp.isnan(prediction.reward))
+    assert bool(jnp.isnan(prediction.discount))
+    assert bool(jnp.all(jnp.isnan(prediction.raw_predictions)))
+
+    for bad_obs, bad_next in ((inf_obs, valid_obs), (valid_obs, inf_obs)):
+        built_targets = model.targets(state, bad_obs, reward, discount, bad_next)
+        assert bool(jnp.all(jnp.isnan(built_targets[: model.config.latent_dim])))
