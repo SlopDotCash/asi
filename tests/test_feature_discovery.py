@@ -36,6 +36,7 @@ from alberta_framework.core.interaction_features import (
     RELEVANCE_PROBE_MODE_CONDITIONAL_V1,
     RELEVANCE_PROBE_MODE_TARGET_ONLY_V1,
     InteractionCurationPriorityOverride,
+    _exact_json_equal,
     load_interaction_feature_checkpoint,
     save_interaction_feature_checkpoint,
 )
@@ -1392,7 +1393,7 @@ def test_probe_mode_config_and_checkpoint_round_trip_fail_closed(
 def test_interaction_feature_checkpoint_rejects_float_aliased_accounting(
     tmp_path: Path,
 ) -> None:
-    """A float-aliased memory-accounting scalar must not load as an int."""
+    """The resource-contract check must reject a float-aliased accounting scalar."""
     learner = FixedBudgetInteractionLearner(
         n_features=2,
         n_tasks=1,
@@ -1412,6 +1413,9 @@ def test_interaction_feature_checkpoint_rejects_float_aliased_accounting(
     ).state
     original_path = tmp_path / "original"
     save_interaction_feature_checkpoint(learner, updated, original_path, feature_dim=3)
+    # Negative control: the untampered checkpoint still loads.
+    loaded_learner, loaded_state = load_interaction_feature_checkpoint(original_path)
+    assert loaded_learner is not None and loaded_state is not None
     metadata = load_checkpoint_metadata(original_path)
 
     tampered_accounting = dict(metadata["memory_accounting"])
@@ -1425,6 +1429,20 @@ def test_interaction_feature_checkpoint_rejects_float_aliased_accounting(
 
     with pytest.raises(ValueError, match="resource contract"):
         load_interaction_feature_checkpoint(tampered_path)
+
+
+def test_exact_json_equal_rejects_aliases_and_fails_closed() -> None:
+    """Exact JSON comparison rejects aliases and never raises on odd types."""
+    assert _exact_json_equal({"a": 1}, {"a": 1})
+    assert not _exact_json_equal({"a": 1}, {"a": 1.0})
+    assert not _exact_json_equal({"a": True}, {"a": 1})
+    assert not _exact_json_equal({"a": 1}, {"a": True})
+    # A tuple compares equal to the list a JSON round-trip turns it into.
+    assert _exact_json_equal({"a": (1, 2)}, {"a": [1, 2]})
+    assert not _exact_json_equal({"a": (1,)}, {"a": [1.0]})
+    # Non-JSON values fail closed instead of raising (ndarray == is an array).
+    assert not _exact_json_equal(jnp.asarray([1, 2]), jnp.asarray([1, 2]))
+    assert not _exact_json_equal({"a": jnp.asarray([1])}, {"a": jnp.asarray([1])})
 
 
 def test_target_only_probe_runs_under_jit_and_scan() -> None:

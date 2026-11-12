@@ -58,23 +58,25 @@ _INTERACTION_FEATURE_LOOP_MAX_STEPS = 10_000
 def _exact_json_equal(left: object, right: object) -> bool:
     """Compare JSON trees without Python's bool/int or int/float aliases.
 
-    Local copy of ``model_replay_rehearsal._exact_json_equal`` (added
-    upstream after this fork base): use the shared helper once the fork
-    syncs past it.
+    Only JSON values are compared exactly: ``dict``/``list``/``tuple`` (a
+    tuple compares equal to the list a JSON round-trip turns it into),
+    ``str``, ``int``, ``float``, ``bool`` and ``None``. Any other type (for
+    example an ``ndarray``) compares unequal, so the check fails closed
+    instead of raising an ambiguous-truth-value error. Other checkpoint
+    loaders carry their own copy of this helper; consolidating them into
+    one shared helper is a separate refactor.
     """
-    if type(left) is not type(right):
-        return False
-    if type(left) is dict:
-        right_dict = cast(dict[str, object], right)
-        return left.keys() == right_dict.keys() and all(
-            _exact_json_equal(value, right_dict[key]) for key, value in left.items()
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _exact_json_equal(value, right[key]) for key, value in left.items()
         )
-    if type(left) is list:
-        right_list = cast(list[object], right)
-        return len(left) == len(right_list) and all(
-            _exact_json_equal(item, other) for item, other in zip(left, right_list, strict=True)
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            _exact_json_equal(item, other) for item, other in zip(left, right)
         )
-    return left == right
+    if isinstance(left, (str, int, float, bool)) or left is None:
+        return type(left) is type(right) and left == right
+    return False
 
 
 _ACTUAL_INT_TYPES = frozenset(
@@ -3969,7 +3971,7 @@ def load_interaction_feature_checkpoint(
         key=jr.key(0, impl="threefry2x32"),
     )
     restored, restored_metadata = load_checkpoint(template, path)
-    if not _exact_json_equal(restored_metadata, metadata):
+    if restored_metadata != metadata:
         raise ValueError("interaction-feature checkpoint metadata changed between reads")
     learner._require_state_contract(restored, feature_dim=feature_dim)
     if not bool(_lifetime_counter_valid(restored.step_words, restored.step_count)):
