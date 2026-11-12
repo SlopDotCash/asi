@@ -58,6 +58,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import Array
+from jax.typing import ArrayLike
 from jaxtyping import Bool, Float
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
@@ -556,10 +557,18 @@ def _restore_update_result_learner_host_clocks(
     result: LatentWorldModelUpdateResult,
     source_learner_state: MultiHeadMLPState,
 ) -> LatentWorldModelUpdateResult:
-    """Restore Python-float learner clocks on an update result outside tracing."""
+    """Restore Python-float learner clocks on each update-result slot independently."""
     if isinstance(result.state.step_count, jax.core.Tracer):
         return result
-    restored_learner = cast(
+    restored_state_learner = cast(
+        MultiHeadMLPState,
+        dataclasses.replace(
+            cast(Any, result.state.learner_state),
+            birth_timestamp=source_learner_state.birth_timestamp,
+            uptime_s=source_learner_state.uptime_s,
+        ),
+    )
+    restored_result_learner = cast(
         MultiHeadMLPState,
         dataclasses.replace(
             cast(Any, result.learner_result.state),
@@ -571,14 +580,14 @@ def _restore_update_result_learner_host_clocks(
         LatentWorldModelState,
         dataclasses.replace(
             cast(Any, result.state),
-            learner_state=restored_learner,
+            learner_state=restored_state_learner,
         ),
     )
     restored_learner_result = cast(
         MultiHeadMLPUpdateResult,
         dataclasses.replace(
             cast(Any, result.learner_result),
-            state=restored_learner,
+            state=restored_result_learner,
         ),
     )
     return cast(
@@ -962,11 +971,11 @@ class LatentWorldModel:
     def update(
         self,
         state: LatentWorldModelState,
-        observation: Array,
-        action: Array,
-        reward: Array,
-        discount: Array,
-        next_observation: Array,
+        observation: ArrayLike,
+        action: ArrayLike,
+        reward: ArrayLike,
+        discount: ArrayLike,
+        next_observation: ArrayLike,
     ) -> LatentWorldModelUpdateResult:
         """Update from one real transition.
 
