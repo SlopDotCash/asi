@@ -656,6 +656,30 @@ class SARSAAgent:
             state.replace(learner_state=learner_state),  # type: ignore[attr-defined]
         )
 
+    def reset_episode_traces(self, state: SARSAState) -> SARSAState:
+        """Clear every head eligibility trace at an episode boundary.
+
+        ``reset_control_traces`` clears only control heads, but prediction
+        demons are not exempt from the boundary: ``update`` clears their
+        traces at a terminal transition, and a truncated episode (or one
+        cut off by ``max_steps``) ends the trajectory just the same, so
+        their traces must not credit the next episode's first update
+        either. Parameters, optimizer states, and counters are untouched.
+        """
+        if type(state) is not SARSAState:
+            raise ValueError("state must be a SARSAState")
+        head_traces = list(state.learner_state.head_traces)
+        for i in range(len(head_traces)):
+            w_trace, b_trace = head_traces[i]
+            head_traces[i] = (jnp.zeros_like(w_trace), jnp.zeros_like(b_trace))
+        learner_state = state.learner_state.replace(  # type: ignore[attr-defined]
+            head_traces=tuple(head_traces)
+        )
+        return cast(
+            SARSAState,
+            state.replace(learner_state=learner_state),  # type: ignore[attr-defined]
+        )
+
     def to_config(self) -> dict[str, Any]:
         """Serialize agent configuration to dict."""
         horde_config = self._horde.to_config()
@@ -1280,14 +1304,16 @@ def run_sarsa_episode(
             if truncated and not terminated:
                 # The update above bootstrapped correctly (no terminal), but
                 # the episode still ends here: never let its eligibility
-                # traces credit the next episode's first transition.
-                state = agent.reset_control_traces(state)
+                # traces credit the next episode's first transition. This
+                # clears prediction-demon traces too, matching what
+                # ``update`` does at a terminal transition.
+                state = agent.reset_episode_traces(state)
             break
     else:
         # The max_steps budget ran out before either flag ended the episode.
         # The next call resets the environment just as it does after a
         # truncation, so the traces must not carry over either.
-        state = agent.reset_control_traces(state)
+        state = agent.reset_episode_traces(state)
 
     return SARSAEpisodeResult(
         state=state,
