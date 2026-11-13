@@ -1056,6 +1056,35 @@ def test_stratified_sampling_is_deterministic_bounded_and_without_replacement() 
     assert not np.array_equal(first.state.rng_key_data, state.rng_key_data)
 
 
+@pytest.mark.parametrize("policy", ["reservoir", "calibrated"])
+def test_sampling_under_x64_matches_default_mode_with_int32_counts(policy: str) -> None:
+    def sample() -> Any:
+        memory = DualReplayMemory(_config(long_term_policy=policy, max_representation_lag=0))
+        state = _record_range(memory, memory.init(jr.key(7)), 0, 3, versions=[0, 1, 2])
+        return memory.sample(state, jnp.asarray(1, dtype=jnp.int32))
+
+    expected = sample()
+    with jax.enable_x64():
+        result = sample()
+
+    assert int(expected.stale_short_term_count) == 1
+    assert int(expected.future_short_term_count) == 1
+    assert int(expected.eligible_short_term_count) == 1
+    for name in (
+        "stale_short_term_count",
+        "stale_long_term_count",
+        "future_short_term_count",
+        "future_long_term_count",
+        "eligible_short_term_count",
+        "eligible_long_term_count",
+    ):
+        assert getattr(result, name).dtype == jnp.int32, name
+    assert [leaf.dtype for leaf in jax.tree.leaves(result)] == [
+        leaf.dtype for leaf in jax.tree.leaves(expected)
+    ]
+    _assert_trees_equal(result, expected)
+
+
 def _stack(items: list[Any]) -> Any:
     return jax.tree.map(lambda *leaves: jnp.stack(leaves), *items)
 

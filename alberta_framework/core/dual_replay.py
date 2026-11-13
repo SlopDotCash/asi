@@ -1992,9 +1992,9 @@ class DualReplayMemory:
             selected_indices,
             selected,
             selected_lag,
-            jnp.sum(stale.astype(jnp.int32)),
-            jnp.sum(future.astype(jnp.int32)),
-            jnp.sum(eligible.astype(jnp.int32)),
+            jnp.sum(stale, dtype=jnp.int32),
+            jnp.sum(future, dtype=jnp.int32),
+            jnp.sum(eligible, dtype=jnp.int32),
         )
 
     def _empty_batch(self) -> ReplayBatch:
