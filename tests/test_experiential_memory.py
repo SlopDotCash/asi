@@ -913,3 +913,125 @@ def test_lifetime_counters_cannot_precede_the_step_clock(counter_name: str) -> N
     assert not bool(retrieval.accepted)
     assert not bool(write.wrote)
     _assert_trees_equal(write.state, corrupt)
+
+
+def test_query_convex_combination_does_not_exceed_threshold_by_float32_ulp() -> None:
+    threshold = float(np.float32(0.7))
+    memory = ExperientialMemory(
+        _config(
+            capacity=3,
+            top_k=3,
+            min_neighbors=3,
+            min_similarity=0.5,
+            min_effective_reliability=0.1,
+            max_uncertainty=threshold,
+            max_safety_cost=threshold,
+        )
+    )
+    state = memory.init()
+    for pid, rel in ((10, 0.6), (20, 0.2), (30, 0.2)):
+        state = _write(
+            memory,
+            state,
+            _entry(
+                pid,
+                key=(0.0, 0.0),
+                action=(0.7, 0.3),
+                reward=0.7,
+                uncertainty=threshold,
+                safety_cost=threshold,
+                reliability=rel,
+            ),
+        )
+    retrieval = memory.query(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(1, dtype=jnp.int32),
+        jnp.asarray(threshold, dtype=jnp.float32),
+        jnp.asarray(True),
+    )
+    assert bool(retrieval.accepted)
+    assert float(retrieval.uncertainty) == pytest.approx(threshold, abs=0.0)
+    assert float(retrieval.safety_cost) == pytest.approx(threshold, abs=0.0)
+    np.testing.assert_array_equal(
+        retrieval.action, jnp.asarray([0.7, 0.3], dtype=jnp.float32)
+    )
+
+
+def test_query_preserves_positive_neighbor_scores_below_float32_product_underflow() -> None:
+    memory = ExperientialMemory(
+        _config(
+            capacity=2,
+            top_k=2,
+            min_similarity=1e-25,
+            min_effective_reliability=1e-25,
+            distance_scale=1.0,
+        )
+    )
+    state = _write(
+        memory,
+        memory.init(),
+        _entry(
+            10,
+            key=(7.2, 7.2),
+            action=(1.0, -1.0),
+            reliability=1e-23,
+        ),
+    )
+    retrieval = memory.query(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(1, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(True),
+    )
+    assert bool(retrieval.has_neighbors)
+    assert bool(retrieval.accepted)
+    assert float(retrieval.neighbor_weights[0]) == pytest.approx(1.0)
+    np.testing.assert_allclose(retrieval.action, [1.0, -1.0], rtol=1e-6, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    ("utility_value", "recency_scale"),
+    [
+        (1.0e8, 1.0),
+        (1.0, 1.0e20),
+    ],
+)
+def test_eviction_breaks_multiscale_utility_and_recency_absorption_ties(
+    utility_value: float, recency_scale: float
+) -> None:
+    memory = ExperientialMemory(
+        _config(
+            capacity=2,
+            top_k=1,
+            min_similarity=0.9,
+            utility_decay=1.0,
+            eviction_utility_weight=1.0,
+            eviction_recency_weight=1.0,
+            recency_scale=recency_scale,
+        )
+    )
+    state = _write(
+        memory,
+        memory.init(),
+        _entry(10, key=(0.0, 0.0), utility=utility_value),
+    )
+    state = _write(
+        memory,
+        state,
+        _entry(20, key=(10.0, 0.0), utility=utility_value),
+    )
+    result = memory.step(
+        state,
+        jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(1, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(True),
+        _entry(30, key=(20.0, 0.0), utility=utility_value),
+    )
+    assert bool(result.retrieval.accepted)
+    assert bool(result.evicted)
+    assert int(result.evicted_provenance_id) == 20
+    assert set(np.asarray(result.state.entries.provenance_ids).tolist()) == {10, 30}
+
