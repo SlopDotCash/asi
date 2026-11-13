@@ -259,6 +259,53 @@ def test_future_utility_normalization_preserves_finite_weighted_second_moment(
     np.testing.assert_allclose(normalized, expected_normalized, rtol=2e-6, atol=0.0)
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("magnitude", [1.0e30, 1.0e38])
+def test_future_utility_normalization_preserves_unrepresentable_second_moment(
+    magnitude: float,
+    compiled: bool,
+) -> None:
+    """A finite extreme signal keeps a finite normalized value and moment.
+
+    With decay 0.99 the true second moment is ``0.01 * magnitude ** 2``,
+    which no float32 can hold once the magnitude reaches 1e30, so the
+    exponent-scaled recovery overflows too. The normalized ratio
+    ``signal / RMS`` is still representable (10.0 here): it must not
+    collapse to zero, and the stored moment must stay finite so the next
+    step still normalizes instead of inheriting an infinite history.
+    """
+    decay_value = np.float32(0.99)
+    expected_normalized = np.float64(1.0) / np.sqrt(np.float64(1.0) - np.float64(decay_value))
+
+    def normalize(signal: jax.Array, second_moment: jax.Array) -> tuple[jax.Array, jax.Array]:
+        return normalize_future_utility_signal(
+            signal,
+            ages=jnp.ones(1, dtype=jnp.int32),
+            second_moment=second_moment,
+            moment_decay=jnp.asarray(decay_value),
+            utility_decay=0.9,
+            mode="uncertainty",
+        )
+
+    operation = jax.jit(normalize) if compiled else normalize
+    normalized, second = operation(
+        jnp.asarray([magnitude], dtype=jnp.float32),
+        jnp.zeros(1, dtype=jnp.float32),
+    )
+
+    chex.assert_tree_all_finite(normalized)
+    chex.assert_tree_all_finite(second)
+    np.testing.assert_allclose(normalized, expected_normalized, rtol=2e-6, atol=0.0)
+
+    next_normalized, next_second = operation(
+        jnp.asarray([1.0], dtype=jnp.float32),
+        second,
+    )
+    chex.assert_tree_all_finite(next_normalized)
+    chex.assert_tree_all_finite(next_second)
+    assert float(next_normalized[0]) > 0.0
+
+
 def test_age_normalization_does_not_scale_the_ema_increment() -> None:
     """Warm-up correction belongs after the raw EMA, not on each input."""
     signal = jnp.ones((3,), dtype=jnp.float32)
