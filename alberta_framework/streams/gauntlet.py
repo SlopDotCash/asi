@@ -1079,6 +1079,24 @@ def migrate_legacy_lifetime_gauntlet_state(
     return migrated
 
 
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        right_dict = cast(dict[str, object], right)
+        return left.keys() == right_dict.keys() and all(
+            _exact_json_equal(value, right_dict[key]) for key, value in left.items()
+        )
+    if type(left) is list:
+        right_list = cast(list[object], right)
+        return len(left) == len(right_list) and all(
+            _exact_json_equal(item, other)
+            for item, other in zip(left, right_list, strict=True)
+        )
+    return left == right
+
+
 def save_lifetime_gauntlet_checkpoint(
     stream: LifetimeGauntletStream,
     state: LifetimeState,
@@ -1123,13 +1141,15 @@ def load_lifetime_gauntlet_checkpoint(
         stream.init(jr.key(0, impl=_LIFETIME_GAUNTLET_PRNG_IMPLEMENTATION)),
         path,
     )
-    if restored_metadata != metadata:
+    if not _exact_json_equal(restored_metadata, metadata):
         raise ValueError("lifetime-gauntlet checkpoint metadata changed between reads")
     state = cast(LifetimeState, restored)
     stream._require_state_contract(state)
     if not bool(jax.device_get(stream.state_is_valid(state))):
         raise ValueError("restored lifetime-gauntlet state is invalid")
-    if stream.resource_budget.to_dict() != metadata.get("memory_accounting"):
+    if not _exact_json_equal(
+        stream.resource_budget.to_dict(), metadata.get("memory_accounting")
+    ):
         raise ValueError("lifetime-gauntlet checkpoint resource contract does not match")
     return stream, state
 

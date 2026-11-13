@@ -1223,7 +1223,17 @@ def _normalize_keyboard_vector(keyboard_vector: Array) -> Array:
     """L1-normalize without rejecting finite vectors whose sum overflows."""
 
     direct_l1 = jnp.sum(jnp.abs(keyboard_vector))
-    direct = keyboard_vector / (direct_l1 + 1e-8)
+    # Divide by the exact L1 sum. The old ``+ 1e-8`` guard shrank small
+    # chords (L1 << 1e-8) to a near-zero blend instead of normalizing them,
+    # so the 1e-6 Gumbel tie-break in keyboard_action swamped their Q-values
+    # and action selection became random. Only the zero-sum case needs a
+    # guard, and dividing it by one returns the same all-zero vector.
+    safe_l1 = jnp.where(
+        direct_l1 > 0.0,
+        direct_l1,
+        jnp.ones_like(direct_l1),
+    )
+    direct = keyboard_vector / safe_l1
 
     max_abs = jnp.max(jnp.abs(keyboard_vector))
     _, exponent = jnp.frexp(max_abs)

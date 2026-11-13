@@ -319,9 +319,22 @@ def step8_update(
     next_observation: Array,
 ) -> WorldModelUpdateResult:
     """Run one Step 8 model-learning transition update."""
-    return cast(
+    result = cast(
         WorldModelUpdateResult,
         model.update(state, observation, action, reward, next_observation),
+    )
+    # The jitted update narrows the host-only clocks, which one transition
+    # does not advance. Restore their incoming values.
+    return cast(
+        WorldModelUpdateResult,
+        result.replace(  # type: ignore[attr-defined]
+            state=result.state.replace(
+                learner_state=result.state.learner_state.replace(
+                    birth_timestamp=state.learner_state.birth_timestamp,
+                    uptime_s=state.learner_state.uptime_s,
+                )
+            )
+        ),
     )
 
 
@@ -343,6 +356,8 @@ def _scale_safe_normalized_statistics(
     normalized_variance = jnp.mean(normalized_centered**2, axis=axis)
     value_exponent = jnp.squeeze(safe_exponent, axis=axis)
     mean = jnp.ldexp(normalized_mean, value_exponent)
+    # Roundoff near float32's limit must not leave the inputs' convex hull.
+    mean = jnp.clip(mean, jnp.min(values, axis=axis), jnp.max(values, axis=axis))
     return mean, normalized_variance, value_exponent
 
 

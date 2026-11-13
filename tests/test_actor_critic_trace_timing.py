@@ -269,6 +269,119 @@ def test_checkpoint_restores_discount_cursor_and_exact_continuation(
     _assert_exact(resumed, direct)
 
 
+_TRACE_FIELDS = {
+    "discrete": (
+        "actor_trace_weights",
+        "actor_trace_bias",
+        "critic_trace_weights",
+        "critic_trace_bias",
+    ),
+    "continuous": (
+        "mean_trace_weights",
+        "mean_trace_bias",
+        "log_sigma_trace",
+        "critic_trace_weights",
+        "critic_trace_bias",
+    ),
+}
+
+
+def _assert_traces_zero(state: Any, kind: str) -> None:
+    for name in _TRACE_FIELDS[kind]:
+        np.testing.assert_array_equal(
+            np.asarray(getattr(state, name)),
+            np.zeros_like(np.asarray(getattr(state, name))),
+            err_msg=name,
+        )
+
+
+@pytest.mark.parametrize("kind", ["discrete", "continuous"])
+def test_truncated_update_bootstraps_but_drops_traces(kind: str) -> None:
+    """A time-limit truncation bootstraps yet ends the episode for traces.
+
+    Without ``truncated=True`` the truncating transition's eligibility
+    traces survive ``start()`` and the next episode's first TD error credits
+    the dead episode's features. With the flag the bootstrap still moves the
+    weights exactly as before, but no trace is carried forward.
+    """
+    agent = _agent(kind)
+    state = agent.start(agent.init(2, jr.key(123)), jnp.asarray(_OBSERVATIONS[0]))[0]
+    state = _fixed_action(state, kind)
+    flagged = agent.update(
+        state, 1.0, jnp.asarray(_OBSERVATIONS[1]),
+        discount=jnp.float32(0.9), truncated=True,
+    )
+    assert bool(flagged.update_applied)
+    _assert_traces_zero(flagged.state, kind)
+    assert float(flagged.state.previous_discount) == 0.0
+
+    unflagged = agent.update(
+        state, 1.0, jnp.asarray(_OBSERVATIONS[1]), discount=jnp.float32(0.9),
+    )
+    assert bool(unflagged.update_applied)
+    # The flag changes only the stored traces, not the weight step itself.
+    for name in ("critic_weights", "critic_bias"):
+        np.testing.assert_array_equal(
+            np.asarray(getattr(flagged.state, name)),
+            np.asarray(getattr(unflagged.state, name)),
+            err_msg=name,
+        )
+    assert bool(jnp.any(jnp.asarray(unflagged.state.critic_trace_weights) != 0.0))
+
+    # The next episode's first update must match the fresh-trace control.
+    episode2 = agent.start(flagged.state, jnp.asarray(_OBSERVATIONS[1]))[0]
+    episode2 = _fixed_action(episode2, kind)
+    second = agent.update(
+        episode2, 1.0, jnp.asarray(_OBSERVATIONS[2]), discount=jnp.float32(0.9),
+    )
+    assert bool(second.update_applied)
+    control = episode2.replace(
+        **{name: jnp.zeros_like(getattr(episode2, name)) for name in _TRACE_FIELDS[kind]},
+        previous_discount=jnp.float32(0.0),
+    )
+    control_result = agent.update(
+        control, 1.0, jnp.asarray(_OBSERVATIONS[2]), discount=jnp.float32(0.9),
+    )
+    assert bool(control_result.update_applied)
+    for name in ("critic_weights", "critic_bias"):
+        np.testing.assert_allclose(
+            np.asarray(getattr(second.state, name)),
+            np.asarray(getattr(control_result.state, name)),
+            rtol=2e-6, atol=1e-7, err_msg=name,
+        )
+
+
+@pytest.mark.parametrize("kind", ["discrete", "continuous"])
+def test_array_runner_truncated_row_drops_traces(kind: str) -> None:
+    """A truncated row in the array runner carries no trace into the next row."""
+    agent = _agent(kind)
+    state = agent.init(2, jr.key(123))
+    kwargs = {
+        "observations": jnp.asarray(_OBSERVATIONS[:-1]),
+        "rewards": jnp.asarray([1.0, 1.0], dtype=jnp.float32),
+        "terminated": jnp.asarray([False, False]),
+        "next_observations": jnp.asarray(_OBSERVATIONS[1:]),
+        "discounts": jnp.asarray([0.9, 0.9], dtype=jnp.float32),
+        "truncated": jnp.asarray([True, False]),
+    }
+    if kind == "discrete":
+        result = run_actor_critic_from_arrays(
+            agent, state, actions=jnp.zeros(2, jnp.int32), **kwargs,
+        )
+    else:
+        result = run_continuous_actor_critic_from_arrays(
+            agent, state, actions=jnp.full((2, 1), 0.5, jnp.float32), **kwargs,
+        )
+    assert bool(jnp.all(result.updates_applied))
+    # Row 1 starts from zeroed traces, so its critic trace is just its own
+    # observation; the dead episode's feature must not appear in it.
+    np.testing.assert_array_equal(
+        np.asarray(result.state.critic_trace_weights),
+        np.asarray(_OBSERVATIONS[1]),
+    )
+    assert float(result.state.previous_discount) == pytest.approx(0.9)
+
+
 @pytest.mark.parametrize("kind", ["discrete", "continuous"])
 def test_legacy_checkpoint_without_discount_cursor_is_explicitly_rejected(
     kind: str, tmp_path: Path,

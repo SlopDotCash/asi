@@ -1384,3 +1384,35 @@ class TestAutoCurate:
             state = result.state
         # Fires at step_count 0, 5, 10 → exactly 3
         assert curations == 3
+
+
+def test_finite_product_matvec_recovers_when_direct_overflows_near_float32_max() -> None:
+    from alberta_framework.core.prototype_agent import _finite_product_matvec
+
+    matrix = jnp.asarray([[2e38, 2e38, -2e38]], dtype=jnp.float32)
+    vector = jnp.ones((3,), dtype=jnp.float32)
+    result = _finite_product_matvec(matrix, vector)
+    assert bool(jnp.all(jnp.isfinite(result)))
+    np.testing.assert_allclose(result, jnp.asarray([2e38], dtype=jnp.float32), rtol=1e-6)
+
+
+def test_gru_step_saturated_gates_ignore_infinite_prior_hidden() -> None:
+    from alberta_framework.core.prototype_agent import GRUPerceptionState, _gru_step
+
+    gru = GRUPerceptionState(
+        W_z=jnp.asarray([[1.0]], dtype=jnp.float32),
+        U_z=jnp.asarray([[1.0]], dtype=jnp.float32),
+        b_z=jnp.asarray([0.0], dtype=jnp.float32),
+        W_r=jnp.asarray([[-1.0]], dtype=jnp.float32),
+        U_r=jnp.asarray([[-1.0]], dtype=jnp.float32),
+        b_r=jnp.asarray([0.0], dtype=jnp.float32),
+        W_h=jnp.zeros((1, 1), dtype=jnp.float32),
+        U_h=jnp.ones((1, 1), dtype=jnp.float32),
+        b_h=jnp.asarray([0.5], dtype=jnp.float32),
+        hidden=jnp.asarray([jnp.inf], dtype=jnp.float32),
+    )
+    new_gru, aug = _gru_step(gru, jnp.asarray([1.0], dtype=jnp.float32))
+    assert bool(jnp.all(jnp.isfinite(new_gru.hidden)))
+    assert bool(jnp.all(jnp.isfinite(aug)))
+    expected = jnp.tanh(jnp.asarray([0.5], dtype=jnp.float32))
+    np.testing.assert_allclose(new_gru.hidden, expected, rtol=1e-6)

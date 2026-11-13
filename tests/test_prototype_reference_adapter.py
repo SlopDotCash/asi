@@ -852,3 +852,60 @@ def test_premature_prototype_disarm_discards_the_functional_candidate() -> None:
     assert rejected.rejection_reason is not None
     assert "disarmed" in rejected.rejection_reason or "capacity" in rejected.rejection_reason
     assert int(rejected.state.agent_state.step_count) == np.iinfo(np.int32).max - 1
+
+
+
+def test_apply_outcome_rejects_discount_saturating_to_unit_in_float32() -> None:
+    adapter = PrototypeReferenceAdapter.from_config(_config())
+    agent_state, decision = _start(adapter)
+    _, _, transaction = _record_outcome(
+        adapter,
+        decision,
+        discount=1.0 - 1.0e-12,
+    )
+    rejected = adapter.apply_outcome(agent_state, transaction)
+    assert not rejected.accepted
+    assert rejected.state is agent_state
+    assert rejected.rejection_reason is not None
+    assert "unit/non-unit" in rejected.rejection_reason
+
+
+def test_apply_outcome_rejects_boolean_scalar_and_stagnant_observation_id() -> None:
+    adapter = PrototypeReferenceAdapter.from_config(_config())
+    agent_state, decision = _start(adapter)
+    _, _, transaction = _record_outcome(adapter, decision)
+
+    object.__setattr__(transaction, "reward", True)
+    rejected_bool = adapter.apply_outcome(agent_state, transaction)
+    assert not rejected_bool.accepted
+    assert rejected_bool.state is agent_state
+    assert rejected_bool.rejection_reason is not None
+    assert "boolean" in rejected_bool.rejection_reason
+
+    _, _, transaction2 = _record_outcome(adapter, decision)
+    object.__setattr__(
+        transaction2,
+        "next_decision_observation_id",
+        agent_state.current_observation_id,
+    )
+    rejected_stagnant = adapter.apply_outcome(agent_state, transaction2)
+    assert not rejected_stagnant.accepted
+    assert rejected_stagnant.state is agent_state
+
+
+def test_apply_outcome_handles_empty_message_runtime_exception_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = PrototypeReferenceAdapter.from_config(_config())
+    agent_state, decision = _start(adapter)
+    _, _, transaction = _record_outcome(adapter, decision)
+
+    def fail_blank(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("   ")
+
+    monkeypatch.setattr(PrototypeAgent, "update_transition", fail_blank)
+    rejected = adapter.apply_outcome(agent_state, transaction)
+    assert not rejected.accepted
+    assert rejected.state is agent_state
+    assert rejected.rejection_reason == "RuntimeError"

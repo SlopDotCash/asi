@@ -59,6 +59,7 @@ from alberta_framework.core._float32_scalars import (
     validated_float32_scalar_with_ratio,
 )
 from alberta_framework.core.initializers import sparse_init
+from alberta_framework.core.multi_head_learner import _finite_layer_norm
 from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import Bounder, ObGDBounding
 from alberta_framework.core.types import MLPParams
@@ -1841,9 +1842,7 @@ class UPGDLearner:
         for i in range(len(weights)):
             x = weights[i] @ x + biases[i]
             if use_layer_norm:
-                mean = jnp.mean(x)
-                var = jnp.var(x)
-                x = (x - mean) / jnp.sqrt(var + 1e-5)
+                x = _finite_layer_norm(x)
             x = jnp.where(x >= 0, x, leaky_relu_slope * x)
         return x
 
@@ -1964,7 +1963,10 @@ class UPGDLearner:
         ``|delta|`` back in as a second factor would count the error twice.
         The scale is written as ``m / max(kappa * total, m)`` with
         ``m = min(|delta|, 1)`` so it cannot overflow for tiny errors; a zero
-        error carries zero steps, where the bound is moot.
+        error carries zero steps, where the bound is moot. The quotient is
+        evaluated by splitting the step total into mantissa and exponent so
+        a finite-but-huge total still rescales the steps instead of
+        overflowing the bound and discarding the whole update.
         """
         error_scalar = jnp.squeeze(error)
         total_step = jnp.array(0.0, dtype=jnp.float32)
@@ -1972,12 +1974,73 @@ class UPGDLearner:
             total_step = total_step + jnp.sum(jnp.abs(step))
         abs_error = jnp.abs(error_scalar)
         error_unit = jnp.where(abs_error > 0.0, jnp.minimum(abs_error, 1.0), 1.0)
-        scale = error_unit / jnp.maximum(kappa * total_step, error_unit)
-        collapsed = scale == 0
-        return (
-            tuple(zero_if_collapsed_infinity(scale * step, step, collapsed) for step in steps),
-            scale,
+        # Evaluate ``error_unit / max(kappa * total_step, error_unit)`` without
+        # forming ``kappa * total_step``: the product overflows float32 when
+        # the true bound exceeds float32 max even though every input is
+        # finite, which collapsed the scale to zero and silently discarded
+        # the whole update. Compare the bound against the error unit in
+        # exponent space instead, then combine each step's mantissa and
+        # exponent with the bound's factors. This keeps intermediates finite
+        # when small kappa values require a large mantissa-space ratio.
+        # The scale itself is subnormal exactly in this regime and flushes
+        # to zero under FTZ, so only the factored steps carry the fix; the
+        # reported scale stays zero there, as before.
+        kappa_nonneg = jnp.maximum(kappa, jnp.asarray(0.0, dtype=jnp.float32))
+        total_mant, total_exp = jnp.frexp(total_step)
+        kappa_mant, kappa_exp = jnp.frexp(kappa_nonneg)
+        unit_mant, unit_exp = jnp.frexp(error_unit)
+        product_mant = kappa_mant * total_mant
+        product_exp = kappa_exp + total_exp
+        product_mant, product_exp = (
+            jnp.where(
+                product_mant < jnp.asarray(0.5, dtype=jnp.float32),
+                product_mant * jnp.asarray(2.0, dtype=jnp.float32),
+                product_mant,
+            ),
+            jnp.where(
+                product_mant < jnp.asarray(0.5, dtype=jnp.float32),
+                product_exp - 1,
+                product_exp,
+            ),
         )
+        bounding_needed = (
+            (product_mant != jnp.asarray(0.0, dtype=jnp.float32))
+            & (
+                (product_exp > unit_exp)
+                | (
+                    (product_exp == unit_exp)
+                    & (product_mant > unit_mant)
+                )
+                | jnp.isinf(product_mant)
+            )
+        )
+        nan_case = jnp.isnan(total_step) | jnp.isnan(kappa_nonneg)
+        no_bound = ~bounding_needed & ~nan_case
+        ratio = unit_mant / product_mant
+        ratio_exponent = unit_exp - product_exp
+        collapsed = jnp.isinf(total_step)
+        scale = jnp.where(
+            no_bound,
+            jnp.asarray(1.0, dtype=jnp.float32),
+            jnp.minimum(
+                jnp.ldexp(ratio, ratio_exponent), jnp.asarray(1.0, dtype=jnp.float32)
+            ),
+        )
+        bounded_steps = []
+        for step in steps:
+            step_mantissa, step_exponent = jnp.frexp(step)
+            bounded_steps.append(
+                zero_if_collapsed_infinity(
+                    jnp.where(
+                        no_bound,
+                        step,
+                        jnp.ldexp(ratio * step_mantissa, ratio_exponent + step_exponent),
+                    ),
+                    step,
+                    collapsed,
+                )
+            )
+        return tuple(bounded_steps), scale
 
     def _bound_error_carrying_steps(
         self,
@@ -2180,6 +2243,7 @@ class UPGDLearner:
         track_gradient_history = self._stores_gradient_history()
 
         active_mask = ~jnp.isnan(targets)  # (n_heads,)
+        any_active = jnp.any(active_mask)
         safe_targets = jnp.where(active_mask, targets, 0.0)
         n_active = jnp.maximum(jnp.sum(active_mask.astype(jnp.float32)), 1.0)
         n_nonzero_targets = jnp.maximum(
@@ -2525,7 +2589,12 @@ class UPGDLearner:
                 ),
                 0.0,
             )
-        target_delta = jnp.sum(jnp.abs(safe_targets - state.previous_targets)) / n_active
+        active_target_diff = jnp.where(
+            active_mask,
+            jnp.abs(safe_targets - state.previous_targets),
+            0.0,
+        )
+        target_delta = jnp.sum(active_target_diff) / n_active
         repeat_now = target_delta <= jnp.asarray(
             self._head_repetition_delta_threshold,
             dtype=jnp.float32,
@@ -3415,8 +3484,18 @@ class UPGDLearner:
         if track_gradient_history:
             next_previous_trunk_weight_grads = trunk_w_grads
             next_previous_trunk_bias_grads = trunk_b_grads
-            next_previous_head_weight_grads = head_w_grads
-            next_previous_head_bias_grads = head_b_grads
+            next_previous_head_weight_grads = tuple(
+                jnp.where(active_mask[i], new_g, old_g)
+                for i, (new_g, old_g) in enumerate(
+                    zip(head_w_grads, state.previous_head_weight_grads)
+                )
+            )
+            next_previous_head_bias_grads = tuple(
+                jnp.where(active_mask[i], new_g, old_g)
+                for i, (new_g, old_g) in enumerate(
+                    zip(head_b_grads, state.previous_head_bias_grads)
+                )
+            )
         else:
             next_previous_trunk_weight_grads = state.previous_trunk_weight_grads
             next_previous_trunk_bias_grads = state.previous_trunk_bias_grads
@@ -3443,7 +3522,7 @@ class UPGDLearner:
             ),
             loss_fast_ema=new_loss_fast_ema,
             loss_slow_ema=new_loss_slow_ema,
-            previous_targets=safe_targets,
+            previous_targets=jnp.where(active_mask, safe_targets, state.previous_targets),
             target_repeat_ema=new_target_repeat_ema,
             target_simplex_ema=new_target_simplex_ema,
             meta_trunk_log_scale=new_meta_trunk_log_scale,
@@ -3462,6 +3541,8 @@ class UPGDLearner:
         )
 
         metrics = jnp.stack([loss_value, mean_utility, min_utility, max_perturbation_magnitude])
+        new_state = select_transaction(any_active, new_state, state)
+        metrics = neutralize_array(any_active, metrics)
 
         # Fail closed: a non-finite observation, an infinite target, or a
         # non-finite candidate state must not commit. NaN targets remain

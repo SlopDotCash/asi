@@ -923,6 +923,21 @@ def test_checkpoint_roundtrip_and_tamper_detection_are_strict() -> None:
         PartnerPolicyFusion.from_checkpoint_payload(changed)
 
 
+def test_checkpoint_rejects_float_aliased_resource_budget() -> None:
+    """An int budget scalar rewritten as a float must fail, as sibling loaders require.
+
+    The resource budget is stored outside both payload digests, so only the
+    budget comparison can catch the rewrite; plain ``!=`` accepts ``4 == 4.0``.
+    """
+    fusion = _fusion()
+    payload = fusion.checkpoint_payload(fusion.init())
+    tampered = copy.deepcopy(payload)
+    budget = cast(dict[str, Any], tampered["resource_budget"])
+    budget["persistent_state_bytes"] = float(budget["persistent_state_bytes"])
+    with pytest.raises(ValueError, match="resource budget"):
+        PartnerPolicyFusion.from_checkpoint_payload(tampered)
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -1094,3 +1109,97 @@ def test_unavailable_partner_cannot_tie_rounded_score_floor(cost: float) -> None
     assert int(empty.decision.effective_action) == 0
     assert not bool(empty.decision.feedback_armed)
     _assert_float_leaves_finite(empty)
+
+
+def test_jit_preserves_large_finite_assistance_ratio_in_feedback() -> None:
+    fusion = _fusion(
+        max_partners=1,
+        context_dim=1,
+        n_actions=2,
+        assistance_value_bound=1.0e38,
+        safety_target_weight=0.0,
+    )
+    armed = _decide(
+        fusion,
+        fusion.init(),
+        _messages(fusion, [{"suggested_action": 1}]),
+        context=(0.5,),
+        mask=(True, True),
+    ).state
+    fb = _feedback(action=1, assistance=5.0e37, safe=True)
+    eager = fusion.apply_feedback(armed, fb)
+    compiled = jax.jit(fusion.apply_feedback)(armed, fb)
+
+    assert bool(eager.applied)
+    assert float(eager.realized_training_target) == pytest.approx(0.75)
+    _assert_tree_equal(compiled, eager)
+
+
+def test_unavailable_option_cannot_win_blend_when_float32_product_rounds_below_bound() -> None:
+    w64 = float(np.float32(1.3)) * (1.0 - 2**-25)
+    s64 = float(np.float32(1.1e8)) * (1.0 - 2**-25)
+    fusion = _fusion(
+        max_partners=1,
+        context_dim=1,
+        n_actions=2,
+        base_blend_weight=w64,
+        option_blend_weight=1.0,
+        partner_blend_weight=w64,
+        max_abs_declared_score=s64,
+        max_communication_cost=s64,
+        communication_cost_weight=1.0,
+        blend_net_value_threshold=-2.0e8,
+        accept_net_value_threshold=0.0,
+    )
+    state = _history_ready_zero_state(fusion)
+    messages = _messages(
+        fusion,
+        [
+            {
+                "partner_id": 0,
+                "suggested_action": 1,
+                "declared_confidence": 1.0,
+                "communication_cost": float(np.float32(s64)),
+            }
+        ],
+    )
+    res = _decide(
+        fusion,
+        state,
+        messages,
+        context=(0.0,),
+        base_action=0,
+        base_score=-float(np.float32(s64)),
+        mask=(True, True),
+        option=_option(available=False, action=-1, score=0.0),
+    )
+    assert int(res.decision.route) == ROUTE_BLEND
+    assert int(res.decision.scores.blend_selected_source) != SOURCE_OPTION_KEYBOARD
+    assert not bool(res.decision.shield.shield_intervened)
+    assert int(res.decision.effective_action) in {0, 1}
+
+
+def test_config_and_sequence_contracts_reject_collapsed_thresholds_and_bad_shapes() -> None:
+    with pytest.raises(ValueError, match="learning_rate"):
+        PartnerPolicyFusionConfig(
+            max_partners=1,
+            context_dim=1,
+            n_actions=2,
+            learning_rate=10**400,
+        )
+    with pytest.raises(ValueError, match="blend_net_value_threshold"):
+        PartnerPolicyFusionConfig(
+            max_partners=1,
+            context_dim=1,
+            n_actions=2,
+            blend_net_value_threshold=0.4,
+            accept_net_value_threshold=0.4 + 1e-12,
+        )
+    fusion = _fusion()
+    bad_feedback = _replace(
+        jax.tree_util.tree_map(lambda leaf: jnp.stack((leaf, leaf)), _feedback(action=1)),
+        decision_id=jnp.asarray([10], dtype=jnp.int32),
+    )
+    with pytest.raises(ValueError, match="feedback sequence arrays violate their fixed contract"):
+        fusion.feedback_sequence(fusion.init(), bad_feedback)
+

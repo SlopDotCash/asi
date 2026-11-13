@@ -127,7 +127,11 @@ def _finite_float32(
     actual_type = type(value)
     if issubclass(actual_type, bool | np.bool_) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a real non-boolean scalar")
-    canonical = float(cast(Real, value))
+    try:
+        canonical = float(cast(Real, value))
+    except OverflowError as error:
+        qualifier = "positive " if positive else "nonnegative " if nonnegative else ""
+        raise ValueError(f"{name} must be a {qualifier}finite float32 scalar") from error
     lower_ok = canonical > 0.0 if positive else canonical >= 0.0 if nonnegative else True
     if not math.isfinite(canonical) or not lower_ok or abs(canonical) > _FLOAT32_MAX:
         qualifier = "positive " if positive else "nonnegative " if nonnegative else ""
@@ -241,7 +245,37 @@ def _scale_safe_ratio(numerator: Array, denominator: float) -> Array:
     """Divide by one positive float32 scalar without a subnormal reciprocal."""
     scale = jnp.asarray(denominator, dtype=numerator.dtype)
     mantissa, exponent = jnp.frexp(scale)
-    return jnp.ldexp(numerator, -exponent) / mantissa
+    divided = numerator / mantissa
+    scaled_first = jnp.ldexp(numerator, -exponent) / mantissa
+    # Dividing first retains tiny numerators, but can overflow near the
+    # float32 limit even when the downscaled quotient is representable.
+    return jnp.where(
+        (exponent > 0) & jnp.isfinite(divided),
+        jnp.ldexp(divided, -exponent),
+        scaled_first,
+    )
+
+
+@functools.partial(jax.custom_jvp, nondiff_argnums=(1,))
+def _scaled_tanh(numerator: Array, scale: float) -> Array:
+    """Evaluate ``scale * tanh(numerator / scale)`` with a scale-free JVP."""
+    prediction_scale = jnp.asarray(scale, dtype=numerator.dtype)
+    return prediction_scale * jnp.tanh(_scale_safe_ratio(numerator, scale))
+
+
+@_scaled_tanh.defjvp
+def _scaled_tanh_jvp(
+    scale: float,
+    primals: tuple[Array],
+    tangents: tuple[Array],
+) -> tuple[Array, Array]:
+    (numerator,) = primals
+    (numerator_dot,) = tangents
+    prediction_scale = jnp.asarray(scale, dtype=numerator.dtype)
+    unit = jnp.tanh(_scale_safe_ratio(numerator, scale))
+    primal_out = prediction_scale * unit
+    sech_sq = (1.0 - unit) * (1.0 + unit)
+    return primal_out, sech_sq * numerator_dot
 
 
 def _scale_safe_mean(values: Array, *, axis: int) -> Array:
@@ -1190,11 +1224,8 @@ class RecurrentLatentWorldModelEnsemble:
 
         mean_logits = parameters.mean_kernel @ next_hidden + parameters.mean_bias
         variance_logits = parameters.variance_kernel @ next_hidden + parameters.variance_bias
-        prediction_scale = jnp.asarray(
-            self._config.max_prediction_magnitude, dtype=jnp.float32
-        )
-        grounded = prediction_scale * jnp.tanh(
-            _scale_safe_ratio(mean_logits[:-1], self._config.max_prediction_magnitude)
+        grounded = _scaled_tanh(
+            mean_logits[:-1], self._config.max_prediction_magnitude
         )
         continuation = jax.nn.sigmoid(mean_logits[-1])
         means = jnp.concatenate((grounded, continuation[None]), axis=0)
@@ -1351,10 +1382,17 @@ class RecurrentLatentWorldModelEnsemble:
             action,
         )
         residuals = means - stopped_targets
+        _, var_exponent = jax.lax.stop_gradient(jnp.frexp(variances))
+        half_exponent = jnp.maximum(var_exponent // 2 - 30, 0)
+        residual_scale = jax.lax.stop_gradient(
+            jnp.exp2(-half_exponent.astype(jnp.float32))
+        )
+        scaled_residuals = residuals * residual_scale
+        scaled_variances = variances * jnp.square(residual_scale)
         return 0.5 * jnp.mean(
             jnp.asarray(_LOG_TWO_PI, dtype=jnp.float32)
             + jnp.log(variances)
-            + jnp.square(residuals) / variances
+            + jnp.square(scaled_residuals) / scaled_variances
         )
 
     def _zero_diagnostics(
@@ -1646,15 +1684,27 @@ class RecurrentLatentWorldModelEnsemble:
             )
             candidate_parameters: list[RecurrentLatentMemberParameters] = []
             candidate_parameter_valid: list[Array] = []
+            lr = jnp.asarray(cfg.learning_rate, dtype=jnp.float32)
+            clip_norm = jnp.asarray(cfg.gradient_clip_norm, dtype=jnp.float32)
+            clipped_step_scale = lr * clip_norm
             for index, parameters in enumerate(state.member_parameters):
+                grad_norm = gradient_norm_array[index]
+                clipped = grad_norm > clip_norm
+                safe_grad_norm = jnp.where(clipped, grad_norm, 1.0)
                 scale = jnp.minimum(
                     1.0,
-                    cfg.gradient_clip_norm / jnp.maximum(gradient_norm_array[index], 1.0e-12),
+                    clip_norm / jnp.maximum(grad_norm, 1.0e-12),
                 )
+                step_scale = lr * scale
+                use_normalized_clip = clipped & (step_scale == 0.0)
                 updated = jax.tree_util.tree_map(
                     lambda parameter, gradient: (
                         parameter
-                        - jnp.asarray(cfg.learning_rate, dtype=jnp.float32) * scale * gradient
+                        - jnp.where(
+                            use_normalized_clip,
+                            clipped_step_scale * (gradient / safe_grad_norm),
+                            step_scale * gradient,
+                        )
                     ),
                     parameters,
                     member_gradients[index],
@@ -1919,13 +1969,13 @@ def load_recurrent_latent_world_model_ensemble_checkpoint(
     # validated immediately after it is reconstructed.
     template = model._initial_state(key)
     restored, second_metadata = load_checkpoint(template, path)
-    if second_metadata != metadata:
+    if not _strict_json_equal(second_metadata, metadata):
         raise ValueError("checkpoint metadata changed between reads")
     state = cast(RecurrentLatentWorldModelEnsembleState, restored)
     if not bool(jax.device_get(model.state_valid(state))):
         raise ValueError("restored recurrent latent ensemble state is invalid")
     expected_budget = model.resource_budget(state).to_config()
-    if metadata.get("resource_budget") != expected_budget:
+    if not _strict_json_equal(metadata.get("resource_budget"), expected_budget):
         raise ValueError("checkpoint resource budget does not match config and state")
     return model, state
 

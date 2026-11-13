@@ -421,10 +421,31 @@ class HiddenStateAR2Stream:
         return self._visible_dim
 
     def init(self, key: Array) -> HiddenStateAR2State:
-        """Initialize AR state."""
+        """Initialize AR state from the stationary distribution.
+
+        The two lags are drawn jointly from the stationary bivariate
+        normal: ``x_prev`` has variance ``gamma0`` and ``x_prev2`` is
+        correlated with it at lag-1 autocorrelation ``rho1``. Drawing
+        independent unit-variance lags would start the stream far above
+        its stationary variance (about 18x under the default
+        coefficients) with zero lag correlation. With zero innovation
+        there is no stationary variance to draw from (the stationary
+        law is degenerate, or arbitrary for the deterministic-copy
+        case), so the existing unit-variance start is kept.
+        """
         key, k1, k2 = jr.split(_require_threefry_key(key), 3)
-        x_prev = jr.normal(k1, (self._feature_dim,), dtype=jnp.float32)
-        x_prev2 = jr.normal(k2, (self._feature_dim,), dtype=jnp.float32)
+        z1 = jr.normal(k1, (self._feature_dim,), dtype=jnp.float32)
+        z2 = jr.normal(k2, (self._feature_dim,), dtype=jnp.float32)
+        if self._innovation_std == 0.0:
+            return HiddenStateAR2State(key=key, x_prev=z1, x_prev2=z2)
+        rho1 = self._phi1 / (1.0 - self._phi2)
+        rho2 = self._phi1 * rho1 + self._phi2
+        gamma0 = self._innovation_std**2 / (
+            1.0 - self._phi1 * rho1 - self._phi2 * rho2
+        )
+        std0 = math.sqrt(gamma0)
+        x_prev = std0 * z1
+        x_prev2 = rho1 * x_prev + std0 * math.sqrt(1.0 - rho1**2) * z2
         return HiddenStateAR2State(key=key, x_prev=x_prev, x_prev2=x_prev2)
 
     def step(
@@ -1013,7 +1034,24 @@ class ScaledStreamWrapper:
             ValueError: If feature_scales length doesn't match inner stream's feature_dim
         """
         self._inner_stream: ScanStream[Any] = inner_stream
-        raw_feature_scales = jnp.asarray(feature_scales)
+        try:
+            object_scales = np.asarray(feature_scales, dtype=object)
+        except Exception:
+            object_scales = None
+        if object_scales is not None and any(
+            type(item) is bool or isinstance(item, np.bool_)
+            for item in object_scales.flat
+        ):
+            raise ValueError("feature_scales must not contain boolean values")
+        if isinstance(feature_scales, np.ndarray) and feature_scales.dtype == np.longdouble:
+            if not bool(np.all(np.isfinite(feature_scales))):
+                raise ValueError("feature_scales must contain only finite float32 values")
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                raw_feature_scales = jnp.asarray(feature_scales.astype(np.float32))
+        else:
+            raw_feature_scales = jnp.asarray(feature_scales)
+        if jnp.issubdtype(raw_feature_scales.dtype, jnp.bool_):
+            raise ValueError("feature_scales must not contain boolean values")
         if jnp.issubdtype(raw_feature_scales.dtype, jnp.complexfloating):
             raise ValueError("feature_scales must contain only real values")
         self._feature_scales = jnp.asarray(raw_feature_scales, dtype=jnp.float32)
@@ -1026,9 +1064,18 @@ class ScaledStreamWrapper:
             requested = np.asarray(feature_scales, dtype=np.float64)
         except (TypeError, ValueError, OverflowError):
             requested = None
+        narrowed = np.asarray(self._feature_scales, dtype=np.float64)
         if requested is not None and requested.shape == self._feature_scales.shape:
-            narrowed = np.asarray(self._feature_scales, dtype=np.float64)
             if bool(np.any((requested != 0.0) & (narrowed == 0.0))):
+                raise ValueError(
+                    "feature_scales must not contain a nonzero value that "
+                    "narrows to float32 zero"
+                )
+        if object_scales is not None and object_scales.shape == self._feature_scales.shape:
+            if any(
+                item != 0 and narrow == 0.0
+                for item, narrow in zip(object_scales.flat, narrowed.flat, strict=True)
+            ):
                 raise ValueError(
                     "feature_scales must not contain a nonzero value that "
                     "narrows to float32 zero"
@@ -1271,7 +1318,11 @@ class DynamicScaleShiftStream:
             minval=jnp.log(self._min_scale),
             maxval=jnp.log(self._max_scale),
         )
-        scales = jnp.exp(log_scales).astype(jnp.float32)
+        scales = jnp.clip(
+            jnp.exp(log_scales).astype(jnp.float32),
+            self._min_scale,
+            self._max_scale,
+        )
         return DynamicScaleShiftState(
             key=key,
             true_weights=weights,
@@ -1303,7 +1354,11 @@ class DynamicScaleShiftStream:
             minval=jnp.log(self._min_scale),
             maxval=jnp.log(self._max_scale),
         )
-        new_random_scales = jnp.exp(new_log_scales).astype(jnp.float32)
+        new_random_scales = jnp.clip(
+            jnp.exp(new_log_scales).astype(jnp.float32),
+            self._min_scale,
+            self._max_scale,
+        )
         new_scales = jnp.where(should_change_scales, new_random_scales, state.current_scales)
 
         should_change_weights = (state.step_count > 0) & (
@@ -1425,8 +1480,12 @@ class ScaleDriftStream:
         """
         key, k_weights = jr.split(_require_threefry_key(key))
         weights = jr.normal(k_weights, (self._feature_dim,), dtype=jnp.float32)
-        # Initial log-scales at 0 (scale = 1)
-        log_scales = jnp.zeros(self._feature_dim, dtype=jnp.float32)
+        # Initial log-scales at 0 (scale = 1), clamped to [min_log_scale, max_log_scale]
+        log_scales = jnp.clip(
+            jnp.zeros(self._feature_dim, dtype=jnp.float32),
+            self._min_log_scale,
+            self._max_log_scale,
+        )
         return ScaleDriftState(
             key=key,
             true_weights=weights,

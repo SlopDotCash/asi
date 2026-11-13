@@ -36,17 +36,25 @@ from alberta_framework import (
     ObGDBounding,
     create_horde_spec,
 )
+from alberta_framework.core.baseline_optimizers import Adam, RMSprop
 from alberta_framework.core.independent_demon_horde import (
     BatchedIndependentDemonHordeResult,
     IndependentDemonHorde,
     IndependentDemonHordeLearningResult,
     IndependentDemonHordeState,
+    _direct_state_scalars,
     _finite_layer_norm,
     _require_direct_state_resources,
     _require_loop_output_resources,
     run_independent_horde_learning_loop,
     run_independent_horde_learning_loop_batched,
 )
+from alberta_framework.core.normalizers import (
+    EMANormalizer,
+    StreamingBatchNormalizer,
+    WelfordNormalizer,
+)
+from alberta_framework.core.optimizers import IDBD, Autostep
 
 
 def _make_all_gamma0_spec(n: int) -> list[GVFSpec]:
@@ -807,6 +815,123 @@ def test_independent_horde_preflights_direct_state_before_allocation() -> None:
         horde.init(268_435_453, jr.key(0))
 
 
+def _measured_state_bytes(state: IndependentDemonHordeState) -> int:
+    # Host-only float leaves (birth_timestamp/uptime_s) carry no bytes.
+    return sum(
+        leaf.size * leaf.dtype.itemsize
+        for leaf in jax.tree.leaves(state)
+        if isinstance(leaf, jax.Array)
+    )
+
+
+@pytest.mark.parametrize(
+    "optimizer,head_optimizer,normalizer",
+    [
+        (None, None, None),
+        (Autostep(), None, None),
+        (IDBD(), None, None),
+        (None, Autostep(), None),
+        (None, None, EMANormalizer()),
+        (None, None, WelfordNormalizer()),
+        (None, None, StreamingBatchNormalizer()),
+    ],
+)
+def test_direct_state_count_matches_measured_state_for_configured_optimizer(
+    optimizer, head_optimizer, normalizer
+) -> None:
+    """The named direct-state count must match the state actually allocated.
+
+    The preflight used to charge one scalar per optimizer state, which is
+    only true for LMS: Autostep keeps three per-element arrays per parameter,
+    IDBD keeps two, and a normalizer adds feature-width arrays of its own.
+    Before the fix the named count undercounts an Autostep (4, 5)-hidden
+    1-demon agent by 183 scalars (732 bytes): 1236 measured vs 504 named.
+    """
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(
+        horde_spec=spec,
+        hidden_sizes=(4, 5),
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
+    )
+    state = horde.init(6, jr.key(0))
+    assert _measured_state_bytes(state) == 4 * _direct_state_scalars(
+        1,
+        (4, 5),
+        6,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
+    )
+
+
+def test_direct_state_count_matches_measured_state_for_two_demon_autostep() -> None:
+    spec = create_horde_spec(_make_all_gamma0_spec(2))
+    horde = IndependentDemonHorde(
+        horde_spec=spec, hidden_sizes=(4, 5), optimizer=Autostep()
+    )
+    state = horde.init(6, jr.key(0))
+    assert _measured_state_bytes(state) == 4 * _direct_state_scalars(
+        2, (4, 5), 6, optimizer=Autostep()
+    )
+
+
+@pytest.mark.parametrize("optimizer", [Adam(), RMSprop()])
+@pytest.mark.parametrize("feature_dim", [1, 2, 4])
+def test_direct_state_count_matches_baseline_optimizer_state(
+    optimizer, feature_dim: int
+) -> None:
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=(), optimizer=optimizer)
+    state = horde.init(feature_dim, jr.key(0))
+    assert _measured_state_bytes(state) == 4 * _direct_state_scalars(
+        1, (), feature_dim, optimizer=optimizer
+    )
+
+
+def test_direct_state_count_is_conservative_for_inherited_adam() -> None:
+    class InheritedAdam(Adam):
+        pass
+
+    optimizer = InheritedAdam()
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=(), optimizer=optimizer)
+    state = horde.init(1, jr.key(0))
+    assert _measured_state_bytes(state) <= 4 * _direct_state_scalars(
+        1, (), 1, optimizer=optimizer
+    )
+
+
+def test_direct_state_preflight_counts_configured_optimizer_and_normalizer() -> None:
+    """The preflight must fire at its own boundary for every configuration.
+
+    With Autostep the true state at feature_dim 107,374,181 is 2,147,483,664
+    bytes -- past signed int32 -- while the LMS-only formula names
+    858,993,472 bytes and lets it through; the same holds for IDBD and for an
+    EMA normalizer at 134,217,226.
+    """
+    _require_direct_state_resources(1, (), 107_374_180, optimizer=Autostep())
+    with pytest.raises(ValueError, match="direct_state_bytes"):
+        _require_direct_state_resources(1, (), 107_374_181, optimizer=Autostep())
+
+    _require_direct_state_resources(1, (), 134_217_725, optimizer=IDBD())
+    with pytest.raises(ValueError, match="direct_state_bytes"):
+        _require_direct_state_resources(1, (), 134_217_726, optimizer=IDBD())
+
+    _require_direct_state_resources(1, (), 134_217_725, normalizer=EMANormalizer())
+    with pytest.raises(ValueError, match="direct_state_bytes"):
+        _require_direct_state_resources(1, (), 134_217_726, normalizer=EMANormalizer())
+
+    # init() must reject the Autostep configuration before allocating.
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(
+        horde_spec=spec, hidden_sizes=(), optimizer=Autostep()
+    )
+    with pytest.raises(ValueError, match="direct_state_bytes"):
+        horde.init(107_374_181, jr.key(0))
+
+
 @pytest.mark.parametrize("shape", [(), (1,), (1, 3), (3, 1), (4,)])
 def test_independent_horde_rejects_wrong_observation_shapes(shape: tuple[int, ...]) -> None:
     spec = create_horde_spec(_make_all_gamma0_spec(1))
@@ -942,3 +1067,22 @@ def test_independent_loop_preserves_initialized_host_clocks() -> None:
     assert restored.uptime_s > uptime
     for demon in restored.demon_states:
         assert demon.uptime_s == uptime
+
+
+def test_independent_horde_finite_layer_norm_nonpow2_constant_extremes_and_grad() -> None:
+    from alberta_framework.core.independent_demon_horde import _finite_layer_norm
+
+    for width in (2, 3, 7):
+        values = jnp.full((width,), 2.0e38, dtype=jnp.float32)
+        normalized = _finite_layer_norm(values)
+        np.testing.assert_array_equal(
+            np.asarray(normalized),
+            np.zeros((width,), dtype=np.float32),
+        )
+        weights = jnp.arange(1, width + 1, dtype=jnp.float32)
+        grad = jax.grad(lambda v: jnp.sum(_finite_layer_norm(v) * weights))(values)
+        assert bool(jnp.all(jnp.isfinite(grad)))
+        expected_grad = (weights - jnp.mean(weights)) * jax.lax.rsqrt(
+            jnp.asarray(1e-5, dtype=jnp.float32)
+        )
+        np.testing.assert_allclose(grad, expected_grad, rtol=1e-6, atol=1e-5)

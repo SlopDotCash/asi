@@ -1042,7 +1042,31 @@ class ExperientialMemory:
             & (similarities >= cfg.min_similarity)
             & (effective_reliabilities >= cfg.min_effective_reliability)
         )
-        scores = jnp.where(eligible, similarities * effective_reliabilities, -jnp.inf)
+        positive_eligible = (
+            eligible & (similarities > 0.0) & (effective_reliabilities > 0.0)
+        )
+        _, sim_exp = jnp.frexp(jnp.where(positive_eligible, similarities, 1.0))
+        _, rel_exp = jnp.frexp(
+            jnp.where(positive_eligible, effective_reliabilities, 1.0)
+        )
+        exp_sum = jnp.where(positive_eligible, sim_exp + rel_exp, -1000)
+        max_exp_sum = jnp.max(exp_sum)
+        need_shift = jnp.any(positive_eligible) & (max_exp_sum < -100)
+        shift_total = jnp.where(need_shift, -max_exp_sum, 0)
+        shift_sim = shift_total // 2
+        shift_rel = shift_total - shift_sim
+        scaled_product = jnp.ldexp(similarities, shift_sim) * jnp.ldexp(
+            effective_reliabilities, shift_rel
+        )
+        min_positive = jnp.asarray(
+            np.nextafter(np.float32(0.0), np.float32(1.0)), dtype=jnp.float32
+        )
+        positive_product = jnp.where(
+            positive_eligible,
+            jnp.maximum(scaled_product, min_positive),
+            0.0,
+        )
+        scores = jnp.where(eligible, positive_product, -jnp.inf)
         top_scores, indices = jax.lax.top_k(scores, cfg.top_k)
         neighbor_mask = jnp.isfinite(top_scores) & (top_scores > 0.0)
         positive_scores = jnp.where(neighbor_mask, top_scores, 0.0)
@@ -1067,23 +1091,65 @@ class ExperientialMemory:
         safe_safety_costs = jnp.where(
             jnp.isfinite(entries.safety_costs), entries.safety_costs, 0.0
         )
-        weighted_observation = jnp.sum(
-            neighbor_weights[:, None] * safe_observations[indices], axis=0
+        any_active_neighbor = jnp.any(neighbor_mask)
+
+        def clamp_convex_vector(weighted: Array, neighbor_vals: Array) -> Array:
+            min_val = jnp.min(
+                jnp.where(neighbor_mask[:, None], neighbor_vals, jnp.inf), axis=0
+            )
+            max_val = jnp.max(
+                jnp.where(neighbor_mask[:, None], neighbor_vals, -jnp.inf), axis=0
+            )
+            return jnp.where(
+                any_active_neighbor & jnp.isfinite(weighted),
+                jnp.clip(weighted, min_val, max_val),
+                weighted,
+            )
+
+        def clamp_convex_scalar(weighted: Array, neighbor_vals: Array) -> Array:
+            min_val = jnp.min(jnp.where(neighbor_mask, neighbor_vals, jnp.inf))
+            max_val = jnp.max(jnp.where(neighbor_mask, neighbor_vals, -jnp.inf))
+            return jnp.where(
+                any_active_neighbor & jnp.isfinite(weighted),
+                jnp.clip(weighted, min_val, max_val),
+                weighted,
+            )
+
+        neighbor_observations = safe_observations[indices]
+        neighbor_actions = safe_actions[indices]
+        neighbor_outcomes = safe_outcomes[indices]
+        neighbor_rewards = safe_rewards[indices]
+        neighbor_uncertainties = safe_uncertainties[indices]
+        neighbor_safety_costs = safe_safety_costs[indices]
+
+        weighted_observation = clamp_convex_vector(
+            jnp.sum(neighbor_weights[:, None] * neighbor_observations, axis=0),
+            neighbor_observations,
         )
-        weighted_action = jnp.sum(
-            neighbor_weights[:, None] * safe_actions[indices], axis=0
+        weighted_action = clamp_convex_vector(
+            jnp.sum(neighbor_weights[:, None] * neighbor_actions, axis=0),
+            neighbor_actions,
         )
-        weighted_outcome = jnp.sum(
-            neighbor_weights[:, None] * safe_outcomes[indices], axis=0
+        weighted_outcome = clamp_convex_vector(
+            jnp.sum(neighbor_weights[:, None] * neighbor_outcomes, axis=0),
+            neighbor_outcomes,
         )
-        weighted_reward = jnp.sum(neighbor_weights * safe_rewards[indices])
-        weighted_uncertainty = jnp.sum(
-            neighbor_weights * safe_uncertainties[indices]
+        weighted_reward = clamp_convex_scalar(
+            jnp.sum(neighbor_weights * neighbor_rewards),
+            neighbor_rewards,
         )
-        weighted_safety_cost = jnp.sum(
-            neighbor_weights * safe_safety_costs[indices]
+        weighted_uncertainty = clamp_convex_scalar(
+            jnp.sum(neighbor_weights * neighbor_uncertainties),
+            neighbor_uncertainties,
         )
-        weighted_reliability = jnp.sum(neighbor_weights * effective_reliabilities[indices])
+        weighted_safety_cost = clamp_convex_scalar(
+            jnp.sum(neighbor_weights * neighbor_safety_costs),
+            neighbor_safety_costs,
+        )
+        weighted_reliability = clamp_convex_scalar(
+            jnp.sum(neighbor_weights * neighbor_reliabilities),
+            neighbor_reliabilities,
+        )
 
         aggregate_values_finite = (
             jnp.all(jnp.isfinite(weighted_observation))
@@ -1274,27 +1340,71 @@ class ExperientialMemory:
             has_empty = jnp.any(~current_entries.valid)
             empty_slot = jnp.argmax((~current_entries.valid).astype(jnp.int32))
             recency_scale = jnp.asarray(cfg.recency_scale, dtype=jnp.float32)
+            recency_ages_f32 = current_entries.recency_ages.astype(jnp.float32)
             # Algebraically equivalent to 1 / (1 + age / scale), but remains
             # finite for every positive float32 scale in the public contract.
-            recency_score = recency_scale / (
-                recency_scale + current_entries.recency_ages.astype(jnp.float32)
+            recency_denom = recency_scale + recency_ages_f32
+            recency_score = jnp.where(
+                jnp.isfinite(recency_denom),
+                recency_scale / recency_denom,
+                (recency_scale * 0.5) / (recency_scale * 0.5 + recency_ages_f32 * 0.5),
             )
             eviction_utilities = jnp.where(
                 current_entries.utility_available,
                 current_entries.utilities,
                 0.0,
             )
-            utility_weight = jnp.asarray(cfg.eviction_utility_weight, dtype=jnp.float32)
-            recency_weight = jnp.asarray(cfg.eviction_recency_weight, dtype=jnp.float32)
-            # These weights are relative. Normalization preserves ordering and
-            # prevents finite configured weights from overflowing their products.
-            weight_scale = jnp.maximum(utility_weight, recency_weight)
-            retention_score = (
-                utility_weight / weight_scale * eviction_utilities
-                + recency_weight / weight_scale * recency_score
+            # These weights are relative. Normalization in float64 preserves
+            # ordering and prevents XLA reciprocal underflow or product overflow.
+            weight_scale_f64 = max(
+                float(cfg.eviction_utility_weight),
+                float(cfg.eviction_recency_weight),
             )
-            retention_score = jnp.where(current_entries.valid, retention_score, jnp.inf)
-            eviction_slot = jnp.argmin(retention_score)
+            u_weight_norm = jnp.asarray(
+                float(cfg.eviction_utility_weight) / weight_scale_f64,
+                dtype=jnp.float32,
+            )
+            r_weight_norm = jnp.asarray(
+                float(cfg.eviction_recency_weight) / weight_scale_f64,
+                dtype=jnp.float32,
+            )
+            u_term = u_weight_norm * eviction_utilities
+            r_term = r_weight_norm * recency_score
+            retention_score = jnp.where(
+                current_entries.valid, u_term + r_term, jnp.inf
+            )
+            min_retention = jnp.min(retention_score)
+            tied = current_entries.valid & (retention_score == min_retention)
+            ref_slot = jnp.argmin(retention_score)
+            delta_from_ref = jnp.where(
+                tied,
+                (u_term - u_term[ref_slot]) + (r_term - r_term[ref_slot]),
+                jnp.inf,
+            )
+            min_delta = jnp.min(delta_from_ref)
+            tied_delta = tied & (delta_from_ref == min_delta)
+            ref_delta_slot = jnp.argmin(delta_from_ref)
+            utility_tie_break = (
+                eviction_utilities - eviction_utilities[ref_delta_slot]
+                if cfg.eviction_utility_weight > 0.0
+                else jnp.zeros_like(eviction_utilities)
+            )
+            utility_tie_score = jnp.where(tied_delta, utility_tie_break, jnp.inf)
+            min_utility_tie = jnp.min(utility_tie_score)
+            tied_utility = tied_delta & (utility_tie_score == min_utility_tie)
+            ref_util_slot = jnp.argmin(utility_tie_score)
+            recency_age_tie_break = (
+                -(
+                    recency_ages_f32
+                    - current_entries.recency_ages[ref_util_slot].astype(jnp.float32)
+                )
+                if cfg.eviction_recency_weight > 0.0
+                else jnp.zeros_like(recency_ages_f32)
+            )
+            final_tie_score = jnp.where(
+                tied_utility, recency_age_tie_break, jnp.inf
+            )
+            eviction_slot = jnp.argmin(final_tie_score)
             slot = jnp.where(has_empty, empty_slot, eviction_slot).astype(jnp.int32)
             evicted = ~has_empty
             evicted_provenance_id = jnp.where(

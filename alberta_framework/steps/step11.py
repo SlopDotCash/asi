@@ -644,7 +644,26 @@ def init_step11_state(
     init_key, start_key = jr.split(checked_key)
     del start_key
     state = checked_agent.init(init_key)
-    return checked_agent.start(state, observation)
+    started = checked_agent.start(state, observation)
+    return _restore_step11_host_clocks(started, state)
+
+
+def _restore_step11_host_clocks(
+    updated: OaKState,
+    original: OaKState,
+) -> OaKState:
+    restored_learner = updated.stomp_state.base_learner_state.replace(
+        birth_timestamp=original.stomp_state.base_learner_state.birth_timestamp,
+        uptime_s=original.stomp_state.base_learner_state.uptime_s,
+    )
+    return cast(
+        OaKState,
+        updated.replace(
+            stomp_state=updated.stomp_state.replace(
+                base_learner_state=restored_learner,
+            ),
+        ),
+    )
 
 
 def step11_update(
@@ -673,7 +692,13 @@ def step11_update(
         shape=(checked_agent.config.observation_dim,),
         dtype=jnp.float32,
     )
-    return checked_agent.update(checked_state, reward, observation)
+    result = checked_agent.update(checked_state, reward, observation)
+    return cast(
+        OaKUpdateResult,
+        result.replace(
+            state=_restore_step11_host_clocks(result.state, checked_state),
+        ),
+    )
 
 
 def run_step11_scan(

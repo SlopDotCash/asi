@@ -297,3 +297,80 @@ class TestSentinel:
                 fixed_mask=mask,
                 sentinel="0.0",  # type: ignore[arg-type]
             )
+
+
+class TestStepContracts:
+    def test_feature_dim_is_frozen_at_construction(self) -> None:
+        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0, noise_std=0.0)
+        wrapper = PartialObservationWrapper(
+            inner, mode=MaskMode.RANDOM, mask_prob=0.5
+        )
+        state = wrapper.init(jr.key(0))
+        object.__setattr__(inner, "_feature_dim", 1)
+        assert wrapper.feature_dim == 4
+        # Restore inner._feature_dim for inner.step while checking wrapper.feature_dim
+        object.__setattr__(inner, "_feature_dim", 4)
+        ts, _ = wrapper.step(state, jnp.array(0, dtype=jnp.int32))
+        assert ts.observation.shape == (4,)
+
+    def test_step_rejects_invalid_state_key_and_period_index(self) -> None:
+        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
+        mask = jnp.array([True, False, True, False])
+        wrapper = PartialObservationWrapper(
+            inner, mode=MaskMode.FIXED, fixed_mask=mask
+        )
+        state = wrapper.init(jr.key(0))
+
+        with pytest.raises(ValueError, match="PartialObservationState"):
+            wrapper.step(object(), jnp.array(0, dtype=jnp.int32))  # type: ignore[arg-type]
+
+        with pytest.raises(ValueError, match="typed scalar threefry2x32"):
+            wrapper.step(
+                state.replace(key=jr.PRNGKey(0)),  # type: ignore[attr-defined]
+                jnp.array(0, dtype=jnp.int32),
+            )
+
+        with pytest.raises(ValueError, match="period_index"):
+            wrapper.step(
+                state.replace(  # type: ignore[attr-defined]
+                    period_index=jnp.array([0, 1], dtype=jnp.int32)
+                ),
+                jnp.array(0, dtype=jnp.int32),
+            )
+
+        with pytest.raises(ValueError, match="period_index"):
+            wrapper.step(
+                state.replace(  # type: ignore[attr-defined]
+                    period_index=jnp.array(0.0, dtype=jnp.float32)
+                ),
+                jnp.array(0, dtype=jnp.int32),
+            )
+
+    def test_step_rejects_broadcastable_wrong_shape_inner_observation(self) -> None:
+        from alberta_framework.core.types import TimeStep
+
+        class BadInnerStream:
+            feature_dim = 4
+
+            def init(self, key: jax.Array) -> jax.Array:
+                return key
+
+            def step(
+                self, state: jax.Array, idx: jax.Array
+            ) -> tuple[TimeStep, jax.Array]:
+                return (
+                    TimeStep(  # type: ignore[call-arg]
+                        observation=jnp.array([1.0], dtype=jnp.float32),
+                        target=jnp.array([0.0], dtype=jnp.float32),
+                    ),
+                    state,
+                )
+
+        wrapper = PartialObservationWrapper(
+            BadInnerStream(),
+            mode=MaskMode.FIXED,
+            fixed_mask=jnp.array([True, False, True, False]),
+        )
+        state = wrapper.init(jr.key(0))
+        with pytest.raises(ValueError, match="observation"):
+            wrapper.step(state, jnp.array(0, dtype=jnp.int32))

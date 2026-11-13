@@ -890,3 +890,52 @@ def test_reacquisition_runs_three_phases():
     assert n_us_acq > 0
     assert n_us_ext == 0
     assert n_us_re > 0
+
+
+def test_pavlovian_phase_canonicalizes_contingency_and_validates_cs_bounds() -> None:
+    phase = PavlovianPhase(
+        name="acq",
+        n_steps=10,
+        cs_us_contingency=Fraction(1, 3),
+        cs_active=(0,),
+    )
+    assert type(phase.cs_us_contingency) is float
+    assert phase.cs_us_contingency == float(np.float32(Fraction(1, 3)))
+
+    with pytest.raises(ValueError, match="cs_active"):
+        PavlovianPhase(
+            name="overflow_cs",
+            n_steps=10,
+            cs_us_contingency=1.0,
+            cs_active=(2**31,),
+        )
+
+
+def test_step_never_selects_inactive_cs_when_active_gumbel_underflows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    phase = PavlovianPhase(
+        name="second_cs_only",
+        n_steps=10,
+        cs_us_contingency=1.0,
+        cs_active=(1,),
+    )
+    stream = ClassicalConditioningStream(
+        phases=(phase,),
+        n_cs=2,
+        iti_min=0,
+        iti_max=0,
+        noise_std=0.0,
+        distractor_prob=0.0,
+    )
+    state = stream.init(jr.key(0))
+    monkeypatch.setattr(
+        jr,
+        "gumbel",
+        lambda key, shape, dtype=jnp.float32: jnp.array([0.0, -jnp.inf], dtype=dtype),
+    )
+    ts, next_state = stream.step(state, jnp.array(0))
+    assert float(ts.observation[0]) == 0.0
+    assert float(ts.observation[1]) == 1.0
+    assert int(next_state.cs_active_steps_remaining[0]) == 0
+    assert int(next_state.cs_active_steps_remaining[1]) == 1

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from types import MappingProxyType
 from typing import Literal
 
@@ -132,11 +133,61 @@ class BoundedPolicyArchive:
     def persistent_bytes(self) -> int:
         return sum(entry.persistent_bytes for entry in self.entries)
 
+    @staticmethod
+    def _exact_squared_distance(
+        left: tuple[float, ...], right: tuple[float, ...]
+    ) -> Fraction:
+        total = Fraction(0)
+        for x, y in zip(left, right, strict=True):
+            if x != y:
+                diff = Fraction(x) - Fraction(y)
+                total += diff * diff
+        return total
+
+    def _nearest_index_and_within_threshold(
+        self, query: tuple[float, ...]
+    ) -> tuple[int, bool]:
+        distances = tuple(math.dist(query, entry.latent) for entry in self.entries)
+        min_dist = min(distances)
+        candidate_indices = [
+            idx for idx, dist in enumerate(distances) if dist == min_dist
+        ]
+        exact_min_sq: Fraction | None = None
+        if len(candidate_indices) > 1 or math.isinf(min_dist):
+            nearest = min(
+                candidate_indices,
+                key=lambda idx: self._exact_squared_distance(
+                    query, self.entries[idx].latent
+                ),
+            )
+        else:
+            nearest = candidate_indices[0]
+        if self.min_latent_distance <= 0.0:
+            return nearest, False
+        nearest_dist = distances[nearest]
+        if math.isinf(nearest_dist):
+            exact_min_sq = self._exact_squared_distance(
+                query, self.entries[nearest].latent
+            )
+            threshold_sq = Fraction(self.min_latent_distance) ** 2
+            return nearest, exact_min_sq < threshold_sq
+        tol = max(
+            math.ulp(self.min_latent_distance), math.ulp(nearest_dist)
+        ) * 8.0
+        if abs(nearest_dist - self.min_latent_distance) <= tol:
+            exact_min_sq = self._exact_squared_distance(
+                query, self.entries[nearest].latent
+            )
+            threshold_sq = Fraction(self.min_latent_distance) ** 2
+            return nearest, exact_min_sq < threshold_sq
+        return nearest, nearest_dist < self.min_latent_distance
+
     def retrieve_nearest(self, latent: tuple[float, ...]) -> PolicyEntry | None:
         """Return the first nearest retained policy for an exact latent query."""
         if (
             type(latent) is not tuple
             or not latent
+            or len(latent) > _MAX_LATENT_WIDTH
             or any(type(value) is not float or not math.isfinite(value) for value in latent)
         ):
             raise ValueError("query latent must be a non-empty tuple of finite floats")
@@ -144,22 +195,8 @@ class BoundedPolicyArchive:
             return None
         if len(latent) != len(self.entries[0].latent):
             raise ValueError("query latent width must match retained entries")
-        # math.dist scales its reduction, preserving both tiny and huge finite norms.
-        distances = tuple(math.dist(latent, entry.latent) for entry in self.entries)
-        if all(math.isinf(distance) for distance in distances):
-            # Distances themselves can exceed float64. A common scale preserves
-            # their ordering; use it only when no finite candidate can be nearest.
-            scale = max(
-                abs(value)
-                for values in (latent, *(entry.latent for entry in self.entries))
-                for value in values
-            )
-            query = tuple(value / scale for value in latent)
-            distances = tuple(
-                math.dist(query, tuple(value / scale for value in entry.latent))
-                for entry in self.entries
-            )
-        return self.entries[min(range(len(distances)), key=distances.__getitem__)]
+        nearest, _ = self._nearest_index_and_within_threshold(latent)
+        return self.entries[nearest]
 
     def add(self, entry: PolicyEntry) -> BoundedPolicyArchive:
         """Return the deterministic successor archive."""
@@ -167,6 +204,8 @@ class BoundedPolicyArchive:
             raise ValueError("entry must be an exact PolicyEntry")
         if any(old.identity == entry.identity for old in self.entries):
             raise ValueError("entry identity already exists")
+        if entry.persistent_bytes > self.byte_budget:
+            raise ValueError("candidate would exceed byte budget")
         candidates: tuple[PolicyEntry, ...]
         if self.mode == "fixed_snapshot" and self.entries:
             return self
@@ -177,12 +216,10 @@ class BoundedPolicyArchive:
         else:
             if len(entry.latent) != len(self.entries[0].latent):
                 raise ValueError("all latent descriptors must have equal width")
-            distances = tuple(
-                math.dist(entry.latent, old.latent)
-                for old in self.entries
+            nearest, within_threshold = self._nearest_index_and_within_threshold(
+                entry.latent
             )
-            nearest = min(range(len(distances)), key=distances.__getitem__)
-            if distances[nearest] < self.min_latent_distance:
+            if within_threshold:
                 if entry.score <= self.entries[nearest].score:
                     return self
                 candidates = self.entries[:nearest] + (entry,) + self.entries[nearest + 1 :]

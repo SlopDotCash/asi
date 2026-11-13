@@ -288,3 +288,80 @@ def test_near_one_trace_decay_survives_cancelling_gradient(compiled):
 
     _, next_state = (jax.jit(update) if compiled else update)(state)
     np.testing.assert_array_equal(next_state.trace, jnp.asarray([-2.0**-7]))
+
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_wide_gradient_without_rmsprop_preserves_finite_sigma_and_factored_update(compiled):
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    gradient = jnp.array([5.8e20, -5.8e20], dtype=jnp.float32)
+    config = IntentionalTDConfig(gamma=0.9998, lamda=1.0, use_rmsprop=False)
+    state = init_intentional_td(weights).replace(step=jnp.array(999, dtype=jnp.int32))
+
+    def update(w, optimizer_state):
+        return intentional_td_update(w, optimizer_state, gradient, jnp.float32(1.0), config)
+
+    changed, next_state = (jax.jit(update) if compiled else update)(weights, state)
+    count = 1000.0
+    decay = config.gamma * config.lamda
+    expected_sigma = (1.0 - decay) * 2.0 * (5.8e20**2)
+    bias = 1.0 - decay**count
+    cap = config.clip_mult * np.sqrt((1.0 - config.beta_clip) / (1.0 - config.beta_clip**count))
+    normalizer = np.sqrt((expected_sigma / bias) * (2.0 * (5.8e20**2)))
+    expected_step = (config.eta * min(1.0, cap) / normalizer) * np.array([5.8e20, -5.8e20])
+    np.testing.assert_allclose(changed, expected_step, rtol=2e-4)
+    np.testing.assert_allclose(next_state.sigma, expected_sigma, rtol=2e-5)
+    assert all(np.all(np.isfinite(value)) for value in jax.tree.leaves(next_state))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_sigma_bias_correction_preserves_finite_sqrt_when_quotient_overflows(compiled):
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    gradient = jnp.array([1.0, -1.0], dtype=jnp.float32)
+    config = IntentionalTDConfig(gamma=0.999, lamda=1.0, use_rmsprop=True)
+    state = init_intentional_td(weights).replace(
+        sigma=jnp.array(1.0e37, dtype=jnp.float32),
+        squared_gradient=jnp.array([1.0, 1.0], dtype=jnp.float32),
+    )
+
+    def update(w, optimizer_state):
+        return intentional_td_update(w, optimizer_state, gradient, jnp.float32(1.0), config)
+
+    changed, next_state = (jax.jit(update) if compiled else update)(weights, state)
+    assert bool(jnp.all(jnp.isfinite(changed)))
+    assert bool(jnp.all(changed != weights))
+    assert all(np.all(np.isfinite(value)) for value in jax.tree.leaves(next_state))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_sparse_and_small_traces_avoid_overflow_and_zero_times_inf_nan(compiled, enabled):
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    config = IntentionalTDConfig(
+        eta=100.0,
+        gamma=0.9,
+        lamda=1.0,
+        enabled=enabled,
+        use_rmsprop=False,
+        use_adaptive_clip=False,
+    )
+    if enabled:
+        state = init_intentional_td(weights).replace(
+            trace=jnp.array([1.0e-3, 0.0], dtype=jnp.float32),
+            sigma=jnp.array(1.0, dtype=jnp.float32),
+        )
+        gradient = jnp.zeros(2, dtype=jnp.float32)
+        td_error = jnp.float32(1.0)
+    else:
+        state = init_intentional_td(weights)
+        gradient = jnp.array([1.0e-3, 0.0], dtype=jnp.float32)
+        td_error = jnp.float32(1.0e38)
+
+    def update(w, optimizer_state):
+        return intentional_td_update(w, optimizer_state, gradient, td_error, config)
+
+    changed, next_state = (jax.jit(update) if compiled else update)(weights, state)
+    assert bool(jnp.all(jnp.isfinite(changed)))
+    assert float(changed[0]) > 0.0
+    assert float(changed[1]) == 0.0
+    assert all(np.all(np.isfinite(value)) for value in jax.tree.leaves(next_state))

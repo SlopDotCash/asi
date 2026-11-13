@@ -563,3 +563,92 @@ def test_temporal_ema_preserves_equal_input_fixed_point(compiled, value):
         updated = featurizer.update(state, observation)
     np.testing.assert_array_equal(np.asarray(updated.observation_ema), np.asarray(observation))
     assert int(updated.step_count) == 1
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_temporal_ema_preserves_unequal_near_tiny_inputs_and_convex_bounds(
+    compiled: bool,
+) -> None:
+    tiny = np.finfo(np.float32).tiny
+    featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(input_dim=2, ema_decay=0.75, periods=())
+    )
+    state = featurizer.init().replace(
+        observation_ema=jnp.asarray([tiny, -tiny], dtype=jnp.float32)
+    )
+    obs = jnp.asarray([2.0 * tiny, -2.0 * tiny], dtype=jnp.float32)
+    with jax.disable_jit(not compiled):
+        updated = featurizer.update(state, obs)
+    expected = jnp.asarray([1.25 * tiny, -1.25 * tiny], dtype=jnp.float32)
+    np.testing.assert_allclose(np.asarray(updated.observation_ema), np.asarray(expected), rtol=1e-6)
+
+    high_featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(
+            input_dim=1, ema_decay=float(np.float32(0.013430686)), periods=()
+        )
+    )
+    a = jnp.asarray([np.float32(3.4028235e38)], dtype=jnp.float32)
+    b = jnp.asarray([np.float32(3.4028230e38)], dtype=jnp.float32)
+    with jax.disable_jit(not compiled):
+        bounded = high_featurizer.update(
+            high_featurizer.init().replace(observation_ema=a), b
+        )
+    assert bool(jnp.all(bounded.observation_ema >= jnp.minimum(a, b)))
+    assert bool(jnp.all(bounded.observation_ema <= jnp.maximum(a, b)))
+
+
+def test_temporal_context_zeros_corrupt_ema_delta_and_validates_scan_boundaries() -> None:
+    featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(input_dim=2, ema_decay=0.5, periods=())
+    )
+    corrupt_state = TemporalContextState(
+        observation_ema=jnp.asarray([jnp.inf, 2.0], dtype=jnp.float32),
+        step_count=jnp.asarray(1, dtype=jnp.int32),
+    )
+    obs = jnp.asarray([5.0, 6.0], dtype=jnp.float32)
+    feats = featurizer.features(corrupt_state, obs)
+    # raw=[5, 6], ema=[0, 2], delta=[0, 4] (corrupt ema coordinate 0 produces 0 delta, not 5)
+    chex.assert_trees_all_equal(
+        feats, jnp.asarray([5.0, 6.0, 0.0, 2.0, 0.0, 4.0], dtype=jnp.float32)
+    )
+
+    class HostileState:
+        calls = 0
+
+        def __jax_array__(self) -> jax.Array:
+            type(self).calls += 1
+            raise AssertionError("hostile hook called")
+
+    with pytest.raises(ValueError, match="state must be an exact TemporalContextState"):
+        transform_temporal_context_arrays(
+            featurizer,
+            jnp.ones((2, 2), dtype=jnp.float32),
+            state=HostileState(),  # type: ignore[arg-type]
+        )
+    assert HostileState.calls == 0
+
+    with pytest.raises(ValueError, match="config must be an exact TemporalContextConfig"):
+        TemporalContextFeaturizer(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize(
+    "small", [np.finfo(np.float32).tiny, np.nextafter(np.float32(0), np.float32(1))]
+)
+def test_temporal_ema_mixed_scales_preserve_weighted_observation(
+    compiled: bool, small: float
+) -> None:
+    featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(input_dim=2, ema_decay=0.25, periods=())
+    )
+    state = featurizer.init().replace(
+        observation_ema=jnp.asarray([small, 1e38], dtype=jnp.float32)
+    )
+    observation = jnp.asarray([1e38, small], dtype=jnp.float32)
+    with jax.disable_jit(not compiled):
+        updated = featurizer.update(state, observation)
+    np.testing.assert_allclose(
+        np.asarray(updated.observation_ema),
+        np.asarray([7.5e37, 2.5e37], dtype=np.float32),
+        rtol=1e-6,
+    )

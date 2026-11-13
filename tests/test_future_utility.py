@@ -259,6 +259,53 @@ def test_future_utility_normalization_preserves_finite_weighted_second_moment(
     np.testing.assert_allclose(normalized, expected_normalized, rtol=2e-6, atol=0.0)
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("magnitude", [1.0e30, 1.0e38])
+def test_future_utility_normalization_preserves_unrepresentable_second_moment(
+    magnitude: float,
+    compiled: bool,
+) -> None:
+    """A finite extreme signal keeps a finite normalized value and moment.
+
+    With decay 0.99 the true second moment is ``0.01 * magnitude ** 2``,
+    which no float32 can hold once the magnitude reaches 1e30, so the
+    exponent-scaled recovery overflows too. The normalized ratio
+    ``signal / RMS`` is still representable (10.0 here): it must not
+    collapse to zero, and the stored moment must stay finite so the next
+    step still normalizes instead of inheriting an infinite history.
+    """
+    decay_value = np.float32(0.99)
+    expected_normalized = np.float64(1.0) / np.sqrt(np.float64(1.0) - np.float64(decay_value))
+
+    def normalize(signal: jax.Array, second_moment: jax.Array) -> tuple[jax.Array, jax.Array]:
+        return normalize_future_utility_signal(
+            signal,
+            ages=jnp.ones(1, dtype=jnp.int32),
+            second_moment=second_moment,
+            moment_decay=jnp.asarray(decay_value),
+            utility_decay=0.9,
+            mode="uncertainty",
+        )
+
+    operation = jax.jit(normalize) if compiled else normalize
+    normalized, second = operation(
+        jnp.asarray([magnitude], dtype=jnp.float32),
+        jnp.zeros(1, dtype=jnp.float32),
+    )
+
+    chex.assert_tree_all_finite(normalized)
+    chex.assert_tree_all_finite(second)
+    np.testing.assert_allclose(normalized, expected_normalized, rtol=2e-6, atol=0.0)
+
+    next_normalized, next_second = operation(
+        jnp.asarray([1.0], dtype=jnp.float32),
+        second,
+    )
+    chex.assert_tree_all_finite(next_normalized)
+    chex.assert_tree_all_finite(next_second)
+    assert float(next_normalized[0]) > 0.0
+
+
 def test_age_normalization_does_not_scale_the_ema_increment() -> None:
     """Warm-up correction belongs after the raw EMA, not on each input."""
     signal = jnp.ones((3,), dtype=jnp.float32)
@@ -843,3 +890,78 @@ def test_utility_helpers_reject_non_scalar_decays() -> None:
         normalize_future_utility_signal(signal, ages, jnp.zeros(2), decay, 0.99, "uncertainty")
     with pytest.raises(ValueError, match="utility_decay must be a scalar"):
         bias_correct_future_utility(signal, ages, decay, "age")
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("half_life", [3.0e7, 1.0e20])
+def test_trace_decay_from_half_life_keeps_large_finite_half_lives_below_one(
+    half_life: float,
+    compiled: bool,
+) -> None:
+    fn = jax.jit(trace_decay_from_half_life) if compiled else trace_decay_from_half_life
+    decay = fn(jnp.asarray(half_life, dtype=jnp.float32) if compiled else half_life)
+    expected = float(np.nextafter(np.float32(1.0), np.float32(0.0)))
+    assert float(decay) == expected
+    assert float(decay) < 1.0
+
+    learner = FixedBudgetFeatureLearner(
+        n_features=2,
+        n_tasks=1,
+        future_utility_trace_decay=float(decay),
+    )
+    assert learner.to_config()["future_utility_trace_decay"] == expected
+
+    normalized, second = normalize_future_utility_signal(
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.int32),
+        jnp.zeros(2, dtype=jnp.float32),
+        decay,
+        decay,
+        "uncertainty",
+    )
+    chex.assert_tree_all_finite(normalized)
+    chex.assert_tree_all_finite(second)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_one_step_loss_reduction_avoids_feature_square_overflow_and_zero_times_inf(
+    compiled: bool,
+) -> None:
+    estimate = (
+        jax.jit(one_step_output_loss_reduction_with_diagnostics)
+        if compiled
+        else one_step_output_loss_reduction_with_diagnostics
+    )
+    large_feature = np.float32(1.9e19)
+    with np.errstate(over="ignore"):
+        assert not np.isfinite(large_feature * large_feature)
+
+    zero_error_result = estimate(
+        errors=jnp.array([0.0, 1.0], dtype=jnp.float32),
+        feature_values=jnp.array([large_feature, 1.0], dtype=jnp.float32),
+        active_mask=jnp.array([True, True]),
+        step_size_output=2.0e-38,
+        active_count=10.0,
+    )
+    assert bool(zero_error_result.update_applied)
+    chex.assert_tree_all_finite(zero_error_result.reductions)
+    assert float(zero_error_result.reductions[0, 0]) == 0.0
+
+    expected_dw = (np.float64(np.float32(2.0e-38)) * np.float64(large_feature)) / 10.0
+    expected_dy = expected_dw * np.float64(large_feature)
+    expected_red = expected_dy * (1.0 - 0.5 * expected_dy)
+    np.testing.assert_allclose(
+        zero_error_result.reductions[1, 0], expected_red, rtol=2e-6, atol=0.0
+    )
+
+    zero_step_result = estimate(
+        errors=jnp.array([1.0], dtype=jnp.float32),
+        feature_values=jnp.array([large_feature], dtype=jnp.float32),
+        active_mask=jnp.array([True]),
+        step_size_output=0.0,
+        active_count=1.0,
+    )
+    assert bool(zero_step_result.update_applied)
+    np.testing.assert_array_equal(
+        zero_step_result.reductions, np.zeros((1, 1), dtype=np.float32)
+    )

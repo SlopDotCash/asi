@@ -53,6 +53,32 @@ _UINT32_MAX = 2**32 - 1
 # README / package-init public scan last-fit. Origin handed ``10**12`` to
 # ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
 _INTERACTION_FEATURE_LOOP_MAX_STEPS = 10_000
+
+
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases.
+
+    Only JSON values are compared exactly: ``dict``/``list``/``tuple`` (a
+    tuple compares equal to the list a JSON round-trip turns it into),
+    ``str``, ``int``, ``float``, ``bool`` and ``None``. Any other type (for
+    example an ``ndarray``) compares unequal, so the check fails closed
+    instead of raising an ambiguous-truth-value error. Other checkpoint
+    loaders carry their own copy of this helper; consolidating them into
+    one shared helper is a separate refactor.
+    """
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _exact_json_equal(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            _exact_json_equal(item, other) for item, other in zip(left, right)
+        )
+    if isinstance(left, (str, int, float, bool)) or left is None:
+        return type(left) is type(right) and left == right
+    return False
+
+
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -3178,14 +3204,40 @@ class FixedBudgetInteractionLearner:
                 -jnp.inf,
             )
             best_candidate = jnp.argmax(candidate_scores).astype(jnp.int32)
-            worst_candidate = jnp.argmin(candidate_selection_scores).astype(jnp.int32)
+            # Refresh is a candidate deletion, so an override-ineligible
+            # candidate must not be its victim: the ineligible sentinel is
+            # the minimum finite rank, and an unmasked argmin would select
+            # the protected entry first.  Refresh keeps its historical
+            # worst-by-rank rule for every other candidate, including
+            # unconfirmed and under-age ones.
+            refresh_eligible_candidates = ~(
+                priority_override_enabled
+                & (
+                    candidate_priority_ranks
+                    == jnp.asarray(
+                        CURATION_CANDIDATE_INELIGIBLE_RANK,
+                        dtype=jnp.float32,
+                    )
+                )
+            )
+            has_refresh_candidate = jnp.any(refresh_eligible_candidates)
+            refresh_selection_scores = jnp.where(
+                refresh_eligible_candidates,
+                candidate_selection_scores,
+                jnp.inf,
+            )
+            worst_candidate = jnp.argmin(refresh_selection_scores).astype(jnp.int32)
             has_candidate = jnp.any(eligible_candidates)
             curation_selected_promotion_candidate = jnp.where(
                 has_candidate,
                 best_candidate,
                 curation_selected_promotion_candidate,
             )
-            curation_selected_refresh_candidate = worst_candidate
+            curation_selected_refresh_candidate = jnp.where(
+                has_refresh_candidate,
+                worst_candidate,
+                curation_selected_refresh_candidate,
+            )
             should_promote = (
                 (
                     (should_try_replace & ~should_retire)
@@ -3205,7 +3257,11 @@ class FixedBudgetInteractionLearner:
                 )
             )
             should_refresh_candidate = (
-                ~should_promote & should_try_replace & ~should_retire & self._refresh_candidates
+                ~should_promote
+                & should_try_replace
+                & ~should_retire
+                & self._refresh_candidates
+                & has_refresh_candidate
             )
             should_refresh_promoted_candidate = should_promote & self._refresh_promoted_candidate
             refreshed_candidate = jnp.where(
@@ -3350,7 +3406,7 @@ class FixedBudgetInteractionLearner:
                 new_l, new_r, new_pa, new_pb, new_gen = self._generate_one(
                     replacement_key, observation, fl, fr, util
                 )
-                do_refresh = should_try_replace & ~should_retire & self._refresh_candidates
+                do_refresh = should_refresh_candidate
                 cl = jax.lax.select(do_refresh, cl.at[worst_candidate].set(new_l), cl)
                 cr = jax.lax.select(do_refresh, cr.at[worst_candidate].set(new_r), cr)
                 cow = jax.lax.select(do_refresh, cow.at[:, worst_candidate].set(0.0), cow)
@@ -3466,7 +3522,7 @@ class FixedBudgetInteractionLearner:
                     feature_second_moments,
                 )
                 descriptor_was_refreshed = (should_promote & self._refresh_promoted_candidate) | (
-                    ~should_promote & should_try_replace & ~should_retire & self._refresh_candidates
+                    should_refresh_candidate
                 )
                 refreshed_candidate_moments = candidate_second_moments.at[
                     jnp.where(
@@ -3986,7 +4042,9 @@ def load_interaction_feature_checkpoint(
         raise ValueError("interaction-feature checkpoint replacement phase is invalid")
     if not bool(learner._state_values_valid(restored, feature_dim=feature_dim)):
         raise ValueError("interaction-feature checkpoint state values are invalid")
-    if learner.memory_accounting(restored) != metadata.get("memory_accounting"):
+    if not _exact_json_equal(
+        learner.memory_accounting(restored), metadata.get("memory_accounting")
+    ):
         raise ValueError("interaction-feature checkpoint resource contract does not match")
     return learner, cast(InteractionFeatureState, restored)
 

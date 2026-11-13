@@ -38,6 +38,9 @@ _BOOTSTRAP_BUDGET = ScanBudget(
     maximum_step_units=10_000_000,
 )
 _BOOTSTRAP_MAX_COUNT = _BOOTSTRAP_BUDGET.maximum_steps
+# Cap peak resample storage at about 1M elements. Sequential rng.integers
+# calls of shape (rows, n) consume the same stream as one (n_bootstrap, n) draw.
+_BOOTSTRAP_DRAW_CHUNK_ELEMS = 1_000_000
 
 
 def _require_exact_str(name: str, value: object) -> str:
@@ -218,6 +221,103 @@ def _scaled_float64_values(
     return work / divisors, divisors
 
 
+def _compensated_total(values: NDArray[np.float64]) -> float | Fraction:
+    """Sum the original binary values without discarding a cancelling residual."""
+    try:
+        return math.fsum(float(value) for value in values)
+    except OverflowError:
+        # A finite mean (or a cancelling total) may have an unrepresentable
+        # intermediate sum. Keep the original binary values exact on that path.
+        return sum((Fraction.from_float(float(value)) for value in values), Fraction())
+
+
+def _compensated_mean(values: NDArray[np.float64], *, name: str) -> float:
+    """Return the arithmetic mean, keeping residuals that max-abs scaling erases."""
+    result = float(_compensated_total(values) / values.size)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} cannot be represented as finite float64 statistics")
+    return result
+
+
+def _compensated_mean_along_axis(
+    values: NDArray[np.float64], *, axis: int, name: str
+) -> NDArray[np.float64]:
+    """Mean along ``axis`` by a log-depth pairwise TwoSum cascade.
+
+    Each pair is combined with Knuth's TwoSum, an error-free transformation:
+    the floating-point sum ``s`` and error ``e`` satisfy ``s + e = a + b``
+    exactly in real arithmetic when the addition does not overflow. Odd-length
+    levels are padded with zero. After ``ceil(log2(n))`` vectorized passes the
+    exact sum equals the surviving total plus every recorded error term.
+    Those error terms are accumulated during the cascade and added at the end.
+
+    Absent overflow, the leftover error is only from reducing the ``O(n)``
+    error terms and from that final add. Each level pairwise-sums its
+    TwoSum residuals into a running accumulator, so the residual is on
+    the order of ``(eps + O(log(n) * eps ** 2)) * sum(|x|)``. This is not
+    a correctly-rounded exact sum for every finite input.
+
+    Columns whose running total overflows to a non-finite value fall back to
+    ``_compensated_mean`` (``math.fsum``, then exact ``Fraction``), which
+    recovers a representable finite mean such as ``mean([max, max]) == max``.
+    """
+    source = np.moveaxis(np.asarray(values, dtype=np.float64), axis, 0)
+    count = source.shape[0]
+    flat = np.reshape(source, (count, -1))
+    width = flat.shape[1]
+    level = flat
+    overflowed = np.zeros(width, dtype=bool)
+    with np.errstate(over="ignore", invalid="ignore"):
+        error_acc = np.zeros(width, dtype=np.float64)
+        while level.shape[0] > 1:
+            if level.shape[0] % 2 == 1:
+                level = np.concatenate(
+                    (level, np.zeros((1, width), dtype=np.float64)),
+                    axis=0,
+                )
+            even = level[0::2]
+            odd = level[1::2]
+            paired = even + odd
+            correction = paired - even
+            residual = (even - (paired - correction)) + (odd - correction)
+            overflowed |= np.any(~np.isfinite(paired) | ~np.isfinite(residual), axis=0)
+            error_acc = error_acc + np.sum(residual, axis=0)
+            level = paired
+        total = np.reshape(level, (width,)) + error_acc
+        overflowed |= ~np.isfinite(total)
+    means = total / count
+    if bool(np.any(overflowed)):
+        for column in np.flatnonzero(overflowed):
+            column_index = int(column)
+            means[column_index] = _compensated_mean(flat[:, column_index], name=name)
+    return np.reshape(means, source.shape[1:])
+
+
+def _bootstrap_compensated_means(
+    work: NDArray[np.float64],
+    rng: np.random.Generator,
+    n_bootstrap: int,
+    *,
+    name: str,
+) -> NDArray[np.float64]:
+    """Mean of each bootstrap replicate, drawn in bounded row chunks.
+
+    Sequential ``rng.integers(..., size=(rows, n))`` calls match one
+    ``size=(n_bootstrap, n)`` draw, and also match the historical
+    ``rng.choice(..., size=n, replace=True)`` loop for the same seed.
+    """
+    n = int(work.size)
+    chunk_rows = max(1, _BOOTSTRAP_DRAW_CHUNK_ELEMS // n)
+    parts: list[NDArray[np.float64]] = []
+    remaining = n_bootstrap
+    while remaining > 0:
+        rows = min(chunk_rows, remaining)
+        draws = work[rng.integers(0, n, size=(rows, n))]
+        parts.append(_compensated_mean_along_axis(draws, axis=1, name=name))
+        remaining -= rows
+    return np.concatenate(parts)
+
+
 def _common_binary_scaled(
     a: NDArray[np.float64], b: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -307,14 +407,15 @@ def _require_p_value(value: object, *, name: str) -> float:
     return _require_probability(value, name=name, strict=False)
 
 
-def _summary_quartile(sorted_values: NDArray[np.float64], quarter: int) -> float:
+def _summary_quantile(sorted_values: NDArray[np.float64], quantile: float) -> float:
     """Interpolate only the selected neighbors, preserving their original units."""
-    index, remainder = divmod((len(sorted_values) - 1) * quarter, 4)
+    position = (len(sorted_values) - 1) * quantile
+    index = math.floor(position)
+    weight = position - index
     lower = float(sorted_values[index])
-    if remainder == 0:
+    if weight == 0.0:
         return lower
     upper = float(sorted_values[index + 1])
-    weight = remainder / 4.0
     if (lower >= 0.0) == (upper >= 0.0):
         # Same-sign differences fit even when adding the endpoints would not.
         return lower + (upper - lower) * weight
@@ -347,16 +448,18 @@ def compute_statistics(
     _require_finite_values(arr, name="values")
     confidence_level = _validate_confidence_level(confidence_level)
 
+    work = np.asarray(arr, dtype=np.float64)
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
-    ordered = np.sort(np.asarray(arr, dtype=np.float64))
+    ordered = np.sort(work)
     with np.errstate(over="ignore", invalid="ignore"):
-        mean = float(np.mean(scaled) * scale)
+        # Scaling first can erase a small residual beside cancelling large seeds.
+        mean = _compensated_mean(work, name="values")
         std = float(np.std(scaled, ddof=1) * scale) if n > 1 else 0.0
         sem = std / np.sqrt(n) if n > 1 else 0.0
-        median = _summary_quartile(ordered, 2)
-        q25 = _summary_quartile(ordered, 1)
-        q75 = _summary_quartile(ordered, 3)
+        median = _summary_quantile(ordered, 0.5)
+        q25 = _summary_quantile(ordered, 0.25)
+        q75 = _summary_quantile(ordered, 0.75)
         iqr = q75 - q25
 
     # Compute confidence interval
@@ -424,9 +527,10 @@ def compute_timeseries_statistics(
         raise ValueError("metric_array must contain at least one time step")
     _require_finite_values(metric_array, name="metric_array")
     confidence_level = _validate_confidence_level(confidence_level)
+    work = np.asarray(metric_array, dtype=np.float64)
     scaled, scales = _scaled_float64_values(metric_array, name="metric_array", axis=0)
     scale = scales[0]
-    mean = np.mean(scaled, axis=0) * scale
+    mean = _compensated_mean_along_axis(work, axis=0, name="metric_array")
 
     if n_seeds == 1:
         # One seed has no between-seed spread estimate; return the degenerate
@@ -571,7 +675,14 @@ def _paired_cohens_d(values_a: NDArray[np.float64], values_b: NDArray[np.float64
     by the standard deviation of the differences instead, matching what
     ``scipy.stats.ttest_rel`` actually tests.
     """
-    differences = values_a - values_b
+    with np.errstate(over="ignore", invalid="ignore"):
+        a = np.asarray(values_a, dtype=np.float64)
+        b = np.asarray(values_b, dtype=np.float64)
+        differences = a - b
+    if not np.isfinite(differences).all():
+        scaled_a, scaled_b = _common_binary_scaled(a, b)
+        differences = scaled_a - scaled_b
+    differences, _ = _common_binary_scaled(differences, np.zeros_like(differences))
     mean_difference = float(np.mean(differences))
     difference_std = float(np.std(differences, ddof=1))
     if difference_std == 0.0:
@@ -618,7 +729,9 @@ def ttest_comparison(
     _require_finite_values(a, name="values_a")
     _require_finite_values(b, name="values_b")
 
+    orig_a, orig_b = a, b
     exact_pair_summary: tuple[float, float] | None = None
+    exact_unpaired_summary: tuple[float, float, int] | None = None
     if paired:
         if len(a) != len(b):
             raise ValueError(
@@ -666,15 +779,59 @@ def ttest_comparison(
         )
 
     if not paired:
-        # Independent inference squares deviations too; keep it in the same
-        # float64 measurement domain instead of overflowing finite float32 data.
-        with np.errstate(over="ignore", invalid="ignore"):
-            a = np.asarray(a, dtype=np.float64)
-            b = np.asarray(b, dtype=np.float64)
+        if a.dtype.kind in "iu" and b.dtype.kind in "iu":
+            anchor = int(a[0])
+            shifted_a = [int(x) - anchor for x in a]
+            shifted_b = [int(y) - anchor for y in b]
+            float_a = np.asarray(shifted_a, dtype=np.float64)
+            float_b = np.asarray(shifted_b, dtype=np.float64)
+            if any(
+                int(converted) != original
+                for converted, original in zip(float_a, shifted_a)
+            ) or any(
+                int(converted) != original
+                for converted, original in zip(float_b, shifted_b)
+            ):
+                integers_a = [int(x) for x in a]
+                integers_b = [int(y) for y in b]
+                n_a = len(integers_a)
+                n_b = len(integers_b)
+                pooled_df = n_a + n_b - 2
+                exact_mean_a = Fraction(sum(integers_a), n_a)
+                exact_mean_b = Fraction(sum(integers_b), n_b)
+                centered_a = np.asarray(
+                    [float(Fraction(v) - exact_mean_a) for v in integers_a],
+                    dtype=np.float64,
+                )
+                centered_b = np.asarray(
+                    [float(Fraction(v) - exact_mean_b) for v in integers_b],
+                    dtype=np.float64,
+                )
+                std_a = float(np.std(centered_a, ddof=1)) if n_a > 1 else 0.0
+                std_b = float(np.std(centered_b, ddof=1)) if n_b > 1 else 0.0
+                pooled_std = float(
+                    np.hypot(
+                        math.sqrt((n_a - 1) / pooled_df) * std_a,
+                        math.sqrt((n_b - 1) / pooled_df) * std_b,
+                    )
+                )
+                se = pooled_std * math.sqrt(1.0 / n_a + 1.0 / n_b)
+                exact_unpaired_summary = (
+                    float(exact_mean_a - exact_mean_b),
+                    se,
+                    pooled_df,
+                )
+            a, b = float_a, float_b
+        else:
+            # Independent inference squares deviations too; keep it in the same
+            # float64 measurement domain instead of overflowing finite float32 data.
+            with np.errstate(over="ignore", invalid="ignore"):
+                a = np.asarray(a, dtype=np.float64)
+                b = np.asarray(b, dtype=np.float64)
         _require_finite_values(a, name="values_a")
         _require_finite_values(b, name="values_b")
 
-    if exact_pair_summary is None:
+    if exact_pair_summary is None and exact_unpaired_summary is None:
         if paired:
             # Preserve small residuals in pairs whose huge offsets cancel.
             # Only scale the operands first if a difference exceeds float64.
@@ -698,6 +855,20 @@ def ttest_comparison(
                 stat_val = mean_difference / (difference_std / math.sqrt(len(a)))
             result = (stat_val, 2.0 * stats.t.sf(abs(stat_val), len(a) - 1))
             test_name = "paired t-test"
+        elif exact_unpaired_summary is not None:
+            mean_difference, se, pooled_df = exact_unpaired_summary
+            if se == 0.0:
+                if mean_difference == 0.0:
+                    stat_val = float("nan")
+                    raw_p = float("nan")
+                else:
+                    stat_val = float(np.copysign(np.inf, mean_difference))
+                    raw_p = 0.0
+            else:
+                stat_val = mean_difference / se
+                raw_p = float(2.0 * stats.t.sf(abs(stat_val), pooled_df))
+            result = (stat_val, raw_p)
+            test_name = "independent t-test"
         elif paired:
             result = stats.ttest_rel(a, b)
             test_name = "paired t-test"
@@ -719,8 +890,12 @@ def ttest_comparison(
             if difference_std > 0.0
             else float(np.copysign(np.inf, mean_difference))
         )
+    elif paired:
+        effect = _paired_cohens_d(a, b)
+    elif orig_a.dtype.kind in "iu" and orig_b.dtype.kind in "iu":
+        effect = cohens_d(orig_a, orig_b)
     else:
-        effect = _paired_cohens_d(a, b) if paired else cohens_d(a, b)
+        effect = cohens_d(a, b)
 
     return SignificanceResult(
         test_name=test_name,
@@ -898,7 +1073,16 @@ def wilcoxon_comparison(
             ])
             result = stats.wilcoxon(rank_input, alternative="two-sided")
         else:
-            result = stats.wilcoxon(a, b, alternative="two-sided")
+            with np.errstate(over="ignore", invalid="ignore"):
+                float_a = np.asarray(a, dtype=np.float64)
+                float_b = np.asarray(b, dtype=np.float64)
+            _require_finite_values(float_a, name="values_a")
+            _require_finite_values(float_b, name="values_b")
+            with np.errstate(over="ignore"):
+                paired_deltas = float_a - float_b
+            if not np.isfinite(paired_deltas).all():
+                float_a, float_b = _common_binary_scaled(float_a, float_b)
+            result = stats.wilcoxon(float_a, float_b, alternative="two-sided")
         # scipy returns (statistic, pvalue) tuple
         stat_val = float(result[0])
         p_val = _require_p_value(
@@ -1120,13 +1304,11 @@ def pairwise_comparisons(
     for name, arr in metric_arrays.items():
         window_values = arr[:, -final_window:]
         _require_finite_values(window_values, name=f"metric '{name}' final window")
-        scaled, scales = _scaled_float64_values(
-            window_values,
-            name=f"metric '{name}' final window",
-            axis=1,
+        work = np.asarray(window_values, dtype=np.float64)
+        # Scaling first can erase a small residual beside cancelling large steps.
+        final_mean = _compensated_mean_along_axis(
+            work, axis=1, name=f"metric '{name}' final window"
         )
-        with np.errstate(over="ignore", invalid="ignore"):
-            final_mean = np.mean(scaled, axis=1) * np.squeeze(scales, axis=1)
         _require_finite_statistics(final_mean, name=f"metric '{name}' final window")
         final_values[name] = final_mean
 
@@ -1250,22 +1432,29 @@ def bootstrap_ci(
     rng = np.random.default_rng(_require_bootstrap_seed(seed))
 
     stat_func = np.mean if statistic == "mean" else np.median
+    work = np.asarray(arr, dtype=np.float64)
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
-    point_estimate = float(stat_func(scaled) * scale)
-
-    # Generate bootstrap samples
-    bootstrap_stats_list: list[float] = []
-    for _ in range(n_bootstrap):
-        sample = rng.choice(scaled, size=len(scaled), replace=True)
-        bootstrap_stats_list.append(float(stat_func(sample)))
-
-    bootstrap_stats = np.array(bootstrap_stats_list)
+    if statistic == "mean":
+        point_estimate = _compensated_mean(work, name="values")
+        bootstrap_stats = _bootstrap_compensated_means(
+            work, rng, n_bootstrap, name="values"
+        )
+        restore = 1.0
+    else:
+        point_estimate = float(stat_func(scaled) * scale)
+        bootstrap_stats_list: list[float] = []
+        for _ in range(n_bootstrap):
+            sample = rng.choice(scaled, size=len(scaled), replace=True)
+            bootstrap_stats_list.append(float(stat_func(sample)))
+        bootstrap_stats = np.asarray(bootstrap_stats_list, dtype=np.float64)
+        restore = scale
 
     # Percentile method
     lower_percentile = (1 - confidence_level) / 2 * 100
     upper_percentile = (1 + confidence_level) / 2 * 100
-    ci_lower = float(np.percentile(bootstrap_stats, lower_percentile) * scale)
-    ci_upper = float(np.percentile(bootstrap_stats, upper_percentile) * scale)
+    ordered = np.sort(bootstrap_stats)
+    ci_lower = _summary_quantile(ordered, lower_percentile / 100.0) * restore
+    ci_upper = _summary_quantile(ordered, upper_percentile / 100.0) * restore
 
     return point_estimate, ci_lower, ci_upper

@@ -1112,12 +1112,26 @@ def rtu_taylor_step(
     decrease.  This is not an exact moving-parameter RTRL sensitivity.
     """
     corrected_previous = RTUSensitivities(
-        nu_log=(sensitivities.nu_log + taylor_trace.nu_log * parameter_delta.nu_log[None, :]),
-        theta_log=(
-            sensitivities.theta_log + taylor_trace.theta_log * parameter_delta.theta_log[None, :]
+        nu_log=jnp.where(
+            parameter_delta.nu_log[None, :] == 0.0,
+            sensitivities.nu_log,
+            sensitivities.nu_log + taylor_trace.nu_log * parameter_delta.nu_log[None, :],
         ),
-        b_real=(sensitivities.b_real + taylor_trace.b_real * parameter_delta.b_real[None, :, :]),
-        b_imag=(sensitivities.b_imag + taylor_trace.b_imag * parameter_delta.b_imag[None, :, :]),
+        theta_log=jnp.where(
+            parameter_delta.theta_log[None, :] == 0.0,
+            sensitivities.theta_log,
+            sensitivities.theta_log + taylor_trace.theta_log * parameter_delta.theta_log[None, :],
+        ),
+        b_real=jnp.where(
+            parameter_delta.b_real[None, :, :] == 0.0,
+            sensitivities.b_real,
+            sensitivities.b_real + taylor_trace.b_real * parameter_delta.b_real[None, :, :],
+        ),
+        b_imag=jnp.where(
+            parameter_delta.b_imag[None, :, :] == 0.0,
+            sensitivities.b_imag,
+            sensitivities.b_imag + taylor_trace.b_imag * parameter_delta.b_imag[None, :, :],
+        ),
     )
     next_state, next_sensitivities = rtu_step(
         params,
@@ -1799,7 +1813,7 @@ def _saturating_int32_increment(value: Array) -> tuple[Array, Array]:
     portable JAX int32 count has been represented exactly.
     """
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
-    can_increment = value < maximum
+    can_increment = (value >= 0) & (value < maximum)
     return value + can_increment.astype(jnp.int32), can_increment
 
 
@@ -1812,10 +1826,25 @@ def _update_running_statistics(
     sample_count, can_increment = _saturating_int32_increment(
         statistics.sample_count,
     )
+    safe_count = jnp.maximum(sample_count, jnp.asarray(1, dtype=jnp.int32)).astype(
+        statistics.mean.dtype
+    )
     delta = sample - statistics.mean
-    candidate_mean = statistics.mean + delta / sample_count
+    half_delta = jnp.float32(0.5) * sample - jnp.float32(0.5) * statistics.mean
+    step = jnp.where(
+        jnp.isfinite(delta),
+        delta / safe_count,
+        (half_delta / safe_count) * jnp.float32(2.0),
+    )
+    candidate_mean = statistics.mean + step
     delta_after = sample - candidate_mean
-    candidate_m2 = statistics.m2 + delta * delta_after
+    half_delta_after = jnp.float32(0.5) * sample - jnp.float32(0.5) * candidate_mean
+    m2_increment = jnp.where(
+        jnp.isfinite(delta) & jnp.isfinite(delta_after),
+        delta * delta_after,
+        jnp.float32(4.0) * half_delta * half_delta_after,
+    )
+    candidate_m2 = statistics.m2 + jnp.maximum(m2_increment, jnp.float32(0.0))
     return RunningStatistics(
         sample_count=sample_count,
         mean=jnp.where(can_increment, candidate_mean, statistics.mean),
@@ -1876,9 +1905,10 @@ def _validated_scalar(
         if scalar.dtype != jnp.bool_:
             raise ValueError(f"{name} must have boolean dtype")
     else:
-        if not jnp.issubdtype(scalar.dtype, jnp.number) or jnp.issubdtype(
-            scalar.dtype,
-            jnp.bool_,
+        if (
+            not jnp.issubdtype(scalar.dtype, jnp.number)
+            or jnp.issubdtype(scalar.dtype, jnp.bool_)
+            or jnp.issubdtype(scalar.dtype, jnp.complexfloating)
         ):
             raise ValueError(f"{name} must have numeric dtype")
         if not isinstance(scalar, jax.core.Tracer):
@@ -1902,9 +1932,10 @@ def _validated_finite_array(
     array = jnp.asarray(value)
     if array.shape != expected_shape:
         raise ValueError(f"{name} shape must match the initialized feature shape")
-    if not jnp.issubdtype(array.dtype, jnp.number) or jnp.issubdtype(
-        array.dtype,
-        jnp.bool_,
+    if (
+        not jnp.issubdtype(array.dtype, jnp.number)
+        or jnp.issubdtype(array.dtype, jnp.bool_)
+        or jnp.issubdtype(array.dtype, jnp.complexfloating)
     ):
         raise ValueError(f"{name} must have numeric dtype")
     if not isinstance(array, jax.core.Tracer) and not bool(jnp.all(jnp.isfinite(array))):

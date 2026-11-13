@@ -168,10 +168,18 @@ def _require_temporal_context_array_steps(observations: object) -> int:
 
 
 def _phase_digit_residues(periods: tuple[float, ...]) -> np.ndarray:
-    """Return ``frac(16**i / p)`` per period and clock digit, rounded to float32."""
+    """Return ``frac(16**i / p)`` per period and clock digit, rounded to float32.
+
+    The residues are exact ratios of the configured period: rounding the
+    period itself to float32 first would encode a different period
+    (``0.7`` -> ``0.69999998807907104``), and the phase would then drift
+    linearly with the step count instead of staying exact across the
+    int32 lifetime. Only each residue is rounded to float32, which bounds
+    the phase error independently of the step count.
+    """
     rows = []
     for period in periods:
-        exact_period = Fraction(float(np.float32(period)))
+        exact_period = Fraction(period)
         rows.append(
             [
                 float((Fraction(1 << (_PHASE_DIGIT_BITS * index)) / exact_period) % 1)
@@ -422,6 +430,8 @@ def _require_observation_batch_metadata(value: object, *, input_dim: int) -> Arr
 
 
 def _validate_config(config: TemporalContextConfig) -> None:
+    if type(config) is not TemporalContextConfig:
+        raise ValueError("config must be an exact TemporalContextConfig")
     input_dim = _require_int(
         "input_dim", config.input_dim, minimum=1, maximum=_INT32_MAX
     )
@@ -509,9 +519,9 @@ class TemporalContextFeaturizer:
         cfg = self._config
         coordinate_valid = jnp.isfinite(obs)
         safe_obs = jnp.where(coordinate_valid, obs, jnp.zeros_like(obs))
-        ema_valid = jnp.all(jnp.isfinite(state.observation_ema))
+        ema_coordinate_valid = jnp.isfinite(state.observation_ema)
         safe_ema = jnp.where(
-            ema_valid,
+            ema_coordinate_valid,
             state.observation_ema,
             jnp.zeros_like(state.observation_ema),
         )
@@ -522,7 +532,7 @@ class TemporalContextFeaturizer:
             blocks.append(safe_ema)
         if cfg.include_delta:
             delta = obs - safe_ema
-            delta_valid = coordinate_valid & jnp.isfinite(delta)
+            delta_valid = coordinate_valid & ema_coordinate_valid & jnp.isfinite(delta)
             blocks.append(jnp.where(delta_valid, delta, jnp.zeros_like(delta)))
         if cfg.periods:
             counter_valid = state.step_count >= jnp.asarray(0, dtype=jnp.int32)
@@ -579,12 +589,36 @@ class TemporalContextFeaturizer:
         decay = jnp.asarray(self._config.ema_decay, dtype=jnp.float32)
         observation_valid = jnp.all(jnp.isfinite(obs))
         counter_valid = state.step_count >= jnp.asarray(0, dtype=jnp.int32)
+        one_minus_decay = jnp.float32(1.0) - decay
         decayed_ema = jnp.where(
             decay == 0.0,
             jnp.zeros_like(state.observation_ema),
             decay * state.observation_ema,
         )
-        proposed_ema = decayed_ema + (1.0 - decay) * obs
+        weighted_obs = one_minus_decay * obs
+        direct_ema = decayed_ema + weighted_obs
+        rescaled_ema = jnp.ldexp(
+            jnp.where(
+                decay == 0.0,
+                jnp.zeros_like(state.observation_ema),
+                decay * jnp.ldexp(state.observation_ema, 64),
+            )
+            + one_minus_decay * jnp.ldexp(obs, 64),
+            -64,
+        )
+        underflowed = (
+            ((decay != 0.0) & (state.observation_ema != 0.0) & (decayed_ema == 0.0))
+            | ((one_minus_decay != 0.0) & (obs != 0.0) & (weighted_obs == 0.0))
+        ) & jnp.isfinite(rescaled_ema)
+        proposed_ema = jnp.where(underflowed, rescaled_ema, direct_ema)
+        ema_finite = jnp.isfinite(state.observation_ema)
+        low_bound = jnp.minimum(state.observation_ema, obs)
+        high_bound = jnp.maximum(state.observation_ema, obs)
+        proposed_ema = jnp.where(
+            ema_finite,
+            jnp.clip(proposed_ema, low_bound, high_bound),
+            proposed_ema,
+        )
         # Equal inputs are an exact EMA fixed point, including tiny normals.
         proposed_ema = jnp.where(state.observation_ema == obs, obs, proposed_ema)
         proposed = TemporalContextState(
@@ -648,6 +682,8 @@ def transform_temporal_context_arrays(
         ValueError: If ``observations`` length is not an exact integer in
             ``[1, 10_000]``.
     """
+    if type(featurizer) is not TemporalContextFeaturizer:
+        raise ValueError("featurizer must be an exact TemporalContextFeaturizer")
     observations = _require_observation_batch_metadata(
         observations,
         input_dim=featurizer.config.input_dim,
@@ -655,6 +691,8 @@ def transform_temporal_context_arrays(
     _require_temporal_context_array_steps(observations)
     if state is None:
         state = featurizer.init()
+    else:
+        state = _require_state_metadata(state, input_dim=featurizer.config.input_dim)
 
     def step_fn(
         carry: TemporalContextState,

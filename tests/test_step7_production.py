@@ -113,6 +113,12 @@ _INVALID_STEP7_FIELDS: tuple[tuple[str, Any], ...] = (
     ("planning_apply_importance_correction", "yes"),
     ("planning_apply_importance_correction", ""),
     ("planning_apply_importance_correction", None),
+    ("planning_update_average_reward", 1),
+    ("planning_update_average_reward", 0),
+    ("planning_update_average_reward", 1.0),
+    ("planning_update_average_reward", "yes"),
+    ("planning_update_average_reward", ""),
+    ("planning_update_average_reward", None),
     ("planning_utility_step_size", 1e100),
 )
 
@@ -287,6 +293,97 @@ def test_step7_importance_correction_accepts_exact_bool(flag: bool) -> None:
     assert type(payload["planning_apply_importance_correction"]) is bool
     restored = Step7DynaConfig.from_dict(payload)
     assert restored.planning_apply_importance_correction is flag
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("flag", [True, False])
+def test_step7_planning_update_average_reward_accepts_exact_bool(flag: bool) -> None:
+    config = _config_with(planning_update_average_reward=flag)
+    assert config.planning_update_average_reward is flag
+    payload = config.to_dict()
+    assert type(payload["planning_update_average_reward"]) is bool
+    restored = Step7DynaConfig.from_dict(payload)
+    assert restored.planning_update_average_reward is flag
+
+
+def _train_step7_model_on_constant_reward(
+    cfg: Step7DynaConfig,
+    agent: object,
+    model: object,
+    state: Step7DynaState,
+    *,
+    steps: int = 60,
+    reward: float = 1.0,
+) -> Step7DynaState:
+    """Drive the world model to predict ``reward`` for one fixed observation."""
+    obs = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
+    current = state
+    for _ in range(steps):
+        current = step7_update(
+            cfg, agent, model, current, jnp.asarray(reward, dtype=jnp.float32), obs
+        ).state
+    return current
+
+
+@pytest.mark.unit
+def test_step7_planning_backups_do_not_move_average_reward() -> None:
+    """Planning backups improve values only; imagined rewards never move rbar.
+
+    The world model is trained on constant reward +1, then one real step
+    pays -1. The real update moves rbar down; the accepted planning backup
+    (whose model still predicts ~+1) must leave rbar exactly where the real
+    update put it. Step 9 documents the same doctrine for its dreams.
+    """
+    cfg = Step7DynaConfig(
+        control=Step6DifferentialSARSAConfig(
+            n_actions=N_ACTIONS, average_reward_step_size=0.5
+        ),
+        world_model=Step8WorldModelConfig(observation_dim=OBS_DIM, n_actions=N_ACTIONS),
+        planning_steps=1,
+        planning_rollout_depth=1,
+        planning_warmup_steps=0,
+        planning_strategy="random",
+    )
+    agent, model = make_step7_components(cfg)
+    obs = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
+    state = init_step7_state(agent, model, key=jr.key(0), initial_observation=obs)
+    state = _train_step7_model_on_constant_reward(cfg, agent, model, state)
+    result = step7_update(
+        cfg, agent, model, state, jnp.asarray(-1.0, dtype=jnp.float32), obs
+    )
+    assert bool(jnp.all(result.planning_accepted))
+    chex.assert_trees_all_close(
+        result.state.control_state.average_reward,
+        result.real_control_result.average_reward,
+    )
+
+
+@pytest.mark.unit
+def test_step7_planning_update_average_reward_true_keeps_imagined_drift() -> None:
+    """Opting into imagined rbar updates restores the previous behavior."""
+    cfg = Step7DynaConfig(
+        control=Step6DifferentialSARSAConfig(
+            n_actions=N_ACTIONS, average_reward_step_size=0.5
+        ),
+        world_model=Step8WorldModelConfig(observation_dim=OBS_DIM, n_actions=N_ACTIONS),
+        planning_steps=1,
+        planning_rollout_depth=1,
+        planning_warmup_steps=0,
+        planning_strategy="random",
+        planning_update_average_reward=True,
+    )
+    agent, model = make_step7_components(cfg)
+    obs = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
+    state = init_step7_state(agent, model, key=jr.key(0), initial_observation=obs)
+    state = _train_step7_model_on_constant_reward(cfg, agent, model, state)
+    result = step7_update(
+        cfg, agent, model, state, jnp.asarray(-1.0, dtype=jnp.float32), obs
+    )
+    assert bool(jnp.all(result.planning_accepted))
+    assert abs(
+        float(result.state.control_state.average_reward)
+        - float(result.real_control_result.average_reward)
+    ) > 1e-3
 
 
 def test_step7_planning_fields_canonicalize_nonbuiltin_numbers() -> None:
@@ -970,6 +1067,43 @@ def test_step7_planning_accepted_tracks_the_core_learner_rollback() -> None:
     assert reported == replayed
     smoke = run_step7_smoke(cfg, steps=steps, seed=0)
     assert smoke.planning_acceptance_count == sum(replayed)
+
+
+def test_step7_partially_rejected_rollout_applies_nothing() -> None:
+    """A rollout with a rolled-back step must not move the control state.
+
+    ``planning_accepted`` already reports False when any imagined step is
+    rolled back, but the state commit was gated only on the warmup gate, so
+    the steps that did apply still landed in the control weights. At depth 1
+    a rejection is a no-op, so this needs depth 2 to show: one imagined step
+    applies, the next is rolled back by the core learner.
+    """
+    cfg = Step7DynaConfig(
+        control=Step6DifferentialSARSAConfig(n_actions=2, q_step_size=1.0, trace_decay=0.99),
+        world_model=Step8WorldModelConfig(
+            observation_dim=3, n_actions=2, hidden_sizes=(), step_size=0.05,
+            use_layer_norm=False,
+        ),
+        planning_steps=1,
+        planning_rollout_depth=2,
+        planning_warmup_steps=0,
+        planning_memory_size=1,
+        planning_strategy="random",
+    )
+    agent, model = make_step7_components(cfg)
+    huge = jnp.array([1e30, 0.0, 0.0], dtype=jnp.float32)
+    state = init_step7_state(
+        agent, model, key=jr.key(0), initial_observation=huge, memory_size=1
+    )
+    for _ in range(2):
+        state = step7_update(cfg, agent, model, state, jnp.array(0.0), huge).state
+    result = step7_update(cfg, agent, model, state, jnp.array(0.0), huge)
+    assert not bool(result.real_control_result.update_applied)
+    assert not bool(result.planning_accepted[0])
+    chex.assert_trees_all_equal(
+        result.state.control_state.q_weights,
+        result.real_control_result.state.q_weights,
+    )
 
 
 def test_step7_planning_backup_starts_from_empty_eligibility() -> None:

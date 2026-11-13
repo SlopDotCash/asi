@@ -870,3 +870,118 @@ def test_predict_does_not_publish_a_finite_answer_for_non_finite_observation(
     chex.assert_shape(prediction, (3,))
     assert bool(jnp.all(jnp.isnan(prediction)))
     assert not bool(learner.update(state, observation, jnp.zeros(3)).update_applied)
+
+
+def test_skip_zero_scale_grad_and_inactive_head_large_prediction_avoid_vjp_nan() -> None:
+    """Reverse-mode autodiff must not produce 0 * inf = NaN on gated or inactive heads."""
+    config = UPGDMemoryConfig(
+        feature_dim=2,
+        n_heads=2,
+        hidden_sizes=(),
+        slots_per_class=2,
+        readout_mode="linear_mse",
+        confidence_logit_scale=0.0,
+        reliability_logit_scale=0.0,
+        initial_memory_logit=90.0,
+        target_trace_blend_scale=0.0,
+    )
+    learner = UPGDMemoryLearner(config)
+    initial = learner.init(jr.key(1))
+    heads = initial.upgd_state.head_params.replace(
+        weights=tuple(
+            jnp.full_like(w, 3e38) for w in initial.upgd_state.head_params.weights
+        )
+    )
+    state = initial.replace(
+        upgd_state=initial.upgd_state.replace(head_params=heads),
+        memory_state=initial.memory_state.replace(
+            counts=jnp.ones_like(initial.memory_state.counts)
+        ),
+    )
+    obs = jnp.array([2.0, 2.0], dtype=jnp.float32)
+    grad_fn = jax.grad(
+        lambda logit: jnp.sum(learner.predict(state.replace(memory_logit=logit), obs))
+    )
+    grad_val = grad_fn(state.memory_logit)
+    assert bool(jnp.isfinite(grad_val))
+    assert float(grad_val) == 0.0
+
+    # Active head 0 has moderate prediction; inactive head 1 (target=NaN) has
+    # finite prediction 2.0e38 whose 2 * err overflows float32 in raw (pred - target)**2 VJP.
+    learner_partial = UPGDMemoryLearner(
+        UPGDMemoryConfig(
+            feature_dim=2,
+            n_heads=2,
+            hidden_sizes=(),
+            slots_per_class=2,
+            readout_mode="linear_mse",
+            confidence_logit_scale=0.0,
+            reliability_logit_scale=0.0,
+            initial_memory_logit=0.0,
+            target_trace_blend_scale=0.0,
+        )
+    )
+    init_partial = learner_partial.init(jr.key(2))
+    partial_heads = init_partial.upgd_state.head_params.replace(
+        weights=(
+            jnp.zeros_like(init_partial.upgd_state.head_params.weights[0]),
+            jnp.zeros_like(init_partial.upgd_state.head_params.weights[1]),
+        ),
+        biases=(
+            jnp.array([1.0], dtype=jnp.float32),
+            jnp.array([2.0e38], dtype=jnp.float32),
+        ),
+    )
+    partial_state = init_partial.replace(
+        upgd_state=init_partial.upgd_state.replace(head_params=partial_heads),
+        memory_state=init_partial.memory_state.replace(
+            counts=jnp.ones_like(init_partial.memory_state.counts)
+        ),
+    )
+    res = learner_partial.update(
+        partial_state,
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.array([0.5, jnp.nan], dtype=jnp.float32),
+    )
+    assert bool(res.update_applied)
+    assert bool(jnp.isfinite(res.state.memory_logit))
+
+
+def test_blend_gate_recovers_when_confidence_delta_overflows_on_finite_endpoints() -> None:
+    """Opposite-sign finite predictions overflowing max_mem - max_upgd must cancel cleanly."""
+    learner = UPGDMemoryLearner(
+        UPGDMemoryConfig(
+            feature_dim=2,
+            n_heads=2,
+            hidden_sizes=(),
+            slots_per_class=1,
+            readout_mode="linear_mse",
+            confidence_logit_scale=0.5,
+            reliability_logit_scale=1.0,
+            initial_memory_logit=0.25,
+            target_trace_blend_scale=0.0,
+        )
+    )
+    state = learner.init(jr.key(7)).replace(
+        memory_state=learner.init(jr.key(7)).memory_state.replace(
+            counts=jnp.ones((2, 1), dtype=jnp.int32)
+        ),
+        upgd_loss_ema=jnp.asarray(0.0, dtype=jnp.float32),
+        memory_loss_ema=jnp.asarray(2.0e38, dtype=jnp.float32),
+    )
+    upgd_pred = jnp.asarray([-2.0e38, -2.0e38], dtype=jnp.float32)
+    mem_pred = jnp.asarray([2.0e38, 2.0e38], dtype=jnp.float32)
+    gate = learner._blend_gate(state, upgd_pred, mem_pred)
+    expected_gate = jax.nn.sigmoid(jnp.asarray(0.25, dtype=jnp.float32))
+    chex.assert_trees_all_close(gate, expected_gate, rtol=1e-6)
+
+    empty_state = state.replace(
+        memory_state=state.memory_state.replace(counts=jnp.zeros((2, 1), dtype=jnp.int32)),
+        upgd_loss_ema=jnp.asarray(jnp.inf, dtype=jnp.float32),
+    )
+    empty_gate = learner._blend_gate(
+        empty_state,
+        jnp.asarray([jnp.inf, jnp.inf], dtype=jnp.float32),
+        mem_pred,
+    )
+    assert float(empty_gate) == 0.0

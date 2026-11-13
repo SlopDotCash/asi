@@ -292,6 +292,52 @@ def test_pipeline_sarsa_control_contains_step3_prediction_demons() -> None:
     assert not jnp.allclose(old_prediction_head, new_prediction_head)
 
 
+def test_pipeline_rejects_transition_when_sarsa_control_rolls_back() -> None:
+    """A rolled-back SARSA update must not commit the rest of the transition.
+
+    A rejected ``SARSAAgent.update`` reports the prior action rather than -1
+    (#3726), so the action is no longer a signal that the update applied.
+    Unbounded LMS control with step size 1.0 diverges on a constant reward;
+    once SARSA starts rolling back, the pipeline must stop advancing too.
+    """
+    base = _small_pipeline_config()
+    config = replace(base, control=replace(base.control, bounder="none", step_size=1.0))
+    pipeline = make_alberta_pipeline(config)
+    observation = jnp.full((3,), 4.0, dtype=jnp.float32)
+    steps = 40
+    initial = pipeline.init(jr.key(0), observation)
+
+    result = pipeline.run_arrays(
+        initial,
+        jnp.broadcast_to(observation, (steps, 3)),
+        jnp.ones(steps, dtype=jnp.float32),
+        jnp.zeros(steps, dtype=jnp.float32),
+        jnp.zeros((steps, 2), dtype=jnp.float32),
+    )
+
+    control_steps = int(result.state.control_state.step_count)
+    assert 0 < control_steps < steps
+    assert int(result.state.step_count) == control_steps
+    assert bool(jnp.all(result.actions[:control_steps] >= 0))
+    assert bool(jnp.all(result.actions[control_steps:] == -1))
+
+    state = result.state
+    rejected = pipeline.update(
+        state,
+        observation,
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+    )
+    # ``update`` narrows the host-only clocks; compare the learned state.
+    chex.assert_trees_all_equal(
+        rejected.state.horde_state.replace(birth_timestamp=0.0, uptime_s=0.0),
+        state.horde_state.replace(birth_timestamp=0.0, uptime_s=0.0),
+    )
+    assert int(rejected.state.step_count) == int(state.step_count)
+    assert int(rejected.action) == -1
+
+
 def test_pipeline_scan_smoke_is_finite() -> None:
     config = _small_pipeline_config()
     result = run_pipeline_smoke(config, steps=8, seed=3)
@@ -1429,6 +1475,140 @@ def test_pipeline_array_horde_clocks_preserve_initialized_host_values(
         assert type(current.horde_state.uptime_s) is float
         assert current.horde_state.uptime_s == uptime
     assert int(current.step_count) == 4
+
+
+def test_pipeline_horde_ac_init_preserves_host_clocks() -> None:
+    pipeline = make_alberta_pipeline(_small_horde_ac_config())
+    state = pipeline.init(jr.key(0), jnp.zeros(3, dtype=jnp.float32))
+    assert type(state.horde_state.birth_timestamp) is float
+    assert type(state.horde_state.uptime_s) is float
+    ac_state = state.control_state
+    assert type(ac_state.critic_state.birth_timestamp) is float
+    assert type(ac_state.critic_state.uptime_s) is float
+    assert state.horde_state.birth_timestamp == ac_state.critic_state.birth_timestamp
+    assert state.horde_state.uptime_s == ac_state.critic_state.uptime_s
+
+
+@pytest.mark.parametrize("reward_value", [0.5, float("nan")])
+def test_pipeline_update_preserves_host_clocks_across_components(
+    reward_value: float,
+) -> None:
+    sarsa_upgd_pipe = make_alberta_pipeline(_small_upgd_config())
+    sarsa_state = sarsa_upgd_pipe.init(jr.key(0), jnp.zeros(3, dtype=jnp.float32))
+    assert sarsa_state.upgd_state is not None
+    sarsa_state = sarsa_state.replace(
+        upgd_state=sarsa_state.upgd_state.replace(
+            birth_timestamp=1712345678.125, uptime_s=3.5
+        ),
+        horde_state=sarsa_state.horde_state.replace(
+            birth_timestamp=1712345678.25, uptime_s=4.5
+        ),
+        control_state=sarsa_state.control_state.replace(
+            learner_state=sarsa_state.control_state.learner_state.replace(
+                birth_timestamp=1712345678.375, uptime_s=5.5
+            )
+        ),
+    )
+    step = sarsa_upgd_pipe.update(
+        sarsa_state,
+        jnp.ones(3, dtype=jnp.float32),
+        jnp.asarray(reward_value, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.float32),
+        upgd_targets=jnp.asarray([0.5], dtype=jnp.float32),
+    )
+    assert step.state.upgd_state is not None
+    assert type(step.state.upgd_state.birth_timestamp) is float
+    assert step.state.upgd_state.birth_timestamp == 1712345678.125
+    assert type(step.state.upgd_state.uptime_s) is float
+    assert step.state.upgd_state.uptime_s == 3.5
+    assert type(step.state.horde_state.birth_timestamp) is float
+    assert step.state.horde_state.birth_timestamp == 1712345678.25
+    assert type(step.state.horde_state.uptime_s) is float
+    assert step.state.horde_state.uptime_s == 4.5
+    assert type(step.state.control_state.learner_state.birth_timestamp) is float
+    assert step.state.control_state.learner_state.birth_timestamp == 1712345678.375
+    assert type(step.state.control_state.learner_state.uptime_s) is float
+    assert step.state.control_state.learner_state.uptime_s == 5.5
+
+    ac_pipe = make_alberta_pipeline(_small_horde_ac_config())
+    ac_state = ac_pipe.init(jr.key(1), jnp.zeros(3, dtype=jnp.float32))
+    horde_clocked = ac_state.horde_state.replace(
+        birth_timestamp=1712345678.625, uptime_s=6.5
+    )
+    ac_state = ac_state.replace(
+        horde_state=horde_clocked,
+        control_state=ac_state.control_state.replace(critic_state=horde_clocked),
+    )
+    ac_step = ac_pipe.update(
+        ac_state,
+        jnp.ones(3, dtype=jnp.float32),
+        jnp.asarray(reward_value, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.float32),
+    )
+    assert type(ac_step.state.horde_state.birth_timestamp) is float
+    assert ac_step.state.horde_state.birth_timestamp == 1712345678.625
+    assert type(ac_step.state.horde_state.uptime_s) is float
+    assert ac_step.state.horde_state.uptime_s == 6.5
+    assert type(ac_step.state.control_state.critic_state.birth_timestamp) is float
+    assert ac_step.state.control_state.critic_state.birth_timestamp == 1712345678.625
+    assert type(ac_step.state.control_state.critic_state.uptime_s) is float
+    assert ac_step.state.control_state.critic_state.uptime_s == 6.5
+
+
+def test_pipeline_array_upgd_clocks_preserve_initialized_host_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = iter([200.0, 200.5, 201.0, 201.75])
+    monkeypatch.setattr(
+        pipeline_module,
+        "time",
+        SimpleNamespace(time=lambda: next(clock)),
+    )
+    pipeline = make_alberta_pipeline(_small_upgd_config())
+    initial = pipeline.init(jr.key(0), jnp.zeros(3, dtype=jnp.float32))
+    assert initial.upgd_state is not None
+    initial = initial.replace(
+        upgd_state=initial.upgd_state.replace(
+            birth_timestamp=1712345678.125, uptime_s=2.0
+        ),
+        horde_state=initial.horde_state.replace(
+            birth_timestamp=1712345678.25, uptime_s=7.0
+        ),
+        control_state=initial.control_state.replace(
+            learner_state=initial.control_state.learner_state.replace(
+                birth_timestamp=1712345678.375, uptime_s=9.0
+            )
+        ),
+    )
+    observations = jnp.ones((2, 3), dtype=jnp.float32)
+    rewards = jnp.asarray([0.5, -0.25], dtype=jnp.float32)
+    terminated = jnp.zeros(2, dtype=jnp.float32)
+    cumulants = jnp.ones((2, 2), dtype=jnp.float32)
+    targets = jnp.ones((2, 1), dtype=jnp.float32)
+
+    with_targets = pipeline.run_arrays(
+        initial, observations, rewards, terminated, cumulants, upgd_targets=targets
+    )
+    assert with_targets.state.upgd_state is not None
+    assert type(with_targets.state.upgd_state.birth_timestamp) is float
+    assert with_targets.state.upgd_state.birth_timestamp == 1712345678.125
+    assert type(with_targets.state.upgd_state.uptime_s) is float
+    assert with_targets.state.upgd_state.uptime_s == 2.5
+    assert type(with_targets.state.control_state.learner_state.birth_timestamp) is float
+    assert with_targets.state.control_state.learner_state.birth_timestamp == 1712345678.375
+    assert type(with_targets.state.control_state.learner_state.uptime_s) is float
+    assert with_targets.state.control_state.learner_state.uptime_s == 9.0
+
+    without_targets = pipeline.run_arrays(
+        with_targets.state, observations, rewards, terminated, cumulants
+    )
+    assert without_targets.state.upgd_state is not None
+    assert type(without_targets.state.upgd_state.birth_timestamp) is float
+    assert without_targets.state.upgd_state.birth_timestamp == 1712345678.125
+    assert type(without_targets.state.upgd_state.uptime_s) is float
+    assert without_targets.state.upgd_state.uptime_s == 2.5
 
 
 @pytest.mark.parametrize(

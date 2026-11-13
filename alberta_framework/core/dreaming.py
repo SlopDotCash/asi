@@ -156,6 +156,9 @@ class DreamingConfig:
         min_discount: Lower discount clamp for synthetic transitions.
         max_discount: Upper discount clamp for synthetic transitions. When
             ``None``, the world model's ``gamma`` is used.
+        discount_floor: Model discounts at or below this value are terminal:
+            the proposed transition carries discount zero instead of
+            bootstrapping. Mirrors the rollout path.
     """
 
     warmup_steps: int = 100
@@ -479,6 +482,19 @@ class GuardedDreamer:
             reward=prediction.reward,
             discount=discount,
             next_observation=prediction.next_observation,
+        )
+        # A model discount at or below the configured floor is the terminal
+        # signal: the world-model prediction carries no terminated flag, so
+        # the min_discount floor must not resurrect it into a bootstrapping
+        # transition. This mirrors the terminal-discount rule in the rollout
+        # path (``dream_one_step``), where ``discount <= discount_floor``
+        # terminates the imagined step and forces its discount to zero.
+        transition = transition.replace(  # type: ignore[attr-defined]
+            discount=jnp.where(
+                prediction.discount <= self._config.discount_floor,
+                jnp.zeros_like(transition.discount),
+                transition.discount,
+            )
         )
 
         enough_data = model_state.step_count >= self._config.warmup_steps

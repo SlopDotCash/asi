@@ -998,3 +998,78 @@ def test_public_prediction_preserves_small_normal_member_means(
         np.testing.assert_array_equal(
             np.asarray(prediction.mean_raw_prediction), np.full(4, magnitude, dtype=np.float32)
         )
+
+
+def test_capacity_available_and_replay_valid_do_not_wrap_signed_int32() -> None:
+    ensemble = WorldModelEnsemble(
+        _config(
+            bootstrap_probability=0.999999,
+            max_input_magnitude=100.0,
+            max_predicted_variance=10.0,
+            max_observed_loss=10.0,
+        )
+    )
+    state = ensemble.init(jr.key(101))
+    event = _event(0)
+
+    # 1) Signed int32 overflow in member_update_counts + replay_member_update_counts
+    # (1_500_000_000 + 1_500_000_000 wraps to -1_294_967_296 in int32) must report
+    # capacity_available=False in both update and replay_update.
+    overflow_counts = jnp.full((ensemble.config.ensemble_size,), 1_500_000_000, dtype=jnp.int32)
+    overflow_state = state.replace(
+        member_update_counts=overflow_counts,
+        replay_member_update_counts=overflow_counts,
+    )
+    update_overflow = ensemble.update(overflow_state, *event)
+    replay_overflow = ensemble.replay_update(overflow_state, *event, jnp.asarray(True))
+    assert not bool(update_overflow.diagnostics.capacity_available)
+    assert not bool(replay_overflow.diagnostics.capacity_available)
+    assert not bool(update_overflow.diagnostics.applied)
+    assert not bool(replay_overflow.diagnostics.applied)
+
+    # 2) Rejected candidate updates inside do_update must zero bootstrap_mask
+    # to match member_updates_applied and rolled-back last_bootstrap_mask.
+    observation, action, _, discount, next_observation = event
+    rejected_update = ensemble.update(
+        state,
+        observation,
+        action,
+        jnp.asarray(50.0, dtype=jnp.float32),
+        discount,
+        next_observation,
+    )
+    rejected_replay = ensemble.replay_update(
+        state,
+        observation,
+        action,
+        jnp.asarray(50.0, dtype=jnp.float32),
+        discount,
+        next_observation,
+        jnp.asarray(True),
+    )
+    assert not bool(rejected_update.diagnostics.applied)
+    assert not bool(rejected_replay.diagnostics.applied)
+    assert not bool(jnp.any(rejected_update.bootstrap_mask))
+    assert not bool(jnp.any(rejected_replay.bootstrap_mask))
+
+
+def test_checkpoint_rejects_float_aliased_resource_budget(tmp_path: Path) -> None:
+    ensemble = WorldModelEnsemble(_config())
+    state = ensemble.init(jr.key(0))
+    clean_path = tmp_path / "clean"
+    save_world_model_ensemble_checkpoint(ensemble, state, clean_path)
+    metadata = load_checkpoint_metadata(clean_path)
+    load_world_model_ensemble_checkpoint(clean_path)
+
+    tampered_budget = dict(metadata["resource_budget"])
+    tampered_budget["persistent_state_bytes"] = float(
+        tampered_budget["persistent_state_bytes"]
+    )
+    forged_path = tmp_path / "forged"
+    save_checkpoint(
+        state,
+        forged_path,
+        metadata={**metadata, "resource_budget": tampered_budget},
+    )
+    with pytest.raises(ValueError, match="resource budget"):
+        load_world_model_ensemble_checkpoint(forged_path)

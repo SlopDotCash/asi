@@ -32,6 +32,7 @@ from alberta_framework.core.optimizers import AdaptiveObGDBounding, ObGDBounding
 from alberta_framework.core.upgd import (
     UPGDLearner,
     UPGDLearningResult,
+    _finite_layer_norm,
     run_upgd_arrays,
     run_upgd_loop,
 )
@@ -2618,3 +2619,107 @@ def test_update_preserves_finite_step_mse_reductions(disable_jit: bool) -> None:
     assert int(result.state.step_count) == 1
     assert bool(jnp.isfinite(result.state.loss_fast_ema))
     assert bool(jnp.isfinite(result.state.loss_slow_ema))
+
+
+def test_trunk_forward_and_update_preserve_layer_norm_on_overflow() -> None:
+    learner = UPGDLearner(
+        n_heads=1,
+        hidden_sizes=(2,),
+        sparsity=0.0,
+        step_size=0.01,
+        perturbation_sigma=0.0,
+        leaky_relu_slope=1.0,
+        use_layer_norm=True,
+    )
+    state = learner.init(feature_dim=2, key=jr.key(0))
+    state = state.replace(  # type: ignore[attr-defined]
+        trunk_params=state.trunk_params.replace(  # type: ignore[attr-defined]
+            weights=(jnp.eye(2, dtype=jnp.float32),),
+            biases=(jnp.zeros(2, dtype=jnp.float32),),
+        ),
+        head_params=state.head_params.replace(  # type: ignore[attr-defined]
+            weights=(jnp.array([[1.0, -1.0]], dtype=jnp.float32),),
+            biases=(jnp.zeros(1, dtype=jnp.float32),),
+        ),
+    )
+    obs = jnp.array([-2e20, 2e20], dtype=jnp.float32)
+
+    pred = learner.predict(state, obs)
+    np.testing.assert_allclose(np.asarray(pred), np.array([-2.0], dtype=np.float32), rtol=1e-5)
+
+    result = learner.update(state, obs, jnp.array([1.0], dtype=jnp.float32))
+    assert int(result.state.step_count) == 1
+    assert bool(jnp.all(jnp.isfinite(result.state.head_params.weights[0])))
+    assert not bool(jnp.allclose(result.state.head_params.weights[0], state.head_params.weights[0]))
+
+
+def test_inactive_head_does_not_corrupt_target_repetition_or_previous_targets() -> None:
+    learner = UPGDLearner(
+        n_heads=2,
+        hidden_sizes=(4,),
+        sparsity=0.0,
+        step_size=0.01,
+        perturbation_sigma=0.0,
+        head_repetition_decay=0.0,
+        head_repetition_delta_threshold=1e-6,
+        meta_plasticity_mode="gradient_alignment",
+        meta_plasticity_step_size=0.1,
+    )
+    state = learner.init(feature_dim=2, key=jr.key(1))
+    obs = jnp.array([1.0, -0.5], dtype=jnp.float32)
+
+    step1 = learner.update(state, obs, jnp.array([1.0, 2.0], dtype=jnp.float32)).state
+    head1_prev_w_grad = step1.previous_head_weight_grads[1]
+    head1_prev_b_grad = step1.previous_head_bias_grads[1]
+
+    step2 = learner.update(step1, obs, jnp.array([1.0, jnp.nan], dtype=jnp.float32)).state
+    assert float(step2.target_repeat_ema) == 1.0
+    np.testing.assert_allclose(
+        np.asarray(step2.previous_targets),
+        np.array([1.0, 2.0], dtype=jnp.float32),
+    )
+    chex.assert_trees_all_equal(step2.previous_head_weight_grads[1], head1_prev_w_grad)
+    chex.assert_trees_all_equal(step2.previous_head_bias_grads[1], head1_prev_b_grad)
+
+
+def test_all_nan_targets_freeze_upgd_state_and_metrics() -> None:
+    learner = UPGDLearner(
+        n_heads=2,
+        hidden_sizes=(4,),
+        sparsity=0.0,
+        step_size=0.05,
+        perturbation_sigma=0.5,
+        perturbation_interval=1,
+        utility_decay=0.5,
+        unit_replacement_rate=0.5,
+        unit_maturity_threshold=1,
+    )
+    state0 = learner.init(feature_dim=2, key=jr.key(2))
+    obs = jnp.array([1.0, -0.5], dtype=jnp.float32)
+    state1 = learner.update(state0, obs, jnp.array([1.0, -1.0], dtype=jnp.float32)).state
+
+    result = learner.update(state1, obs, jnp.array([jnp.nan, jnp.nan], dtype=jnp.float32))
+    chex.assert_trees_all_equal(result.state, state1)
+    assert bool(jnp.all(jnp.isfinite(result.predictions)))
+    assert bool(jnp.all(jnp.isnan(result.errors)))
+    np.testing.assert_array_equal(np.asarray(result.metrics), np.zeros(4, dtype=np.float32))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("values", [(2.0e38, 2.0e38, 2.0e38), (3.0e38, 2.0e38, 1.0e38)])
+def test_layer_norm_preserves_extreme_mean_and_constant_gradient(
+    values: tuple[float, ...], compiled: bool
+) -> None:
+    inputs = jnp.asarray(values, dtype=jnp.float32)
+    normalize = jax.jit(_finite_layer_norm) if compiled else _finite_layer_norm
+    reference = np.asarray(inputs, dtype=np.float64)
+    centered = reference - reference.mean()
+    expected = centered / np.sqrt(np.mean(centered ** 2) + 1e-5)
+    np.testing.assert_allclose(normalize(inputs), expected, rtol=1e-6, atol=1e-6)
+
+    cotangent = jnp.arange(3, dtype=jnp.float32)
+    gradient = jax.grad(lambda x: jnp.sum(normalize(x) * cotangent))(inputs)
+    assert bool(jnp.all(jnp.isfinite(gradient)))
+    if values[0] == values[-1]:
+        expected_gradient = (np.arange(3) - 1.0) / np.sqrt(1e-5)
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-6, atol=1e-5)

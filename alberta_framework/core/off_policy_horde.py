@@ -664,23 +664,31 @@ class OffPolicyHordeLearner:
                     jnp.zeros_like(utility) for utility in state.hidden_unit_utilities
                 )
             )
-        if replacing:
-            checked_state = checked_state.replace(  # type: ignore[attr-defined]
-                trunk_traces=tuple(jnp.zeros_like(trace) for trace in state.trunk_traces),
-            )
+        # The carried trunk trace is never consumed: the wrapped learner is
+        # built with gamma=lamda=0, so each step's trunk trace is the current
+        # gradient in both trace modes. A poisoned carried trunk trace must
+        # not fail the finiteness gate (mirrors MultiHeadMLPLearner.update,
+        # which zeroes trunk traces in its checked state whenever
+        # gamma*lamda == 0).
+        checked_state = checked_state.replace(  # type: ignore[attr-defined]
+            trunk_traces=tuple(jnp.zeros_like(trace) for trace in state.trunk_traces),
+        )
         lamdas = self._horde_spec.lamdas
         # The carried trace is only consumed through its incoming-discount
         # decay, so a zero *outgoing* discount must not hide a poisoned trace.
-        head_decay_unused = jnp.all(
-            (previous_discounts == 0.0) | (jnp.asarray(lamdas, dtype=jnp.float32) == 0.0)
+        # The decay is per demon: one demon's zero incoming discount must not
+        # excuse another demon's consumed trace, and a zero-decay demon's
+        # poisoned trace must not block the demons that still learn from it.
+        head_decay_unused = (previous_discounts == 0.0) | (
+            jnp.asarray(lamdas, dtype=jnp.float32) == 0.0
         )
-        checked_state = checked_state.replace(  # type: ignore[attr-defined]
+        checked_state = checked_state.replace(
             head_traces=tuple(
                 (
-                    jnp.where(head_decay_unused, jnp.zeros_like(old_w), old_w),
-                    jnp.where(head_decay_unused, jnp.zeros_like(old_b), old_b),
+                    jnp.where(unused, jnp.zeros_like(old_w), old_w),
+                    jnp.where(unused, jnp.zeros_like(old_b), old_b),
                 )
-                for old_w, old_b in state.head_traces
+                for (old_w, old_b), unused in zip(state.head_traces, head_decay_unused, strict=True)
             )
         )
         source_state_finite = _floating_tree_is_finite(checked_state) & history_valid
@@ -697,6 +705,7 @@ class OffPolicyHordeLearner:
             & jnp.isfinite(td_targets)
         )
         active_mask = head_inputs_valid & global_inputs_valid & source_state_finite
+        any_active = jnp.any(active_mask)
         safe_targets = jnp.where(active_mask, td_targets, 0.0)
         safe_clipped_rhos = jnp.where(active_mask, clipped_rhos, 0.0)
         safe_trace_coefficients = jnp.where(active_mask, trace_coefficients, 0.0)
@@ -826,6 +835,23 @@ class OffPolicyHordeLearner:
             new_trunk_opt_states.append(new_b_opt)
             optimizer_updates_applied.append(b_update_applied)
 
+        # Freeze the shared trunk when no demon is active, as
+        # MultiHeadMLPLearner does (#3725). The step carries zero error
+        # signal, and inactive heads are frozen below; without this guard a
+        # stateful optimizer (e.g. Adam) steps the trunk on stale momentum.
+        new_trunk_traces = [
+            jnp.where(any_active, new_trace, old_trace)
+            for new_trace, old_trace in zip(new_trunk_traces, state.trunk_traces)
+        ]
+        new_trunk_opt_states = [
+            jax.tree.map(
+                lambda new, old: jnp.where(any_active, new, old),
+                new_opt,
+                old_opt,
+            )
+            for new_opt, old_opt in zip(new_trunk_opt_states, state.trunk_optimizer_states)
+        ]
+
         trunk_bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._bounder is not None and n_trunk_layers > 0:
             trunk_params_flat: list[Array] = []
@@ -846,6 +872,16 @@ class OffPolicyHordeLearner:
         for i in range(n_trunk_layers):
             new_trunk_weights.append(state.trunk_params.weights[i] + trunk_steps[2 * i])
             new_trunk_biases.append(state.trunk_params.biases[i] + trunk_steps[2 * i + 1])
+
+        # Freeze trunk params when no demon is active (see above).
+        new_trunk_weights = [
+            jnp.where(any_active, new_w, old_w)
+            for new_w, old_w in zip(new_trunk_weights, state.trunk_params.weights)
+        ]
+        new_trunk_biases = [
+            jnp.where(any_active, new_b, old_b)
+            for new_b, old_b in zip(new_trunk_biases, state.trunk_params.biases)
+        ]
 
         new_trunk_params = MLPParams(
             weights=tuple(new_trunk_weights),

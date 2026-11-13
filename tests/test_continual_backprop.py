@@ -20,6 +20,7 @@ from alberta_framework.core.continual_backprop import (
     ContinualBackpropConfig,
     ContinualBackpropState,
     ContinualBackpropTracker,
+    _finite_layer_norm,
     _select_replacement_index,
     init_cbp_state,
     maybe_replace_units,
@@ -1503,3 +1504,155 @@ def test_cbp_ranking_fallback_preserves_finite_scores_and_rejects_poison(disable
             )
             assert int(index) == expected
             assert bool(found) == available
+
+
+# === Regression tests for layer-norm overflow, inactive heads, and head_optimizer ===
+
+
+def test_trunk_layer_activations_and_update_preserve_layer_norm_on_overflow() -> None:
+    from alberta_framework.core.continual_backprop import _trunk_layer_activations
+
+    weights = (
+        jnp.array([[2e19], [-2e19]], dtype=jnp.float32),
+        jnp.array([[2e19, 0.0], [0.0, -2e19]], dtype=jnp.float32),
+    )
+    biases = (
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+    )
+    observation = jnp.array([1.0], dtype=jnp.float32)
+    activations = _trunk_layer_activations(
+        weights, biases, observation, leaky_relu_slope=0.01, use_layer_norm=True
+    )
+    np.testing.assert_allclose(
+        np.asarray(activations[0]),
+        np.array([1.0, -0.01], dtype=np.float32),
+        rtol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(activations[1]),
+        np.array([1.0, -0.01], dtype=np.float32),
+        rtol=1e-5,
+    )
+
+    learner = CBPMultiHeadMLPLearner(
+        n_heads=1,
+        hidden_sizes=(2, 2),
+        cbp_config=ContinualBackpropConfig(
+            decay_rate=0.5, replacement_rate=0.0, maturity_threshold=100
+        ),
+        step_size=1e-6,
+        sparsity=0.0,
+        use_layer_norm=True,
+    )
+    state = learner.init(feature_dim=1, key=jr.key(0))
+    state = state.replace(
+        mlp_state=state.mlp_state.replace(
+            trunk_params=state.mlp_state.trunk_params.replace(
+                weights=weights, biases=biases
+            ),
+            head_params=state.mlp_state.head_params.replace(
+                weights=(jnp.array([[1.0, 2.0]], dtype=jnp.float32),),
+                biases=(jnp.zeros(1, dtype=jnp.float32),),
+            ),
+        )
+    )
+    result = learner.update(state, observation, jnp.array([2.0], dtype=jnp.float32))
+    chex.assert_tree_all_finite(result.state.cbp_state.utilities)
+    assert float(jnp.max(result.state.cbp_state.utilities[0])) > 0.0
+    assert float(jnp.max(result.state.cbp_state.utilities[1])) > 0.0
+
+
+def test_update_freezes_cbp_state_and_replacement_when_all_heads_inactive() -> None:
+    learner = CBPMultiHeadMLPLearner(
+        n_heads=2,
+        hidden_sizes=(2,),
+        cbp_config=ContinualBackpropConfig(
+            decay_rate=0.5, replacement_rate=1.0, maturity_threshold=1
+        ),
+        sparsity=0.0,
+    )
+    state = learner.init(feature_dim=2, key=jr.key(0))
+    active = learner.update(
+        state,
+        jnp.array([1.0, -0.5], dtype=jnp.float32),
+        jnp.array([1.0, -1.0], dtype=jnp.float32),
+    ).state
+    inactive = learner.update(
+        active,
+        jnp.array([1.0, -0.5], dtype=jnp.float32),
+        jnp.array([jnp.nan, jnp.nan], dtype=jnp.float32),
+    )
+    assert not bool(jnp.any(inactive.replacements_made))
+    chex.assert_trees_all_equal(
+        inactive.state.cbp_state.replace(
+            rng_key=jr.key_data(inactive.state.cbp_state.rng_key)
+        ),
+        active.cbp_state.replace(rng_key=jr.key_data(active.cbp_state.rng_key)),
+    )
+    chex.assert_trees_all_equal(
+        inactive.state.mlp_state.trunk_params,
+        active.mlp_state.trunk_params,
+    )
+    chex.assert_trees_all_equal(
+        inactive.state.mlp_state.head_params,
+        active.mlp_state.head_params,
+    )
+
+
+def test_replace_units_resets_head_optimizer_without_trunk_optimizer() -> None:
+    head_opt = Autostep(initial_step_size=0.01)
+    learner = MultiHeadMLPLearner(
+        n_heads=1,
+        hidden_sizes=(3,),
+        head_optimizer=head_opt,
+        sparsity=0.0,
+    )
+    mlp_state = learner.init(2, jr.key(0))
+    for step in range(5):
+        obs = jr.normal(jr.fold_in(jr.key(1), step), (2,))
+        mlp_state = learner.update(mlp_state, obs, jnp.array([1.0])).state
+    mlp_state = mlp_state.replace(
+        head_traces=((jnp.array([[0.5, 0.6, 0.7]], dtype=jnp.float32), jnp.zeros(1)),)
+    )
+    cbp_state = init_cbp_state(mlp_state, (3,), jr.key(2)).replace(
+        utilities=(jnp.array([0.0, 1.0, 1.0], dtype=jnp.float32),),
+        ages=(jnp.full((3,), 10, dtype=jnp.int32),),
+        replacement_accumulators=jnp.array([1.0], dtype=jnp.float32),
+    )
+    config = ContinualBackpropConfig(replacement_rate=1.0, maturity_threshold=1)
+    new_mlp, _, replaced = replace_units_with_flags(
+        mlp_state,
+        cbp_state,
+        config,
+        0.0,
+        optimizer=None,
+        head_optimizer=head_opt,
+    )
+    assert bool(replaced[0])
+    fresh_head = head_opt.init_for_shape((1, 3))
+    chex.assert_trees_all_close(
+        new_mlp.head_optimizer_states[0][0].step_sizes[:, 0],
+        fresh_head.step_sizes[:, 0],
+    )
+    assert float(new_mlp.head_traces[0][0][0, 0]) == 0.0
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("values", [(2.0e38, 2.0e38, 2.0e38), (3.0e38, 2.0e38, 1.0e38)])
+def test_layer_norm_preserves_extreme_mean_and_constant_gradient(
+    values: tuple[float, ...], compiled: bool
+) -> None:
+    inputs = jnp.asarray(values, dtype=jnp.float32)
+    normalize = jax.jit(_finite_layer_norm) if compiled else _finite_layer_norm
+    reference = np.asarray(inputs, dtype=np.float64)
+    centered = reference - reference.mean()
+    expected = centered / np.sqrt(np.mean(centered ** 2) + 1e-5)
+    np.testing.assert_allclose(normalize(inputs), expected, rtol=1e-6, atol=1e-6)
+
+    cotangent = jnp.arange(3, dtype=jnp.float32)
+    gradient = jax.grad(lambda x: jnp.sum(normalize(x) * cotangent))(inputs)
+    assert bool(jnp.all(jnp.isfinite(gradient)))
+    if values[0] == values[-1]:
+        expected_gradient = (np.arange(3) - 1.0) / np.sqrt(1e-5)
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-6, atol=1e-5)

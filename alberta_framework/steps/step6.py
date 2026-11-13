@@ -308,7 +308,7 @@ def init_step6_state(
     # Restore the values agent.init stamped.
     return cast(
         DifferentialSARSAState,
-        state.replace(
+        state.replace(  # type: ignore[attr-defined]
             birth_timestamp=initial_state.birth_timestamp,
             uptime_s=initial_state.uptime_s,
         ),
@@ -366,8 +366,8 @@ def step6_update(
     # does not advance. Restore their incoming values.
     return cast(
         DifferentialSARSAUpdateResult,
-        result.replace(
-            state=result.state.replace(
+        result.replace(  # type: ignore[attr-defined]
+            state=result.state.replace(  # type: ignore[attr-defined]
                 birth_timestamp=state.birth_timestamp,
                 uptime_s=state.uptime_s,
             )

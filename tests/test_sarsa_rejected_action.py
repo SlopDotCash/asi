@@ -81,6 +81,7 @@ def test_rejected_update_reports_prior_action() -> None:
     _assert_state_exact_ignoring_host_time(result.state, state)
     assert int(result.state.last_action) == 1
     assert int(result.action) == 1
+    assert not bool(result.update_applied)
 
 
 def test_rejected_update_with_invalid_next_action_reports_prior_action() -> None:
@@ -129,6 +130,7 @@ def test_accepted_update_reports_next_action() -> None:
     )
     assert int(result.state.last_action) == 0
     assert int(result.action) == 0
+    assert bool(result.update_applied)
 
 
 def test_array_runner_records_prior_action_on_rejected_row() -> None:

@@ -305,3 +305,96 @@ def test_hidden_ar2_state_propagates_ar2():
     chex.assert_trees_all_close(new_state.x_prev2, saved_x_prev)
     # New x_prev should match the emitted observation.
     chex.assert_trees_all_close(new_state.x_prev, timestep.observation)
+
+
+def test_scaled_stream_wrapper_rejects_bool_and_underflow_scales() -> None:
+    import numpy as np
+
+    from alberta_framework.streams.synthetic import (
+        RandomWalkStream,
+        ScaledStreamWrapper,
+    )
+
+    inner = RandomWalkStream(feature_dim=2)
+    with pytest.raises(ValueError, match="boolean"):
+        ScaledStreamWrapper(inner, jnp.array([True, False]))
+    with pytest.raises(ValueError, match="boolean"):
+        ScaledStreamWrapper(inner, [True, 1.0])  # type: ignore[arg-type]
+    tiny_ld = np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
+    if tiny_ld > 0:
+        with pytest.raises(ValueError, match="narrows to float32 zero"):
+            ScaledStreamWrapper(
+                inner,
+                np.array([tiny_ld, np.longdouble(1.0)], dtype=np.longdouble),  # type: ignore[arg-type]
+            )
+
+
+def test_dynamic_scale_shift_and_scale_drift_init_respect_scale_bounds() -> None:
+    import numpy as np
+
+    from alberta_framework.streams.synthetic import (
+        DynamicScaleShiftStream,
+        ScaleDriftStream,
+    )
+
+    bound = float(np.float32(1.3189869e-30))
+    dyn = DynamicScaleShiftStream(
+        feature_dim=4,
+        scale_change_interval=1,
+        min_scale=bound,
+        max_scale=bound,
+    )
+    dyn_state = dyn.init(jr.key(0))
+    assert bool(jnp.all(dyn_state.current_scales == np.float32(bound)))
+    _, dyn_state_next = dyn.step(dyn_state, jnp.array(1, dtype=jnp.int32))
+    assert bool(jnp.all(dyn_state_next.current_scales == np.float32(bound)))
+
+    drift = ScaleDriftStream(
+        feature_dim=3,
+        min_log_scale=1.5,
+        max_log_scale=2.5,
+    )
+    drift_state = drift.init(jr.key(0))
+    assert bool(jnp.all((drift_state.log_scales >= 1.5) & (drift_state.log_scales <= 2.5)))
+
+def test_hidden_ar2_init_is_stationary():
+    """``init`` draws both lags from the stationary distribution.
+
+    Under the default coefficients the stationary variance is
+    ``gamma0 = sigma^2 / (1 - phi1*rho1 - phi2*rho2)`` ~= 0.0556 with
+    lag-1 autocorrelation ``rho1 = phi1 / (1 - phi2)`` = 0.5.
+    Independent unit-variance lags would start the stream ~18x above
+    its stationary variance with zero lag correlation.
+    """
+    stream = HiddenStateAR2Stream(feature_dim=4, visible_dim=2)
+    keys = jr.split(jr.key(0), 2048)
+    x_prev = []
+    x_prev2 = []
+    for key in keys:
+        state = stream.init(key)
+        x_prev.append(state.x_prev)
+        x_prev2.append(state.x_prev2)
+    x_prev = jnp.concatenate(x_prev)
+    x_prev2 = jnp.concatenate(x_prev2)
+    gamma0 = 0.2**2 / (1.0 - 0.6 * 0.5 - (-0.2) * 0.1)
+    assert jnp.isclose(jnp.var(x_prev), gamma0, rtol=0.25)
+    assert jnp.isclose(jnp.var(x_prev2), gamma0, rtol=0.25)
+    corr = jnp.mean(x_prev * x_prev2) / jnp.sqrt(
+        jnp.mean(x_prev * x_prev) * jnp.mean(x_prev2 * x_prev2)
+    )
+    assert jnp.isclose(corr, 0.5, atol=0.06)
+
+
+def test_hidden_ar2_init_keeps_unit_variance_without_innovation():
+    """With zero innovation there is no stationary variance to draw from.
+
+    The stationary law is degenerate (or arbitrary for the
+    deterministic-copy case), so ``init`` keeps its unit-variance
+    start instead of collapsing the stream to zeros.
+    """
+    stream = HiddenStateAR2Stream(
+        feature_dim=4, visible_dim=2, phi1=1.0, phi2=0.0, innovation_std=0.0
+    )
+    keys = jr.split(jr.key(0), 512)
+    x_prev = jnp.concatenate([stream.init(key).x_prev for key in keys])
+    assert jnp.isclose(jnp.var(x_prev), 1.0, rtol=0.25)

@@ -144,6 +144,33 @@ def _decision_result() -> RecurringFeatureGateResult:
     )
 
 
+def test_decision_returns_failure_not_index_error_for_short_heldout_nmse() -> None:
+    """A seed missing per-head NMSE entries must fail the gate, not crash it.
+
+    Short tuples are legal degenerate construction, and ``_seed_failures``
+    already diagnoses the wrong length; the medians must treat the missing
+    heads as unrecovered so the FAILED decision is returned.
+    """
+    result = _decision_result()
+    short = replace(result.retained.seeds[0], final_heldout_nmse=(0.01,))
+    forged = replace(
+        result,
+        retained=replace(result.retained, seeds=(short,)),
+        no_retention=replace(result.no_retention, seeds=(short,)),
+    )
+    decision = forged.decision()
+    assert not decision.accepted
+    assert any("invalid held-out NMSE" in failure for failure in decision.failures)
+
+
+def test_short_heldout_nmse_counts_missing_heads_as_unrecovered() -> None:
+    seed = replace(_decision_result().retained.seeds[0], final_heldout_nmse=(0.01,))
+    variant = RecurringFeatureVariantEvidence("retained", 0.999, (seed,))
+    assert variant.median_critical_heldout_nmse == math.inf
+    assert variant.median_obsolete_heldout_nmse == math.inf
+    assert variant.median_heldout_nmse_by_task == (0.01, math.inf, math.inf, math.inf)
+
+
 def test_decision_revalidates_forged_nested_evidence() -> None:
     result = _decision_result()
     phase = result.retained.seeds[0].phase_evidence[0]

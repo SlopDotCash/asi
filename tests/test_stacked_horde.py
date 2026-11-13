@@ -1085,3 +1085,78 @@ def test_stacked_horde_public_state_shape_rejected_before_dot() -> None:
     state = horde.init().replace(weights=jnp.zeros((1, 3), dtype=jnp.float32))
     with pytest.raises(ValueError, match="weights"):
         horde.predict(state, jnp.ones(2, dtype=jnp.float32))
+
+
+def test_stacked_horde_three_factor_step_and_zero_rho_overflow_trace_reset() -> None:
+    """Zero rho resets an overflowing trace and 3-factor steps do not underflow."""
+    minimum = float(np.finfo(np.float32).tiny)
+    horde = StackedLinearHorde(
+        StackedHordeConfig(
+            n_demons=1,
+            feature_dim=1,
+            gammas=(1.0,),
+            lamdas=(1.0,),
+            cumulant_indices=(0,),
+            step_size=minimum,
+        )
+    )
+    state = horde.init().replace(traces=jnp.asarray([[3.0e38]], dtype=jnp.float32))
+    reset_res = jax.jit(horde.update)(
+        state,
+        jnp.asarray([1.0e38], dtype=jnp.float32),
+        jnp.asarray([0.0], dtype=jnp.float32),
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    assert bool(reset_res.update_applied)
+    assert float(reset_res.state.traces[0, 0]) == 0.0
+
+    # Under JIT on XLA CPU, minimum * 0.25 flushes to 0.0 before multiplying by trace=8.0.
+    state_sub = horde.init().replace(traces=jnp.asarray([[7.0]], dtype=jnp.float32))
+    sub_res = jax.jit(horde.update)(
+        state_sub,
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray([0.0], dtype=jnp.float32),
+        jnp.asarray([0.25], dtype=jnp.float32),
+    )
+    assert bool(sub_res.update_applied)
+    assert float(sub_res.state.weights[0, 0]) == pytest.approx(2.0 * minimum, rel=1e-6)
+
+
+def test_stacked_horde_cancelling_matvec_and_negative_float64_rho_array() -> None:
+    """Cancelling dot products stay finite and negative float64 rho arrays do not round to -0.0."""
+    horde = StackedLinearHorde(
+        StackedHordeConfig(
+            n_demons=2,
+            feature_dim=2,
+            gammas=(0.9, 0.9),
+            lamdas=(0.5, 0.5),
+            cumulant_indices=(0, 1),
+            step_size=0.1,
+        )
+    )
+    state = horde.init().replace(
+        weights=jnp.asarray([[2.0e20, -2.0e20], [1.0, 0.0]], dtype=jnp.float32)
+    )
+    features = jnp.asarray([2.0e20, 2.0e20], dtype=jnp.float32)
+    pred = jax.jit(horde.predict)(state, features)
+    assert float(pred[0]) == 0.0
+
+    res = jax.jit(horde.update)(
+        state,
+        features,
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.asarray([1.0, 1.0], dtype=jnp.float32),
+    )
+    assert bool(res.head_updates_applied[0])
+    assert float(res.td_errors[0]) == pytest.approx(1.0, rel=1e-6)
+
+    neg_underflow_rho = np.asarray([-math.nextafter(0.0, 1.0), 1.0], dtype=np.float64)
+    res_rho = horde.update(
+        horde.init(),
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        jnp.asarray([1.0, 1.0], dtype=jnp.float32),
+        neg_underflow_rho,
+    )
+    chex.assert_trees_all_equal(res_rho.head_updates_applied, jnp.asarray([False, True]))

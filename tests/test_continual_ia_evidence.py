@@ -660,16 +660,32 @@ def test_continual_ia_config_preflights_derived_resources_without_allocating() -
 
 
 @pytest.mark.parametrize("n_demons", (1, 2, 10))
-def test_controller_resource_preflight_formulas_match_deployed_state(n_demons: int) -> None:
+def test_controller_resource_preflight_formulas_match_deployed_state(
+    n_demons: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import alberta_framework.evaluation.continual_ia as module
+
+    preflight: dict[str, int] = {}
+    require_derived_int32 = module._require_derived_int32
+
+    def record_preflight(name: str, value: int) -> None:
+        preflight[name] = value
+        require_derived_int32(name, value)
+
+    monkeypatch.setattr(module, "_require_derived_int32", record_preflight)
     budgets = condition_controller_budgets(ContinualIAConfig(n_demons=n_demons))
     recommendation = budgets["recommendation_p05"]
     augmented = budgets["augmented_predictions"]
     # Measured from the deployed state trees. The partner's differential-SARSA
     # state carries one float32 previous_discount scalar.
-    assert recommendation.state_scalars == 115 + 2 * n_demons
-    assert recommendation.state_bytes == 476 + 8 * n_demons
-    assert augmented.state_scalars == 105 + 7 * n_demons
-    assert augmented.state_bytes == 436 + 28 * n_demons
+    assert recommendation.state_scalars == 116 + 2 * n_demons
+    assert recommendation.state_bytes == 480 + 8 * n_demons
+    assert augmented.state_scalars == 106 + 7 * n_demons
+    assert augmented.state_bytes == 440 + 28 * n_demons
+    assert preflight["recommendation_controller_state_scalars"] == recommendation.state_scalars
+    assert preflight["recommendation_controller_state_bytes"] == recommendation.state_bytes
+    assert preflight["augmented_controller_state_scalars"] == augmented.state_scalars
+    assert preflight["augmented_controller_state_bytes"] == augmented.state_bytes
 
 
 @pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)

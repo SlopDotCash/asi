@@ -550,7 +550,10 @@ def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
     direct = matrix @ vector
     gap = jnp.abs(direct - stable)
     limit = jnp.maximum(jnp.abs(stable), jnp.asarray(1.0, dtype=jnp.float32))
-    use_stable = jnp.isfinite(stable) & (gap > limit * jnp.asarray(1024.0, dtype=jnp.float32))
+    use_stable = jnp.isfinite(stable) & (
+        ~jnp.isfinite(direct)
+        | ((gap / jnp.asarray(1024.0, dtype=jnp.float32)) > limit)
+    )
     return jnp.where(use_stable, stable, direct)
 
 
@@ -570,10 +573,13 @@ def _gru_step(
     r = jax.nn.sigmoid(
         _finite_product_matvec(gru.W_r, obs) + _finite_product_matvec(gru.U_r, h) + gru.b_r
     )
+    gated_h = jnp.where(r == 0.0, jnp.zeros_like(h), r * h)
     h_tilde = jnp.tanh(
-        _finite_product_matvec(gru.W_h, obs) + _finite_product_matvec(gru.U_h, r * h) + gru.b_h
+        _finite_product_matvec(gru.W_h, obs) + _finite_product_matvec(gru.U_h, gated_h) + gru.b_h
     )
-    new_h = (1.0 - z) * h + z * h_tilde
+    keep_term = jnp.where(z == 1.0, jnp.zeros_like(h), (1.0 - z) * h)
+    update_term = jnp.where(z == 0.0, jnp.zeros_like(h_tilde), z * h_tilde)
+    new_h = keep_term + update_term
     new_gru = cast(GRUPerceptionState, gru.replace(hidden=new_h))
     return new_gru, jnp.concatenate([obs, new_h], axis=0)
 
@@ -7081,9 +7087,13 @@ class PrototypeAgent:
             # The learner keeps the demon's configured trace decay so a zero
             # bootstrap can still be separated from eligibility. A stored
             # zero-discount trace would otherwise enter the next episode.
+            # A truncation, or an explicit positive GVF discount at a
+            # terminal, keeps its bootstrap above but still restarts the
+            # episode at ``next_decision_observation``, so it ends the
+            # stored trace as well.
             new_horde_state = self._horde.drop_eligibility_after_zero_discount(
                 horde_result.state,
-                horde_discounts,
+                jnp.where(execution_boundary, 0.0, horde_discounts),
                 horde_result.update_applied,
             )
             horde_tderrs = horde_result.td_errors

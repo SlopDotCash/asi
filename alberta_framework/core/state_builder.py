@@ -54,6 +54,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import Array
+from jax.extend import core as extend_core
+from jax.interpreters import ad, batching, mlir
 from jaxtyping import Bool, Float, Int, UInt
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
@@ -1564,7 +1566,29 @@ def _error_corrected_scaled_sum(
     shift = matrix_exponent + vector_exponent - row_exponent
     scaled_products = jnp.ldexp(product, shift)
     scaled_residuals = jnp.ldexp(residual, shift)
-    return jnp.sum(scaled_products, axis=-1) + jnp.sum(scaled_residuals, axis=-1)
+
+    def add_term(carry: tuple[Array, Array], term: Array) -> tuple[Array, Array]:
+        total, correction = carry
+        next_total = total + term
+        error = jnp.where(
+            jnp.abs(total) >= jnp.abs(term),
+            (total - next_total) + term,
+            (term - next_total) + total,
+        )
+        return next_total, correction + error
+
+    def add_product(
+        carry: tuple[Array, Array], terms: tuple[Array, Array]
+    ) -> tuple[tuple[Array, Array], None]:
+        return add_term(add_term(carry, terms[0]), terms[1]), None
+
+    zero = jnp.zeros(matrix.shape[:-1], dtype=matrix.dtype)
+    (total, correction), _ = jax.lax.scan(
+        add_product,
+        (zero, zero),
+        (jnp.moveaxis(scaled_products, -1, 0), jnp.moveaxis(scaled_residuals, -1, 0)),
+    )
+    return total + correction
 
 
 def _prefer_scaled_sum(scaled_direct: Array, scaled_sum: Array) -> Array:
@@ -1585,8 +1609,7 @@ def _prefer_scaled_sum(scaled_direct: Array, scaled_sum: Array) -> Array:
     return jnp.isfinite(scaled_sum) & (gap > threshold)
 
 
-@jax.custom_jvp
-def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
+def _finite_product_matvec_impl(matrix: Array, vector: Array) -> Array:
     """Return ``matrix @ vector`` unless a compiled residue corrupts a cancelling row.
 
     ``matrix`` has shape ``(..., rows, cols)`` and ``vector`` shape ``(cols,)``;
@@ -1612,33 +1635,79 @@ def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
     product even when it differs by a few ulp of the exact sum.
     """
 
-    products = matrix * vector
-    max_abs = jnp.max(jnp.abs(products), axis=-1, keepdims=True)
-    # Scale by a power of two. Dividing by max_abs compiles to a reciprocal
-    # multiply, and the reciprocal of a value above 2**126 flushes to zero.
-    _, exponent = jnp.frexp(max_abs)
-    row_exponent = exponent
+    _, matrix_exponent = jnp.frexp(matrix)
+    _, vector_exponent = jnp.frexp(vector)
+    nonzero = (matrix != 0.0) & (vector != 0.0) & jnp.isfinite(matrix) & jnp.isfinite(vector)
+    pair_exponents = jnp.where(nonzero, matrix_exponent + vector_exponent, -1024)
+    max_pair_exponent = jnp.max(pair_exponents, axis=-1, keepdims=True)
+    row_exponent = jnp.where(jnp.any(nonzero, axis=-1, keepdims=True), max_pair_exponent, 0)
     scaled_sum = _error_corrected_scaled_sum(matrix, vector, row_exponent)
     row_exponent = row_exponent[..., 0]
     stable = jnp.ldexp(scaled_sum, row_exponent)
     direct = matrix @ vector
     scaled_direct = jnp.ldexp(direct, -row_exponent)
-    use_stable = _prefer_scaled_sum(scaled_direct, scaled_sum) & jnp.isfinite(stable)
+    finite_inputs = jnp.all(jnp.isfinite(matrix), axis=-1) & jnp.all(jnp.isfinite(vector))
+    use_stable = (
+        _prefer_scaled_sum(scaled_direct, scaled_sum)
+        | (finite_inputs & ~jnp.isfinite(direct))
+    ) & jnp.isfinite(stable)
     return jnp.where(use_stable, stable, direct)
 
 
-@_finite_product_matvec.defjvp
-def _finite_product_matvec_jvp(
-    primals: tuple[Array, Array],
-    tangents: tuple[Array, Array],
-) -> tuple[Array, Array]:
-    """Differentiate the mathematical matvec without expanding fallback intermediates."""
+_finite_product_matvec_p = extend_core.Primitive("asi_finite_product_matvec")
+_finite_product_matvec_p.def_impl(_finite_product_matvec_impl)  # type: ignore[no-untyped-call]
+_finite_product_matvec_p.def_abstract_eval(  # type: ignore[no-untyped-call]
+    lambda matrix, vector: jax.core.ShapedArray(
+        matrix.shape[:-1], jnp.result_type(matrix.dtype, vector.dtype)
+    )
+)
+mlir.register_lowering(
+    _finite_product_matvec_p,
+    mlir.lower_fun(_finite_product_matvec_impl, multiple_results=False),
+)
 
-    matrix, vector = primals
-    matrix_tangent, vector_tangent = tangents
-    value = _finite_product_matvec(matrix, vector)
-    tangent = matrix_tangent @ vector + matrix @ vector_tangent
-    return value, tangent
+
+def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
+    """Apply the stable matvec with bilinear JVP and explicit mathematical adjoints."""
+    return cast(Array, _finite_product_matvec_p.bind(matrix, vector))  # type: ignore[no-untyped-call]
+
+
+def _finite_product_matvec_batch(
+    values: tuple[Array, Array], dimensions: tuple[int | None, int | None]
+) -> tuple[Array, int]:
+    matrix, vector = values
+    matrix_axis, vector_axis = dimensions
+    size = (
+        matrix.shape[matrix_axis]
+        if matrix_axis is not None
+        else vector.shape[cast(int, vector_axis)]
+    )
+    matrices = (
+        jnp.broadcast_to(matrix, (size, *matrix.shape))
+        if matrix_axis is None
+        else jnp.moveaxis(matrix, matrix_axis, 0)
+    )
+    vectors = (
+        jnp.broadcast_to(vector, (size, *vector.shape))
+        if vector_axis is None
+        else jnp.moveaxis(vector, vector_axis, 0)
+    )
+    result = jax.lax.map(
+        lambda pair: _finite_product_matvec(pair[0], pair[1]), (matrices, vectors)
+    )
+    return result, 0
+
+
+# The robust kernel branches on operand magnitudes. Register its bilinear
+# derivatives explicitly so reverse mode never transposes those branches.
+ad.defbilinear(  # type: ignore[no-untyped-call]
+    _finite_product_matvec_p,
+    lambda cotangent, matrix, vector: cotangent[..., None] * vector,
+    lambda cotangent, matrix, vector: jnp.sum(
+        matrix * cotangent[..., None], axis=tuple(range(matrix.ndim - 1))
+    ),
+)
+batching.primitive_batchers[_finite_product_matvec_p] = _finite_product_matvec_batch
 
 
 class OnlineGatedStateBuilder:
@@ -1730,7 +1799,9 @@ class OnlineGatedStateBuilder:
                 candidate_bias,
             ]
         )
-        if not bool(jnp.all(jnp.isfinite(parameters))):
+        if not isinstance(parameters, jax.core.Tracer) and not bool(
+            jnp.all(jnp.isfinite(parameters))
+        ):
             raise ValueError(
                 "initialization_scale produced non-finite parameters for the supplied key"
             )
@@ -1772,7 +1843,11 @@ class OnlineGatedStateBuilder:
         )
         gate = jax.nn.sigmoid(_finite_product_matvec(gate_weights, event) + gate_bias)
         candidate = jnp.tanh(_finite_product_matvec(candidate_weights, event) + candidate_bias)
-        return hidden + gate * (candidate - hidden)
+        return jnp.where(
+            gate == 1.0,
+            candidate,
+            jnp.where(gate == 0.0, hidden, hidden + gate * (candidate - hidden)),
+        )
 
     def _event(
         self,

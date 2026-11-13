@@ -698,3 +698,94 @@ def test_aleatoric_mean_preserves_representable_small_variance(
     np.testing.assert_allclose(
         signals.aleatoric_uncertainty, float(value), rtol=2e-6, atol=0
     )
+
+
+def test_learning_signals_ratio_overflow_saturates_without_poisoning_calibration() -> None:
+    estimator = LearningSignalEstimator(
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            variance_floor=1.0e-20,
+            max_input_magnitude=1.0e12,
+            max_predicted_variance=1.0e24,
+        )
+    )
+    state, signals = estimator.observe(
+        estimator.init(),
+        jnp.asarray([[-1.0e12], [1.0e12]], dtype=jnp.float32),
+        jnp.asarray([[0.0], [0.0]], dtype=jnp.float32),
+        jnp.asarray([1.0e12], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert float(signals.epistemic_surprise) == pytest.approx(1.0e6)
+
+    state2, signals2 = estimator.observe(
+        estimator.init(),
+        jnp.asarray([[0.0], [0.0]], dtype=jnp.float32),
+        jnp.asarray([[0.0], [0.0]], dtype=jnp.float32),
+        jnp.asarray([1.0e12], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert float(signals2.normalized_residual) == pytest.approx(1.0e6)
+    assert bool(jnp.isfinite(state2.calibration_mean))
+    assert bool(jnp.isfinite(state2.calibration_m2))
+
+    state3, signals3 = estimator.observe(
+        state2,
+        jnp.asarray([[0.0], [0.0]], dtype=jnp.float32),
+        jnp.asarray([[1.0], [1.0]], dtype=jnp.float32),
+        jnp.asarray([0.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(signals3.availability.input_valid)
+    assert int(state3.valid_count) == 2
+
+
+def test_learning_signals_boundary_loss_ema_rounding_preserves_state_validity() -> None:
+    max_loss = float.fromhex("0x1.7ffffep+1")
+    estimator = LearningSignalEstimator(
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            fast_loss_decay=0.14,
+            slow_loss_decay=0.5,
+            max_observed_loss=max_loss,
+        )
+    )
+    state = estimator.init()
+    for _ in range(3):
+        state, signals = estimator.observe(
+            state,
+            jnp.zeros((2, 1), dtype=jnp.float32),
+            jnp.ones((2, 1), dtype=jnp.float32),
+            jnp.zeros((1,), dtype=jnp.float32),
+            jnp.asarray(max_loss, dtype=jnp.float32),
+        )
+        assert bool(signals.availability.input_valid)
+        assert float(state.fast_loss_ema) <= max_loss
+        assert float(state.slow_loss_ema) <= max_loss
+    assert int(state.valid_count) == 3
+
+
+def test_learning_signals_rejects_excessive_calibration_m2_and_nonexact_types() -> None:
+    config = LearningSignalEstimatorConfig(ensemble_size=2, target_dim=1)
+    estimator = LearningSignalEstimator(config)
+    with pytest.raises(TypeError, match="LearningSignalEstimatorConfig"):
+        LearningSignalEstimator(object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="LearningSignalEstimatorState"):
+        estimator.observe(
+            object(),  # type: ignore[arg-type]
+            jnp.zeros((2, 1), dtype=jnp.float32),
+            jnp.ones((2, 1), dtype=jnp.float32),
+            jnp.zeros((1,), dtype=jnp.float32),
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+    corrupt = estimator.init().replace(
+        step_count=jnp.asarray(2, dtype=jnp.int32),
+        valid_count=jnp.asarray(2, dtype=jnp.int32),
+        calibration_count=jnp.asarray(2, dtype=jnp.int32),
+        calibration_m2=jnp.asarray(float.fromhex("0x1.fffffep+127"), dtype=jnp.float32),
+    )
+    next_state, signals = _observe_scalar(estimator, corrupt)
+    assert not bool(signals.availability.input_valid)
+    chex.assert_trees_all_equal(next_state, corrupt)

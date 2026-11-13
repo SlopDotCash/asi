@@ -200,19 +200,22 @@ def plot_learning_curves(
     from alberta_framework.utils.metrics import compute_running_mean
     from alberta_framework.utils.statistics import compute_timeseries_statistics
 
-    if ax is None:
-        fig, ax = plt.subplots()
-    else:
-        fig = cast("Figure", ax.figure)
-    # Default colors
-    default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
+    series_to_plot: list[
+        tuple[int, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ] = []
     for i, (name, agg) in enumerate(results.items()):
-        color = (colors or {}).get(name, default_colors[i % len(default_colors)])
-        label = (labels or {}).get(name, name)
-
-        # Compute smoothed mean and CI
-        metric_array = agg.metric_arrays[metric]
+        if metric not in agg.metric_arrays:
+            raise ValueError(
+                f"plot_learning_curves requires metric '{metric}' in result '{name}'"
+            )
+        metric_array = np.asarray(agg.metric_arrays[metric])
+        if (
+            metric_array.ndim != 2
+            or metric_array.shape[0] == 0
+            or metric_array.shape[1] == 0
+            or not np.all(np.isfinite(metric_array))
+        ):
+            compute_timeseries_statistics(np.asarray(metric_array, dtype=np.float64))
 
         # Smooth each seed individually, then compute statistics
         smoothed = np.array(
@@ -234,8 +237,19 @@ def plot_learning_curves(
             smoothed = smoothed[:, first_complete_window:]
 
         mean, ci_lower, ci_upper = compute_timeseries_statistics(smoothed)
-
         steps = np.arange(first_complete_window, first_complete_window + len(mean))
+        series_to_plot.append((i, name, steps, mean, ci_lower, ci_upper))
+
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = cast("Figure", ax.figure)
+    # Default colors
+    default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    for i, name, steps, mean, ci_lower, ci_upper in series_to_plot:
+        color = (colors or {}).get(name, default_colors[i % len(default_colors)])
+        label = (labels or {}).get(name, name)
         ax.plot(steps, mean, color=color, label=label, linewidth=_current_style["line_width"])
 
         if show_ci:
@@ -297,7 +311,11 @@ def plot_final_performance_bars(
     stds = [results[name].summary[metric].std for name in names]
     means_arr = np.asarray(means, dtype=np.float64)
     stds_arr = np.asarray(stds, dtype=np.float64)
-    if not np.all(np.isfinite(means_arr)) or not np.all(np.isfinite(stds_arr)):
+    if (
+        not np.all(np.isfinite(means_arr))
+        or not np.all(np.isfinite(stds_arr))
+        or bool(np.any(stds_arr < 0.0))
+    ):
         raise ValueError("plot_final_performance_bars requires finite metric means and stds")
 
     if ax is None:
@@ -445,10 +463,20 @@ def plot_hyperparameter_heatmap(
     cbar.set_label(_metric_to_label(metric))
 
     # Add value annotations
+    finite_values = data[~np.isnan(data)]
+    if finite_values.size > 0:
+        heatmap_scale = float(np.max(np.abs(finite_values)))
+        heatmap_mean = (
+            0.0
+            if heatmap_scale == 0.0
+            else float(np.mean(finite_values / heatmap_scale) * heatmap_scale)
+        )
+    else:
+        heatmap_mean = float("nan")
     for i in range(len(param1_values)):
         for j in range(len(param2_values)):
             if not np.isnan(data[i, j]):
-                text_color = "white" if data[i, j] > np.nanmean(data) else "black"
+                text_color = "white" if data[i, j] > heatmap_mean else "black"
                 ax.annotate(
                     f"{data[i, j]:.3f}",
                     (j, i),
@@ -492,22 +520,26 @@ def plot_step_size_evolution(
 
     from alberta_framework.utils.statistics import compute_timeseries_statistics
 
+    series_to_plot: list[
+        tuple[int, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ] = []
+    for i, (name, agg) in enumerate(results.items()):
+        if metric not in agg.metric_arrays:
+            continue
+
+        metric_array = agg.metric_arrays[metric]
+        mean, ci_lower, ci_upper = compute_timeseries_statistics(metric_array)
+        steps = np.arange(len(mean))
+        series_to_plot.append((i, name, steps, mean, ci_lower, ci_upper))
+
     if ax is None:
         fig, ax = plt.subplots()
     else:
         fig = cast("Figure", ax.figure)
     default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    for i, (name, agg) in enumerate(results.items()):
-        if metric not in agg.metric_arrays:
-            continue
-
+    for i, name, steps, mean, ci_lower, ci_upper in series_to_plot:
         color = (colors or {}).get(name, default_colors[i % len(default_colors)])
-        metric_array = agg.metric_arrays[metric]
-
-        mean, ci_lower, ci_upper = compute_timeseries_statistics(metric_array)
-        steps = np.arange(len(mean))
-
         ax.plot(steps, mean, color=color, label=name, linewidth=_current_style["line_width"])
         if show_ci:
             ax.fill_between(steps, ci_lower, ci_upper, color=color, alpha=0.2)
@@ -551,41 +583,44 @@ def create_comparison_figure(
         raise ImportError("matplotlib is required. Install with: pip install matplotlib")
 
     fig, axes = plt.subplots(2, 2, figsize=(7, 5.6))
+    try:
+        # Top-left: Learning curves
+        plot_learning_curves(results, metric=metric, ax=axes[0, 0])
+        axes[0, 0].set_title("Learning Curves")
 
-    # Top-left: Learning curves
-    plot_learning_curves(results, metric=metric, ax=axes[0, 0])
-    axes[0, 0].set_title("Learning Curves")
-
-    # Top-right: Final performance bars
-    plot_final_performance_bars(
-        results,
-        metric=metric,
-        significance_results=significance_results,
-        ax=axes[0, 1],
-    )
-    axes[0, 1].set_title("Final Performance")
-
-    # Bottom-left: Step-size evolution (if available)
-    has_step_sizes = any(step_size_metric in agg.metric_arrays for agg in results.values())
-    if has_step_sizes:
-        plot_step_size_evolution(results, metric=step_size_metric, ax=axes[1, 0])
-        axes[1, 0].set_title("Step-Size Evolution")
-    else:
-        axes[1, 0].text(
-            0.5,
-            0.5,
-            "Step-size data\nnot available",
-            ha="center",
-            va="center",
-            transform=axes[1, 0].transAxes,
+        # Top-right: Final performance bars
+        plot_final_performance_bars(
+            results,
+            metric=metric,
+            significance_results=significance_results,
+            ax=axes[0, 1],
         )
-        axes[1, 0].set_title("Step-Size Evolution")
+        axes[0, 1].set_title("Final Performance")
 
-    # Bottom-right: Cumulative error
-    _plot_cumulative_error(results, metric=metric, ax=axes[1, 1])
-    axes[1, 1].set_title("Cumulative Error")
+        # Bottom-left: Step-size evolution (if available)
+        has_step_sizes = any(step_size_metric in agg.metric_arrays for agg in results.values())
+        if has_step_sizes:
+            plot_step_size_evolution(results, metric=step_size_metric, ax=axes[1, 0])
+            axes[1, 0].set_title("Step-Size Evolution")
+        else:
+            axes[1, 0].text(
+                0.5,
+                0.5,
+                "Step-size data\nnot available",
+                ha="center",
+                va="center",
+                transform=axes[1, 0].transAxes,
+            )
+            axes[1, 0].set_title("Step-Size Evolution")
 
-    fig.tight_layout()
+        # Bottom-right: Cumulative error
+        _plot_cumulative_error(results, metric=metric, ax=axes[1, 1])
+        axes[1, 1].set_title("Cumulative Error")
+
+        fig.tight_layout()
+    except Exception:
+        plt.close(fig)
+        raise
     return fig
 
 
@@ -602,17 +637,37 @@ def _plot_cumulative_error(
 
     from alberta_framework.utils.statistics import compute_timeseries_statistics
 
-    default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
+    series_to_plot: list[
+        tuple[int, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ] = []
     for i, (name, agg) in enumerate(results.items()):
-        color = default_colors[i % len(default_colors)]
-        metric_array = agg.metric_arrays[metric]
+        if metric not in agg.metric_arrays:
+            raise ValueError(
+                f"_plot_cumulative_error requires metric '{metric}' in result '{name}'"
+            )
+        metric_array = np.asarray(agg.metric_arrays[metric])
+        if (
+            metric_array.ndim != 2
+            or metric_array.shape[0] == 0
+            or metric_array.shape[1] == 0
+            or not np.all(np.isfinite(metric_array))
+        ):
+            compute_timeseries_statistics(np.asarray(metric_array, dtype=np.float64))
 
-        # Compute cumulative sum for each seed
-        cumsum_array = np.cumsum(metric_array, axis=1)
+        # Accumulate in float64 so finite float32 error traces do not overflow
+        # single-precision limits before timeseries statistics are computed.
+        cumsum_array = np.cumsum(
+            np.asarray(metric_array, dtype=np.float64),
+            axis=1,
+            dtype=np.float64,
+        )
         mean, ci_lower, ci_upper = compute_timeseries_statistics(cumsum_array)
         steps = np.arange(len(mean))
+        series_to_plot.append((i, name, steps, mean, ci_lower, ci_upper))
 
+    default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    for i, name, steps, mean, ci_lower, ci_upper in series_to_plot:
+        color = default_colors[i % len(default_colors)]
         ax.plot(steps, mean, color=color, label=name, linewidth=_current_style["line_width"])
         ax.fill_between(steps, ci_lower, ci_upper, color=color, alpha=0.2)
 

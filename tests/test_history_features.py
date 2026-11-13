@@ -545,3 +545,50 @@ def test_equal_observation_preserves_history_ema_fixed_point(
         augmented, updated = extractor.step(state, observation)
     np.testing.assert_array_equal(np.asarray(updated.traces), np.asarray(state.traces))
     np.testing.assert_array_equal(np.asarray(augmented), np.asarray(observation))
+
+
+@pytest.mark.parametrize(
+    ("trace_scale", "obs_scale", "expected_scale"),
+    [
+        (1.0, 2.0, 1.25),
+        (1.0, 4.0, 1.75),
+        (-2.0, -1.0, -1.75),
+    ],
+)
+@pytest.mark.parametrize("compiled", [False, True])
+def test_unequal_near_tiny_inputs_preserve_normal_ema_under_ftz(
+    trace_scale: float,
+    obs_scale: float,
+    expected_scale: float,
+    compiled: bool,
+) -> None:
+    tiny = float(np.finfo(np.float32).tiny)
+    extractor = HistoryFeatureExtractor(raw_dim=1, decay_rates=(0.75,), include_raw=False)
+    state = HistoryFeatureState(
+        traces=jnp.asarray([[trace_scale * tiny]], dtype=jnp.float32)
+    )
+    observation = jnp.asarray([obs_scale * tiny], dtype=jnp.float32)
+    with jax.disable_jit(not compiled):
+        augmented, updated = extractor.step(state, observation)
+
+    expected = np.asarray([[expected_scale * tiny]], dtype=np.float32)
+    np.testing.assert_array_equal(np.asarray(updated.traces), expected)
+    np.testing.assert_array_equal(np.asarray(augmented), expected.reshape(-1))
+
+
+def test_from_config_validates_mapping_contract_and_supported_fields() -> None:
+    base = HistoryFeatureExtractor(raw_dim=2).to_config()
+    with pytest.raises(ValueError, match="config must be a mapping"):
+        HistoryFeatureExtractor.from_config(list(base.items()))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="config keys must be strings"):
+        HistoryFeatureExtractor.from_config({**base, 1: "bad"})  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="missing or unsupported fields"):
+        HistoryFeatureExtractor.from_config({"type": "HistoryFeatureExtractor"})
+    with pytest.raises(ValueError, match="missing or unsupported fields"):
+        HistoryFeatureExtractor.from_config({**base, "unexpected": True})
+
+    minimal = HistoryFeatureExtractor.from_config(
+        {"type": "HistoryFeatureExtractor", "raw_dim": 3}
+    )
+    assert minimal.raw_dim == 3
+    assert minimal.channels == (0, 1, 2)

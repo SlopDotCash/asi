@@ -729,3 +729,30 @@ class TestFiniteDutchTraceCancellation:
             )
             assert float(result.state.bias) == 0.0
             assert int(result.state.step_count) == 0
+
+    @pytest.mark.parametrize("bad_gamma", [-0.1, 1.1])
+    def test_out_of_range_gamma_is_rejected(self, bad_gamma: float) -> None:
+        learner = TrueOnlineTDLearner(step_size=0.1, trace_decay=0.8)
+        state = learner.init(2)
+        obs = jnp.ones((2,), dtype=jnp.float32)
+        reward = jnp.asarray(1.0, dtype=jnp.float32)
+        next_obs = jnp.ones((2,), dtype=jnp.float32)
+        result = learner.update(
+            state, obs, reward, next_obs, jnp.asarray(bad_gamma, dtype=jnp.float32)
+        )
+        assert not bool(result.update_applied)
+        assert int(result.state.step_count) == 0
+
+    def test_zero_decay_scale_avoids_stale_v_old_overflow(self) -> None:
+        learner = TrueOnlineTDLearner(step_size=0.1, trace_decay=0.0)
+        state = learner.init(1).replace(  # type: ignore[attr-defined]
+            weights=jnp.asarray([2.0e38], dtype=jnp.float32),
+            v_old=jnp.asarray(-2.0e38, dtype=jnp.float32),
+        )
+        obs = jnp.asarray([1.0], dtype=jnp.float32)
+        reward = jnp.asarray(2.0e38, dtype=jnp.float32)
+        next_obs = jnp.asarray([0.0], dtype=jnp.float32)
+        gamma = jnp.asarray(0.0, dtype=jnp.float32)
+        result = learner.update(state, obs, reward, next_obs, gamma)
+        assert bool(result.update_applied)
+        assert int(result.state.step_count) == 1

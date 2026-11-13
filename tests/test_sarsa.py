@@ -383,6 +383,84 @@ class TestSARSAUpdate:
         chex.assert_trees_all_equal(actual, expected)
         assert float(result.td_error) == 0.0
 
+    def test_gamma_zero_lambda_rejected_horde_rolls_back(self):
+        """A Horde rejection must roll back even at gamma=0, lamda>0.
+
+        The commit gate's zero-decay recovery exists only to repair
+        poisoned eligibility traces (see
+        test_zero_gamma_does_not_decay_inf_inactive_traces); it must not
+        rescue a genuine Horde rejection on a healthy state. Here an
+        overflowing candidate from a huge finite reward rejects the Horde
+        update, so the step must roll back instead of advancing while no
+        head learned the transition. The gamma > 0 regime already rolls
+        back the identical input.
+        """
+        agent = _make_agent(
+            n_actions=2,
+            hidden_sizes=(8,),
+            gamma=0.0,
+            epsilon_start=0.0,
+            lamda=0.9,
+        )
+        state = agent.init(feature_dim=3, key=jr.key(0))
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(1, dtype=jnp.int32),
+            last_observation=jnp.zeros(3, dtype=jnp.float32),
+        )
+
+        result = agent.update(
+            state,
+            reward=jnp.array(3e38, dtype=jnp.float32),
+            observation=jnp.ones(3, dtype=jnp.float32),
+            terminated=jnp.array(0.0),
+            next_action=jnp.array(0, dtype=jnp.int32),
+        )
+
+        assert int(result.state.step_count) == 0
+        assert int(result.state.last_action) == 1
+        chex.assert_trees_all_close(
+            result.state.learner_state.head_params.weights,
+            state.learner_state.head_params.weights,
+            atol=0.0,
+        )
+        chex.assert_trees_all_close(
+            result.state.learner_state.head_params.biases,
+            state.learner_state.head_params.biases,
+            atol=0.0,
+        )
+
+    def test_gamma_zero_lambda_finite_reward_still_commits(self):
+        """Removing the recovery must not stop ordinary gamma=0 learning."""
+        agent = _make_agent(
+            n_actions=2,
+            hidden_sizes=(8,),
+            gamma=0.0,
+            epsilon_start=0.0,
+            lamda=0.9,
+        )
+        state = agent.init(feature_dim=3, key=jr.key(0))
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(1, dtype=jnp.int32),
+            last_observation=jnp.zeros(3, dtype=jnp.float32),
+        )
+
+        result = agent.update(
+            state,
+            reward=jnp.array(1.0, dtype=jnp.float32),
+            observation=jnp.ones(3, dtype=jnp.float32),
+            terminated=jnp.array(0.0),
+            next_action=jnp.array(0, dtype=jnp.int32),
+        )
+
+        assert int(result.state.step_count) == 1
+        assert int(result.state.last_action) == 0
+        assert not bool(
+            jnp.array_equal(
+                result.state.learner_state.head_params.biases[1],
+                state.learner_state.head_params.biases[1],
+            )
+        )
+
     def test_terminated_no_bootstrap(self):
         """At terminal state, target = r (no bootstrapping)."""
         agent = _make_agent(n_actions=2, gamma=0.99, epsilon_start=0.0)
@@ -1771,6 +1849,75 @@ class TestSARSALambdaTraces:
         delta = np.asarray(after - before).reshape(-1)
         assert delta[0] != 0.0
         np.testing.assert_array_equal(delta[1:], 0.0)
+
+    def test_truncated_episode_does_not_leak_prediction_demon_traces(self):
+        """A truncation also ends prediction-demon traces, like a terminal does.
+
+        ``update`` clears prediction-demon traces at a terminal transition,
+        but ``run_sarsa_episode`` ends a truncated episode through
+        ``reset_control_traces``, which clears only control heads. The
+        prediction trace then survives the boundary, and the next episode's
+        first TD error credits the dead episode's features.
+        """
+        from alberta_framework import run_sarsa_episode
+
+        class _TruncatingCorridor:
+            """One-hot three-state corridor that truncates after three steps."""
+
+            def __init__(self) -> None:
+                self._t = 0
+
+            def reset(self):
+                self._t = 0
+                return np.eye(3, dtype=np.float32)[0], {}
+
+            def step(self, action: int):
+                self._t += 1
+                obs = np.eye(3, dtype=np.float32)[min(self._t, 2)]
+                return obs, 1.0, False, self._t >= 3, {}
+
+        pred_demons = [
+            GVFSpec(
+                name="pred_0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.9,
+                cumulant_index=0,
+            ),
+        ]
+        agent = _make_agent(
+            n_actions=1,
+            prediction_demons=pred_demons,
+            hidden_sizes=(),
+            gamma=0.9,
+            epsilon_start=0.0,
+            lamda=0.8,
+        )
+        state = agent.init(feature_dim=3, key=jr.key(3))
+        # Build a nonzero prediction trace with a direct update: the episode
+        # runner itself never forwards prediction cumulants.
+        obs = jnp.ones(3, dtype=jnp.float32)
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(0, dtype=jnp.int32),
+            last_observation=obs,
+        )
+        state = agent.update(
+            state,
+            jnp.array(1.0),
+            jnp.full(3, 0.5, dtype=jnp.float32),
+            jnp.array(0.0),
+            jnp.array(0, dtype=jnp.int32),
+            prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+        ).state
+        pred_w_trace, _ = state.learner_state.head_traces[1]
+        assert float(jnp.max(jnp.abs(pred_w_trace))) > 0.0
+
+        result = run_sarsa_episode(agent, state, _TruncatingCorridor(), max_steps=10)
+        assert result.num_steps == 3
+
+        w_trace, b_trace = result.state.learner_state.head_traces[1]
+        assert jnp.allclose(w_trace, 0.0), "prediction-demon w-trace leaked across truncation"
+        assert jnp.allclose(b_trace, 0.0), "prediction-demon b-trace leaked across truncation"
 
     def test_max_steps_cutoff_does_not_leak_traces_into_the_next(self):
         """Running out of ``max_steps`` also ends the episode, so traces must not survive it.

@@ -239,6 +239,69 @@ class MixedHordeLearningResult:
     updates_applied: Bool[Array, " num_steps"]
 
 
+def _restore_horde_host_clocks(
+    result: HordeUpdateResult,
+    state: MultiHeadMLPState,
+) -> HordeUpdateResult:
+    """Preserve incoming Python-float lifecycle clocks on host update calls."""
+    if isinstance(result.state.step_count, jax.core.Tracer):
+        return result
+    return cast(
+        HordeUpdateResult,
+        result.replace(  # type: ignore[attr-defined]
+            state=result.state.replace(  # type: ignore[attr-defined]
+                birth_timestamp=state.birth_timestamp,
+                uptime_s=state.uptime_s,
+            ),
+        ),
+    )
+
+
+def _restore_mixed_horde_host_clocks(
+    state: MixedHordeState,
+    reference_state: MixedHordeState,
+    *,
+    elapsed: float = 0.0,
+) -> MixedHordeState:
+    """Restore mixed and nested learner host clocks narrowed by JAX tracing."""
+    if isinstance(state.step_count, jax.core.Tracer):
+        return state
+    shared_state = state.shared_state
+    original_shared = reference_state.shared_state
+    if original_shared is not None and shared_state is not None:
+        shared_state = shared_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=original_shared.birth_timestamp,
+            uptime_s=original_shared.uptime_s,
+        )
+    independent_state = state.independent_state
+    original_independent = reference_state.independent_state
+    if original_independent is not None and independent_state is not None:
+        demon_states = tuple(
+            demon.replace(  # type: ignore[attr-defined]
+                birth_timestamp=original.birth_timestamp,
+                uptime_s=original.uptime_s,
+            )
+            for demon, original in zip(
+                independent_state.demon_states,
+                original_independent.demon_states,
+            )
+        )
+        independent_state = independent_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=original_independent.birth_timestamp,
+            uptime_s=original_independent.uptime_s,
+            demon_states=demon_states,
+        )
+    return cast(
+        MixedHordeState,
+        state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=reference_state.birth_timestamp,
+            uptime_s=reference_state.uptime_s + elapsed,
+            shared_state=shared_state,
+            independent_state=independent_state,
+        ),
+    )
+
+
 # =============================================================================
 # HordeLearner
 # =============================================================================
@@ -462,8 +525,43 @@ class HordeLearner:
         """
         return self._learner.predict(state, observation)  # type: ignore[no-any-return]
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
+        self,
+        state: MultiHeadMLPState,
+        observation: Array,
+        cumulants: Array,
+        next_observation: Array,
+    ) -> HordeUpdateResult:
+        """Update Horde given observation, cumulants, and next observation.
+
+        Computes TD targets ``r + gamma * V(s') + (1 - gamma) * z`` for each
+        demon, where ``z`` is the demon's ``terminal_reward``, then delegates
+        to ``MultiHeadMLPLearner.update()``. For gamma=0 demons, the target
+        equals the cumulant plus ``z``.
+
+        Args:
+            state: Current state
+            observation: Input feature vector, shape ``(feature_dim,)``
+            cumulants: Per-demon pseudo-rewards, shape ``(n_demons,)``.
+                NaN = inactive demon.
+            next_observation: Next feature vector, shape ``(feature_dim,)``.
+                Used for V(s') bootstrapping. For all-gamma=0 Hordes,
+                this is required but doesn't affect results.
+
+        Returns:
+            HordeUpdateResult with updated state, predictions, TD errors,
+            TD targets, and per-demon metrics
+        """
+        result = self._update_compiled(
+            state,
+            observation,
+            cumulants,
+            next_observation,
+        )
+        return _restore_horde_host_clocks(result, state)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_compiled(
         self,
         state: MultiHeadMLPState,
         observation: Array,
@@ -547,8 +645,44 @@ class HordeLearner:
             update_applied=update_applied,
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update_with_discounts(
+        self,
+        state: MultiHeadMLPState,
+        observation: Array,
+        cumulants: Array,
+        next_observation: Array,
+        discounts: Array,
+    ) -> HordeUpdateResult:
+        """Update Horde with explicit per-demon transition discounts.
+
+        This is the same TD update as :meth:`update`, except callers supply the
+        effective discount vector for this transition. It lets control adapters
+        zero the value head at episode boundaries while keeping the Horde's
+        fixed GVF metadata and per-head trace decay intact.
+
+        Args:
+            state: Current state.
+            observation: Input feature vector, shape ``(feature_dim,)``.
+            cumulants: Per-demon pseudo-rewards, shape ``(n_demons,)``.
+                NaN = inactive demon.
+            next_observation: Next feature vector, shape ``(feature_dim,)``.
+            discounts: Effective per-demon discounts for this transition,
+                shape ``(n_demons,)``.
+
+        Returns:
+            HordeUpdateResult with updated state and TD metrics.
+        """
+        result = self._update_with_discounts_compiled(
+            state,
+            observation,
+            cumulants,
+            next_observation,
+            discounts,
+        )
+        return _restore_horde_host_clocks(result, state)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_with_discounts_compiled(
         self,
         state: MultiHeadMLPState,
         observation: Array,
@@ -932,7 +1066,8 @@ class MixedHorde:
         trunk_bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         new_shared_state = state.shared_state
         new_independent_state = state.independent_state
-        update_applied = jnp.asarray(False, dtype=jnp.bool_)
+        requested = ~jnp.isnan(cumulants)
+        sub_updates_applied = jnp.asarray(True, dtype=jnp.bool_)
 
         if self._shared_horde is not None:
             idx = jnp.asarray(self._shared_indices, dtype=jnp.int32)
@@ -953,7 +1088,7 @@ class MixedHorde:
                 shared_result.head_updates_applied
             )
             trunk_bounding_metric = shared_result.trunk_bounding_metric
-            update_applied = update_applied | shared_result.update_applied
+            sub_updates_applied = sub_updates_applied & shared_result.update_applied
 
         if self._independent_horde is not None:
             idx = jnp.asarray(self._independent_indices, dtype=jnp.int32)
@@ -973,8 +1108,13 @@ class MixedHorde:
             head_updates_applied = head_updates_applied.at[idx].set(
                 independent_result.head_updates_applied
             )
-            update_applied = update_applied | independent_result.update_applied
+            sub_updates_applied = (
+                sub_updates_applied & independent_result.update_applied
+            )
 
+        update_applied = jnp.any(head_updates_applied) | (
+            jnp.all(~requested) & sub_updates_applied
+        )
         proposed_state = MixedHordeState(
             shared_state=new_shared_state,
             independent_state=new_independent_state,
@@ -987,9 +1127,14 @@ class MixedHorde:
             lambda: proposed_state,
             lambda: state,
         )
+        new_state = _restore_mixed_horde_host_clocks(new_state, state)
         return HordeUpdateResult(
-            state=new_state,
-            predictions=predictions,
+            state=new_state,  # type: ignore[arg-type]
+            predictions=jnp.where(
+                update_applied,
+                predictions,
+                jnp.zeros_like(predictions),
+            ),
             td_errors=td_errors,
             td_targets=td_targets,
             per_demon_metrics=per_demon_metrics,
@@ -1123,40 +1268,11 @@ def run_mixed_horde_learning_loop(
         head_updates_applied,
         updates_applied,
     ) = jax.lax.scan(step_fn, state, (observations, cumulants, next_observations))
+    if not isinstance(per_demon_metrics, jax.core.Tracer):
+        per_demon_metrics.block_until_ready()
     elapsed = time.time() - t0
-    # The scan traces nested learner clocks and narrows them to float32.
-    # Restore the incoming Python values. Add this scan's time to the mixed
-    # state's host uptime, not to a narrowed device value.
-    shared_state = final_state.shared_state
-    original_shared = state.shared_state
-    if original_shared is not None and shared_state is not None:
-        shared_state = shared_state.replace(  # type: ignore[attr-defined]
-            birth_timestamp=original_shared.birth_timestamp,
-            uptime_s=original_shared.uptime_s,
-        )
-    independent_state = final_state.independent_state
-    original_independent = state.independent_state
-    if original_independent is not None and independent_state is not None:
-        demon_states = tuple(
-            demon.replace(  # type: ignore[attr-defined]
-                birth_timestamp=original.birth_timestamp,
-                uptime_s=original.uptime_s,
-            )
-            for demon, original in zip(
-                independent_state.demon_states,
-                original_independent.demon_states,
-            )
-        )
-        independent_state = independent_state.replace(  # type: ignore[attr-defined]
-            birth_timestamp=original_independent.birth_timestamp,
-            uptime_s=original_independent.uptime_s,
-            demon_states=demon_states,
-        )
-    final_state = final_state.replace(  # type: ignore[attr-defined]
-        birth_timestamp=state.birth_timestamp,
-        uptime_s=state.uptime_s + elapsed,
-        shared_state=shared_state,
-        independent_state=independent_state,
+    final_state = _restore_mixed_horde_host_clocks(
+        final_state, state, elapsed=elapsed
     )
     return MixedHordeLearningResult(  # type: ignore[call-arg]
         state=final_state,
@@ -1205,6 +1321,8 @@ def run_horde_learning_loop_final_state(
         state,
         (observations, cumulants, next_observations),
     )
+    if not isinstance(final_state.step_count, jax.core.Tracer):
+        final_state.step_count.block_until_ready()
     elapsed = time.time() - t0
     # The scan carries host clocks through the traced update and narrows them
     # to float32. Restore the incoming Python values and add this scan's time
@@ -1264,6 +1382,8 @@ def run_horde_learning_loop_batched(
         batched_head_updates_applied,
         batched_updates_applied,
     ) = jax.vmap(single_run)(keys)
+    if not isinstance(batched_metrics, jax.core.Tracer):
+        batched_metrics.block_until_ready()
     elapsed = time.time() - t0
     batched_states = batched_states.replace(  # type: ignore[attr-defined]
         uptime_s=batched_states.uptime_s + elapsed

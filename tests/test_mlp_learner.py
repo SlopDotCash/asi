@@ -1951,3 +1951,40 @@ class TestBaselineOptimizerLearning:
 
         assert bool(result.update_applied)
         chex.assert_tree_all_finite(result.state.params)
+
+    def test_reset_dormant_neurons_preserves_zeroed_columns_across_adjacent_layers(self):
+        learner = MLPLearner(hidden_sizes=(4, 4), sparsity=0.0)
+        state = learner.init(feature_dim=3, key=jr.key(21))
+        planted_utilities = (
+            jnp.asarray([0.0, 1.0, 1.0, 1.0], dtype=jnp.float32),
+            jnp.asarray([0.0, 0.0, jnp.nan, 0.0], dtype=jnp.float32),
+        )
+        planted_weights = (
+            state.params.weights[0],
+            jnp.ones_like(state.params.weights[1]),
+            jnp.ones_like(state.params.weights[2]),
+        )
+        state = state.replace(
+            params=state.params.replace(weights=planted_weights),
+            neuron_utility=planted_utilities,
+        )
+        reset_state = learner.reset_dormant_neurons(
+            state, threshold=0.1, key=jr.key(22)
+        )
+        assert jnp.all(reset_state.params.weights[1][:, 0] == 0.0)
+        assert jnp.all(reset_state.params.weights[2] == 0.0)
+        assert jnp.all(reset_state.neuron_utility[1] == 0.0)
+
+    def test_mlp_learning_loop_rejects_normalizer_tracking_without_normalizer(self):
+        learner = MLPLearner(hidden_sizes=(4,), normalizer=None)
+        stream = RandomWalkStream(feature_dim=3)
+        with pytest.raises(
+            ValueError, match="normalizer_tracking requires a learner with a normalizer"
+        ):
+            run_mlp_learning_loop(
+                learner,
+                stream,
+                num_steps=4,
+                key=jr.key(23),
+                normalizer_tracking=NormalizerTrackingConfig(interval=2),
+            )

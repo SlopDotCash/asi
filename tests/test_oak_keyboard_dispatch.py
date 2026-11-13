@@ -431,6 +431,92 @@ def test_oak_keyboard_dispatch_preserves_large_finite_chord_scale() -> None:
         assert int(result.decision.replacement.effective_action) == 1
 
 
+def test_oak_keyboard_dispatch_preserves_tiny_finite_chord_scale() -> None:
+    agent = OaKAgent(OaKConfig(stomp=_config()))
+    outer_state = agent.init(jr.key(19))
+    stomp_state = _option_owned_state(agent.stomp_agent)
+    q_weights = stomp_state.option_policies.q_weights
+    q_weights = q_weights.at[0].set(jnp.array([[0.0, 0.0], [4.0, 0.0]], dtype=jnp.float32))
+    q_weights = q_weights.at[1].set(jnp.array([[0.0, 0.0], [-1.0, 0.0]], dtype=jnp.float32))
+    state = outer_state.replace(
+        stomp_state=stomp_state.replace(
+            option_policies=stomp_state.option_policies.replace(q_weights=q_weights)
+        )
+    )
+    unit_chord = jnp.ones((2,), dtype=jnp.float32)
+    tiny_chord = jnp.full((2,), 1e-30, dtype=jnp.float32)
+    assert bool(jnp.all(jnp.isfinite(tiny_chord)))
+    assert float(jnp.sum(jnp.abs(tiny_chord))) < 1e-8
+
+    expected_q = agent.keyboard_q_values(state, OBS, unit_chord)
+    chex.assert_trees_all_equal(agent.keyboard_q_values(state, OBS, tiny_chord), expected_q)
+    eager = agent.dispatch_keyboard_policy(
+        state,
+        OBS,
+        tiny_chord,
+        jnp.ones((2,), dtype=jnp.bool_),
+    )
+    compiled = jax.jit(agent.dispatch_keyboard_policy)(
+        state,
+        OBS,
+        tiny_chord,
+        jnp.ones((2,), dtype=jnp.bool_),
+    )
+
+    for result in (eager, compiled):
+        assert bool(result.decision.proposal.available)
+        chex.assert_trees_all_equal(result.decision.proposal.q_values, expected_q)
+        assert int(result.decision.proposal.action) == 1
+        assert int(result.decision.replacement.effective_action) == 1
+    # The same chord direction must stay greedy under epsilon-greedy
+    # selection: before the fix the 1e-6 Gumbel tie-break swamped the
+    # shrunken Q-values and the action was effectively random.
+    for seed in range(20):
+        action, _ = agent.keyboard_action(state, OBS, tiny_chord, jr.key(seed), epsilon=0.0)
+        assert int(action) == 1
+
+
+def test_oak_keyboard_tiny_chord_after_l2_shrinkage() -> None:
+    from alberta_framework.core.oak import (
+        KeyboardChordLearnerConfig,
+        init_keyboard_chord_learner,
+        update_keyboard_chord_learner,
+    )
+
+    agent = OaKAgent(OaKConfig(stomp=_config()))
+    outer_state = agent.init(jr.key(19))
+    stomp_state = _option_owned_state(agent.stomp_agent)
+    q_weights = stomp_state.option_policies.q_weights
+    q_weights = q_weights.at[0].set(jnp.array([[0.0, 0.0], [4.0, 0.0]], dtype=jnp.float32))
+    q_weights = q_weights.at[1].set(jnp.array([[0.0, 0.0], [-1.0, 0.0]], dtype=jnp.float32))
+    state = outer_state.replace(
+        stomp_state=stomp_state.replace(
+            option_policies=stomp_state.option_policies.replace(q_weights=q_weights)
+        )
+    )
+    learner_config = KeyboardChordLearnerConfig(
+        n_options=2,
+        step_size=0.1,
+        baseline_decay=0.9,
+        l2_penalty=0.5,
+        max_norm=10.0,
+    )
+    learner_state = init_keyboard_chord_learner(learner_config)
+    for _ in range(400):
+        learner_state = update_keyboard_chord_learner(
+            learner_config,
+            learner_state,
+            jnp.array([1.0, 0.0], dtype=jnp.float32),
+            jnp.float32(0.0),
+        )
+    assert float(jnp.sum(jnp.abs(learner_state.chord_vector))) < 1e-8
+    expected_q = agent.keyboard_q_values(state, OBS, jnp.ones((2,), dtype=jnp.float32))
+    chex.assert_trees_all_equal(
+        agent.keyboard_q_values(state, OBS, learner_state.chord_vector),
+        expected_q,
+    )
+
+
 def test_oak_keyboard_dispatch_rejects_nonfinite_or_zero_chord_without_rng_change() -> None:
     agent = OaKAgent(OaKConfig(stomp=_config()))
     outer_state = agent.init(jr.key(23))

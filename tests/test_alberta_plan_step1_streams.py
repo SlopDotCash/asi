@@ -632,3 +632,75 @@ class TestStep1StreamsValidation:
                 noise_in_target=value,  # type: ignore[arg-type]
             )
         assert HostileBoolLike.repr_calls == 0
+
+
+def test_xdist_shift_enforces_exclusive_scale_max_at_adjacent_float32_bounds() -> None:
+    scale_min = 1.0
+    scale_max = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
+    stream = XDistShiftStream(
+        feature_dim=16,
+        num_relevant=2,
+        scale_change_interval=1,
+        scale_min=scale_min,
+        scale_max=scale_max,
+        noise_in_target=False,
+    )
+    state = stream.init(jr.key(0))
+    assert bool(jnp.all(state.current_scales >= np.float32(scale_min)))
+    assert bool(jnp.all(state.current_scales < np.float32(scale_max)))
+    _, next_state = jax.jit(stream.step)(state, jnp.int32(0))
+    assert bool(jnp.all(next_state.current_scales >= np.float32(scale_min)))
+    assert bool(jnp.all(next_state.current_scales < np.float32(scale_max)))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_step1_streams_preserve_cancelling_target_sums_and_state_contracts(
+    compiled: bool,
+) -> None:
+    astream = AlbertaPlanStep1Stream(
+        feature_dim=2,
+        num_relevant=2,
+        drift_rate_w=0.0,
+        drift_rate_b=0.0,
+        noise_std=0.0,
+        feature_std=10.0,
+    )
+    astate = astream.init(jr.key(0))
+    ts0, _ = astream.step(astate, jnp.int32(0))
+    x0, x1 = float(ts0.observation[0]), float(ts0.observation[1])
+    planted_a = astate.replace(
+        true_weights=jnp.asarray([2.0e38 / x0, 2.0e38 / x1], dtype=jnp.float32),
+        true_bias=jnp.float32(-2.0e38),
+    )
+
+    xstream = XDistShiftStream(
+        feature_dim=4,
+        num_relevant=3,
+        noise_in_target=False,
+    )
+    xstate = xstream.init(jr.key(0))
+    ts_x0, _ = xstream.step(xstate, jnp.int32(0))
+    xx0 = float(ts_x0.observation[0])
+    xx1 = float(ts_x0.observation[1])
+    xx2 = float(ts_x0.observation[2])
+    planted_x = xstate.replace(
+        true_weights=jnp.asarray(
+            [2.0e38 / xx0, 2.0e38 / xx1, -2.0e38 / xx2, 0.0], dtype=jnp.float32
+        )
+    )
+
+    with jax.disable_jit(not compiled):
+        ts_a, _ = astream.step(planted_a, jnp.int32(0))
+        ts_x, _ = xstream.step(planted_x, jnp.int32(0))
+
+    np.testing.assert_allclose(
+        np.asarray(ts_a.target), np.asarray([2.0e38], dtype=np.float32), rtol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(ts_x.target), np.asarray([2.0e38], dtype=np.float32), rtol=1e-5
+    )
+
+    with pytest.raises(TypeError, match="scalar typed Threefry JAX key"):
+        astream.step(astate.replace(key=jr.PRNGKey(0)), jnp.int32(0))
+    with pytest.raises(ValueError, match="state.true_weights"):
+        xstream.step(xstate.replace(true_weights=jnp.zeros((2,), dtype=jnp.float32)), jnp.int32(0))

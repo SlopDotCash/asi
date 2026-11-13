@@ -29,6 +29,7 @@ _ACTUAL_DECAY_TYPES = frozenset(
     }
 )
 _NORMALIZATION_MODES = frozenset({"none", "age", "uncertainty", "uncertainty_age"})
+_FLOAT32_MAX = float(np.finfo(np.float32).max)
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -148,10 +149,19 @@ def trace_decay_from_half_life(half_life: float | Array) -> Float[Array, ""]:
     if not isinstance(half_life, Array):
         half_life = validated_float32_scalar("half_life", half_life, lower=0.0)
     half_life_arr = jnp.asarray(half_life, dtype=jnp.float32)
+    raw_decay = jnp.power(jnp.array(0.5, dtype=jnp.float32), 1.0 / half_life_arr)
+    max_decay = jnp.nextafter(
+        jnp.array(1.0, dtype=jnp.float32), jnp.array(0.0, dtype=jnp.float32)
+    )
+    bounded_decay = jnp.where(
+        jnp.isfinite(half_life_arr),
+        jnp.minimum(raw_decay, max_decay),
+        raw_decay,
+    )
     return jnp.where(
         half_life_arr <= 0.0,
         jnp.array(0.0, dtype=jnp.float32),
-        jnp.power(jnp.array(0.5, dtype=jnp.float32), 1.0 / half_life_arr),
+        bounded_decay,
     )
 
 
@@ -190,15 +200,16 @@ def one_step_output_loss_reduction_with_diagnostics(
     )
     step_size = jnp.asarray(step_size_output, dtype=jnp.float32)
     count = jnp.asarray(active_count, dtype=jnp.float32)
-    delta_prediction = (
-        step_size
-        * errors[:, None]
-        * (feature_values[None, :] ** 2)
+    active_errors = jnp.where(active_mask, errors, 0.0)
+    delta_weight = (
+        _skip_zero_scale(step_size, active_errors[:, None])
+        * feature_values[None, :]
         / jnp.maximum(count, 1.0)
     )
+    delta_prediction = _skip_zero_scale(delta_weight, feature_values[None, :])
     # Subtract before multiplying: both expanded products can overflow even
     # when their difference is a representable loss reduction.
-    reduction = delta_prediction * (errors[:, None] - 0.5 * delta_prediction)
+    reduction = delta_prediction * (active_errors[:, None] - 0.5 * delta_prediction)
     reduction = jnp.maximum(reduction, 0.0)
     proposed = jnp.where(active_mask[:, None], reduction, 0.0)
     inputs_valid = (
@@ -571,11 +582,37 @@ def normalize_future_utility_signal(
         direct_second_moment,
         recovered_second_moment,
     )
+    # A second moment no float32 can hold (a finite signal near 1e30 with a
+    # small innovation weight) must not poison the stored history: saturate
+    # it so the next step still normalizes. Only positive infinity is
+    # saturated; NaN inputs stay visible as NaN.
+    stored_second_moment = jnp.where(
+        jnp.isposinf(new_second_moment),
+        jnp.full_like(new_second_moment, _FLOAT32_MAX),
+        new_second_moment,
+    )
     normalized = signal
     if mode in {"uncertainty", "uncertainty_age"}:
-        normalized = normalized / jnp.sqrt(new_second_moment + 1e-6)
+        direct_normalized = signal / jnp.sqrt(new_second_moment + 1e-6)
+        # The direct quotient collapses to zero once the moment overflows,
+        # even though signal / RMS stays representable. Recover it in a
+        # rescaled domain: divide numerator and denominator by the peak so
+        # every term stays in [0, 1]. Only a finite history can overflow
+        # through the current innovation; an already-infinite history keeps
+        # the limiting zero.
+        history_rms = jnp.sqrt(decayed_second_moment)
+        peak = jnp.maximum(jnp.abs(signal), history_rms)
+        safe_peak = jnp.where(peak > 0.0, peak, jnp.ones_like(peak))
+        scaled_signal = signal / safe_peak
+        scaled_rms = history_rms / safe_peak
+        scaled_moment = scaled_rms * scaled_rms + innovation_weight * scaled_signal * scaled_signal
+        scaled_normalized = scaled_signal / jnp.sqrt(scaled_moment)
+        recoverable = (
+            jnp.isposinf(new_second_moment) & jnp.isfinite(decayed_second_moment) & (peak > 0.0)
+        )
+        normalized = jnp.where(recoverable, scaled_normalized, direct_normalized)
 
-    return normalized, new_second_moment
+    return normalized, stored_second_moment
 
 
 def bias_correct_future_utility(

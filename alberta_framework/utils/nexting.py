@@ -259,46 +259,87 @@ def multi_channel_horizon_returns(
 def _validate_rmse_inputs(
     predictions: Float[Array, "T H"],
     forward_returns: Float[Array, "T H"],
-) -> int:
+) -> tuple[Array, Array, int]:
+    pred_arr = (
+        predictions
+        if isinstance(predictions, (jax.core.Tracer, jax.Array))
+        else jnp.asarray(predictions)
+    )
+    ret_arr = (
+        forward_returns
+        if isinstance(forward_returns, (jax.core.Tracer, jax.Array))
+        else jnp.asarray(forward_returns)
+    )
     if (
-        predictions.ndim != 2
-        or forward_returns.ndim != 2
-        or predictions.shape != forward_returns.shape
-        or 0 in predictions.shape
+        pred_arr.ndim != 2
+        or ret_arr.ndim != 2
+        or pred_arr.shape != ret_arr.shape
+        or 0 in pred_arr.shape
     ):
         raise ValueError(
             "predictions and forward_returns must be rank-2 arrays with identical "
             "nonempty shape (T, H) "
-            f"(got predictions.shape={predictions.shape}, "
-            f"forward_returns.shape={forward_returns.shape})"
+            f"(got predictions.shape={pred_arr.shape}, "
+            f"forward_returns.shape={ret_arr.shape})"
         )
-    return predictions.shape[0]
+    for name, arr in (("predictions", pred_arr), ("forward_returns", ret_arr)):
+        if jnp.issubdtype(arr.dtype, jnp.bool_):
+            raise ValueError(f"{name} must not be boolean")
+        if jnp.issubdtype(arr.dtype, jnp.complexfloating):
+            raise ValueError(f"{name} must be real-valued")
+    compute_dtype = jnp.result_type(pred_arr.dtype, ret_arr.dtype)
+    if not jnp.issubdtype(compute_dtype, jnp.floating):
+        compute_dtype = jnp.float32
+    return (
+        pred_arr.astype(compute_dtype),
+        ret_arr.astype(compute_dtype),
+        pred_arr.shape[0],
+    )
 
 
-def _scaled_rmse_terms(errors: Array) -> tuple[Array, Array, Array]:
+def _scaled_rmse_terms(
+    predictions: Array,
+    forward_returns: Array,
+) -> tuple[Array, Array, Array]:
     """Return power-of-two scale, scaled errors, and their RMS."""
+    input_scale = jnp.maximum(
+        jnp.max(jnp.abs(predictions), axis=0),
+        jnp.max(jnp.abs(forward_returns), axis=0),
+    )
+    input_shift = jnp.where(input_scale > 1.0e38, jnp.int32(1), jnp.int32(0))
+    errors = jnp.ldexp(predictions, -input_shift) - jnp.ldexp(
+        forward_returns, -input_shift
+    )
     scale = jnp.max(jnp.abs(errors), axis=0)
     _, exponent = jnp.frexp(scale)
     scaled_errors = jnp.ldexp(errors, -exponent)
     scaled_rmse = jnp.sqrt(jnp.mean(scaled_errors**2, axis=0))
-    return exponent, scaled_errors, scaled_rmse
+    total_exponent = jnp.where(
+        scaled_rmse > 0.0, exponent + input_shift, jnp.int32(0)
+    )
+    return total_exponent, scaled_errors, scaled_rmse
 
 
 @jax.custom_jvp
-def _finite_rmse(errors: Array) -> Array:
+def _finite_rmse(predictions: Array, forward_returns: Array) -> Array:
     """Compute finite-column RMSE without overflow or reciprocal underflow."""
-    exponent, _, scaled_rmse = _scaled_rmse_terms(errors)
+    exponent, _, scaled_rmse = _scaled_rmse_terms(predictions, forward_returns)
     return jnp.ldexp(scaled_rmse, exponent)
 
 
 @_finite_rmse.defjvp
 def _finite_rmse_jvp(
-    primals: tuple[Array],
-    tangents: tuple[Array],
+    primals: tuple[Array, Array],
+    tangents: tuple[Array, Array],
 ) -> tuple[Array, Array]:
     """Differentiate in the scaled domain so huge finite gradients stay valid."""
-    (errors,), (errors_dot,) = primals, tangents
-    exponent, scaled_errors, scaled_rmse = _scaled_rmse_terms(errors)
+    (predictions, forward_returns), (predictions_dot, returns_dot) = (
+        primals,
+        tangents,
+    )
+    exponent, scaled_errors, scaled_rmse = _scaled_rmse_terms(
+        predictions, forward_returns
+    )
     rmse = jnp.ldexp(scaled_rmse, exponent)
     # Zero is a valid subgradient for an all-zero column and avoids a 0 / 0.
     safe_scaled_rmse = jnp.where(
@@ -307,8 +348,10 @@ def _finite_rmse_jvp(
         jnp.ones_like(scaled_rmse),
     )
     # Normalize derivative weights before summing finite tangent contributions.
-    weights = scaled_errors / safe_scaled_rmse / errors.shape[0]
-    rmse_dot = jnp.sum(weights * errors_dot, axis=0)
+    weights = scaled_errors / safe_scaled_rmse / predictions.shape[0]
+    rmse_dot = jnp.sum(weights * predictions_dot, axis=0) - jnp.sum(
+        weights * returns_dot, axis=0
+    )
     return rmse, rmse_dot
 
 
@@ -339,14 +382,19 @@ def _window_slice(values: Array, start: Array, window_size: int) -> Array:
     return jax.lax.dynamic_slice_in_dim(values, start, window_size, axis=0)
 
 
-@partial(jax.custom_jvp, nondiff_argnums=(1,))
-def _finite_running_rmse(errors: Array, window_size: int) -> Array:
+@partial(jax.custom_jvp, nondiff_argnums=(2,))
+def _finite_running_rmse(
+    predictions: Array,
+    forward_returns: Array,
+    window_size: int,
+) -> Array:
     """Compute a finite sliding RMSE with an independent scale per window."""
-    starts = jnp.arange(errors.shape[0] - window_size + 1, dtype=jnp.int32)
+    starts = jnp.arange(predictions.shape[0] - window_size + 1, dtype=jnp.int32)
 
     def per_window(start: Array) -> Array:
-        window = _window_slice(errors, start, window_size)
-        exponent, _, scaled_rmse = _scaled_rmse_terms(window)
+        pred_window = _window_slice(predictions, start, window_size)
+        ret_window = _window_slice(forward_returns, start, window_size)
+        exponent, _, scaled_rmse = _scaled_rmse_terms(pred_window, ret_window)
         return jnp.ldexp(scaled_rmse, exponent)
 
     return cast(Array, jax.lax.map(per_window, starts))
@@ -355,16 +403,23 @@ def _finite_running_rmse(errors: Array, window_size: int) -> Array:
 @_finite_running_rmse.defjvp
 def _finite_running_rmse_jvp(
     window_size: int,
-    primals: tuple[Array],
-    tangents: tuple[Array],
+    primals: tuple[Array, Array],
+    tangents: tuple[Array, Array],
 ) -> tuple[Array, Array]:
-    (errors,), (errors_dot,) = primals, tangents
-    starts = jnp.arange(errors.shape[0] - window_size + 1, dtype=jnp.int32)
+    (predictions, forward_returns), (predictions_dot, returns_dot) = (
+        primals,
+        tangents,
+    )
+    starts = jnp.arange(predictions.shape[0] - window_size + 1, dtype=jnp.int32)
 
     def per_window(start: Array) -> tuple[Array, Array]:
-        error_window = _window_slice(errors, start, window_size)
-        tangent_window = _window_slice(errors_dot, start, window_size)
-        exponent, scaled_errors, scaled_rmse = _scaled_rmse_terms(error_window)
+        pred_window = _window_slice(predictions, start, window_size)
+        ret_window = _window_slice(forward_returns, start, window_size)
+        pred_tangent = _window_slice(predictions_dot, start, window_size)
+        ret_tangent = _window_slice(returns_dot, start, window_size)
+        exponent, scaled_errors, scaled_rmse = _scaled_rmse_terms(
+            pred_window, ret_window
+        )
         running = jnp.ldexp(scaled_rmse, exponent)
         safe_scaled_rmse = jnp.where(
             scaled_rmse > 0.0,
@@ -372,7 +427,9 @@ def _finite_running_rmse_jvp(
             jnp.ones_like(scaled_rmse),
         )
         weights = scaled_errors / safe_scaled_rmse / window_size
-        running_dot = jnp.sum(weights * tangent_window, axis=0)
+        running_dot = jnp.sum(weights * pred_tangent, axis=0) - jnp.sum(
+            weights * ret_tangent, axis=0
+        )
         return running, running_dot
 
     return cast(tuple[Array, Array], jax.lax.map(per_window, starts))
@@ -403,7 +460,9 @@ def per_horizon_rmse(
     """
     if type(burn_in) is not int:
         raise ValueError("burn_in must be a built-in int")
-    n_steps = _validate_rmse_inputs(predictions, forward_returns)
+    predictions, forward_returns, n_steps = _validate_rmse_inputs(
+        predictions, forward_returns
+    )
     if not 0 <= burn_in < n_steps:
         raise ValueError(
             f"burn_in must satisfy 0 <= burn_in < n_steps "
@@ -412,23 +471,36 @@ def per_horizon_rmse(
     if burn_in:
         predictions = predictions[burn_in:]
         forward_returns = forward_returns[burn_in:]
-    errors = predictions - forward_returns
 
     # Scale before squaring so large, finite float32 errors do not overflow.
     # Mask non-finite columns before every arithmetic operation, and divide by
     # one for all-zero columns.  This keeps debug/checkify modes free of
     # discarded overflow and 0/0 operations while retaining NaN/Inf diagnostics
     # in the final result.
-    finite_columns = jnp.all(jnp.isfinite(errors), axis=0)
-    safe_errors = jnp.where(finite_columns[None, :], errors, jnp.zeros_like(errors))
+    finite_inputs = jnp.isfinite(predictions) & jnp.isfinite(forward_returns)
+    finite_columns = jnp.all(finite_inputs, axis=0)
+    safe_predictions = jnp.where(
+        finite_columns[None, :], predictions, jnp.zeros_like(predictions)
+    )
+    safe_returns = jnp.where(
+        finite_columns[None, :], forward_returns, jnp.zeros_like(forward_returns)
+    )
     # Arbitrary division by a near-max float32 scale can lower to a reciprocal
     # that underflows to zero.  ldexp performs exact power-of-two scaling and
     # keeps the normalized magnitudes in range without that reciprocal.
-    stable_rmse = _finite_rmse(safe_errors)
+    stable_rmse = _finite_rmse(safe_predictions, safe_returns)
     # A maximum absolute error carries the desired diagnostic: NaN if any
     # error is NaN, otherwise Inf if any error is infinite.  Deriving it from
     # the input avoids constructing discarded NaN/Inf literals on finite calls.
-    nonfinite_rmse = jnp.max(jnp.abs(errors), axis=0)
+    nonfinite_predictions = jnp.where(
+        finite_columns[None, :], jnp.zeros_like(predictions), predictions
+    )
+    nonfinite_returns = jnp.where(
+        finite_columns[None, :], jnp.zeros_like(forward_returns), forward_returns
+    )
+    nonfinite_rmse = jnp.max(
+        jnp.abs(nonfinite_predictions - nonfinite_returns), axis=0
+    )
     return jnp.where(finite_columns, stable_rmse, nonfinite_rmse)
 
 
@@ -460,16 +532,31 @@ def per_horizon_running_rmse(
     """
     if type(window_size) is not int:
         raise ValueError("window_size must be a built-in int")
-    n_steps = _validate_rmse_inputs(predictions, forward_returns)
+    predictions, forward_returns, n_steps = _validate_rmse_inputs(
+        predictions, forward_returns
+    )
     if not 1 <= window_size <= n_steps:
         raise ValueError(
             f"window_size must satisfy 1 <= window_size <= n_steps "
             f"(got window_size={window_size}, n_steps={n_steps})"
         )
-    errors = predictions - forward_returns
-    finite_errors = jnp.isfinite(errors)
-    safe_errors = jnp.where(finite_errors, errors, jnp.zeros_like(errors))
-    stable_windows = _finite_running_rmse(safe_errors, window_size)
+    finite_errors = jnp.isfinite(predictions) & jnp.isfinite(forward_returns)
+    safe_predictions = jnp.where(
+        finite_errors, predictions, jnp.zeros_like(predictions)
+    )
+    safe_returns = jnp.where(
+        finite_errors, forward_returns, jnp.zeros_like(forward_returns)
+    )
+    stable_windows = _finite_running_rmse(
+        safe_predictions, safe_returns, window_size
+    )
+    nonfinite_predictions = jnp.where(
+        finite_errors, jnp.zeros_like(predictions), predictions
+    )
+    nonfinite_returns = jnp.where(
+        finite_errors, jnp.zeros_like(forward_returns), forward_returns
+    )
+    errors = nonfinite_predictions - nonfinite_returns
     finite_counts = _sliding_sum(finite_errors.astype(jnp.int32), window_size)
     finite_windows = finite_counts == window_size
     nan_counts = _sliding_sum(jnp.isnan(errors).astype(jnp.int32), window_size)

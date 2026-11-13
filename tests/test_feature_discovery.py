@@ -33,9 +33,11 @@ from alberta_framework.core.future_utility import (
     trace_output_loss_reduction,
 )
 from alberta_framework.core.interaction_features import (
+    CURATION_CANDIDATE_INELIGIBLE_RANK,
     RELEVANCE_PROBE_MODE_CONDITIONAL_V1,
     RELEVANCE_PROBE_MODE_TARGET_ONLY_V1,
     InteractionCurationPriorityOverride,
+    _exact_json_equal,
     load_interaction_feature_checkpoint,
     save_interaction_feature_checkpoint,
 )
@@ -1088,6 +1090,89 @@ def test_curation_priority_override_controls_candidate_refresh_argmin() -> None:
     assert int(random.curation_selected_refresh_candidate) == 1
 
 
+def test_curation_priority_override_ineligible_candidate_is_not_refreshed() -> None:
+    """An override-ineligible candidate survives candidate refresh.
+
+    The ineligible sentinel excludes a candidate from curation selection.
+    Refresh is a candidate deletion, so it must pick the worst *eligible*
+    candidate; selecting by argmin over the raw ranks instead hands the
+    -3.4e38 sentinel to the refresh and destroys the protected archive entry.
+    """
+    learner = FixedBudgetInteractionLearner(
+        n_features=1,
+        n_tasks=1,
+        step_size_output=0.0,
+        replacement_interval=1,
+        min_feature_age=0,
+        candidate_count=2,
+        candidate_min_age=100,
+        refresh_candidates=True,
+        refresh_promoted_candidate=False,
+        use_obgd=False,
+    )
+    state = learner.init(feature_dim=4, key=jr.key(704)).replace(
+        feature_left=jnp.asarray((0,), dtype=jnp.int32),
+        feature_right=jnp.asarray((1,), dtype=jnp.int32),
+        ages=jnp.asarray((5,), dtype=jnp.int32),
+        candidate_left=jnp.asarray((1, 2), dtype=jnp.int32),
+        candidate_right=jnp.asarray((3, 3), dtype=jnp.int32),
+        candidate_utilities=jnp.asarray((0.0, 10.0), dtype=jnp.float32),
+        candidate_ages=jnp.asarray((0, 0), dtype=jnp.int32),
+    )
+    observation = jnp.ones((4,), dtype=jnp.float32)
+    target = jnp.zeros((1,), dtype=jnp.float32)
+
+    ranks = InteractionCurationPriorityOverride(
+        enabled=jnp.asarray(True, dtype=jnp.bool_),
+        active_ranks=jnp.asarray((0.0,), dtype=jnp.float32),
+        candidate_ranks=jnp.asarray(
+            (0.0, CURATION_CANDIDATE_INELIGIBLE_RANK), dtype=jnp.float32
+        ),
+    )
+    result = learner.update(
+        state,
+        observation,
+        target,
+        curation_priority_override=ranks,
+    )
+    compiled = jax.jit(learner.update)(
+        state,
+        observation,
+        target,
+        curation_priority_override=ranks,
+    )
+    chex.assert_trees_all_equal(result, compiled)
+    assert int(result.promoted_candidate) == -1
+    assert int(result.refreshed_candidate) == 0
+    assert int(result.curation_selected_refresh_candidate) == 0
+    assert int(result.state.candidate_left[1]) == 2
+    assert int(result.state.candidate_right[1]) == 3
+    # Ordinary utility EMA decay still applies; refresh would have zeroed it.
+    assert float(result.state.candidate_utilities[1]) > 9.0
+
+    all_ineligible = ranks.replace(
+        candidate_ranks=jnp.asarray(
+            (
+                CURATION_CANDIDATE_INELIGIBLE_RANK,
+                CURATION_CANDIDATE_INELIGIBLE_RANK,
+            ),
+            dtype=jnp.float32,
+        )
+    )
+    untouched = learner.update(
+        state,
+        observation,
+        target,
+        curation_priority_override=all_ineligible,
+    )
+    assert int(untouched.refreshed_candidate) == -1
+    assert int(untouched.curation_selected_refresh_candidate) == -1
+    assert bool(jnp.array_equal(untouched.state.candidate_left, state.candidate_left))
+    assert bool(jnp.array_equal(untouched.state.candidate_right, state.candidate_right))
+    # Utilities still decay by the ordinary EMA; refresh would have zeroed them.
+    assert float(untouched.state.candidate_utilities[1]) > 9.0
+
+
 def test_nonfinite_curation_priority_override_rejects_atomically_in_all_modes() -> None:
     learner = _conditional_probe_learner()
     state = learner.init(feature_dim=3, key=jr.key(705))
@@ -1421,6 +1506,61 @@ def test_probe_mode_config_and_checkpoint_round_trip_fail_closed(
     save_checkpoint(updated, invalid_path, metadata=invalid_metadata)
     with pytest.raises(ValueError, match="relevance_probe_mode"):
         load_interaction_feature_checkpoint(invalid_path)
+
+
+def test_interaction_feature_checkpoint_rejects_float_aliased_accounting(
+    tmp_path: Path,
+) -> None:
+    """The resource-contract check must reject a float-aliased accounting scalar."""
+    learner = FixedBudgetInteractionLearner(
+        n_features=2,
+        n_tasks=1,
+        candidate_count=1,
+        utility_retention_grace_steps=8,
+        utility_evidence_threshold=0.1,
+        evidence_gated_active_output_memory=True,
+        independent_relevance_probe=True,
+        relevance_probe_mode=RELEVANCE_PROBE_MODE_TARGET_ONLY_V1,
+        scale_robust=True,
+    )
+    state = learner.init(feature_dim=3, key=jr.key(706))
+    updated = learner.update(
+        state,
+        jnp.asarray((0.5, -1.0, 2.0), dtype=jnp.float32),
+        jnp.asarray((0.75,), dtype=jnp.float32),
+    ).state
+    original_path = tmp_path / "original"
+    save_interaction_feature_checkpoint(learner, updated, original_path, feature_dim=3)
+    # Negative control: the untampered checkpoint still loads.
+    loaded_learner, loaded_state = load_interaction_feature_checkpoint(original_path)
+    assert loaded_learner is not None and loaded_state is not None
+    metadata = load_checkpoint_metadata(original_path)
+
+    tampered_accounting = dict(metadata["memory_accounting"])
+    tampered_accounting["persistent_array_bytes"] = float(
+        tampered_accounting["persistent_array_bytes"]
+    )
+    tampered_metadata = dict(metadata)
+    tampered_metadata["memory_accounting"] = tampered_accounting
+    tampered_path = tmp_path / "tampered"
+    save_checkpoint(updated, tampered_path, metadata=tampered_metadata)
+
+    with pytest.raises(ValueError, match="resource contract"):
+        load_interaction_feature_checkpoint(tampered_path)
+
+
+def test_exact_json_equal_rejects_aliases_and_fails_closed() -> None:
+    """Exact JSON comparison rejects aliases and never raises on odd types."""
+    assert _exact_json_equal({"a": 1}, {"a": 1})
+    assert not _exact_json_equal({"a": 1}, {"a": 1.0})
+    assert not _exact_json_equal({"a": True}, {"a": 1})
+    assert not _exact_json_equal({"a": 1}, {"a": True})
+    # A tuple compares equal to the list a JSON round-trip turns it into.
+    assert _exact_json_equal({"a": (1, 2)}, {"a": [1, 2]})
+    assert not _exact_json_equal({"a": (1,)}, {"a": [1.0]})
+    # Non-JSON values fail closed instead of raising (ndarray == is an array).
+    assert not _exact_json_equal(jnp.asarray([1, 2]), jnp.asarray([1, 2]))
+    assert not _exact_json_equal({"a": jnp.asarray([1])}, {"a": jnp.asarray([1])})
 
 
 def test_target_only_probe_runs_under_jit_and_scan() -> None:
@@ -3722,3 +3862,39 @@ def test_update_preserves_finite_mean_squared_error_metric(
     else:
         assert not bool(result.update_applied)
         assert int(result.state.step_count) == 0
+
+
+@pytest.mark.parametrize("obs_value", [0.25, float("nan")], ids=["accepted", "rejected"])
+def test_feature_discovery_update_preserves_host_clocks(obs_value: float) -> None:
+    """Single-step FixedBudgetFeatureLearner.update must retain Python-float clocks."""
+    learner = FixedBudgetFeatureLearner(
+        n_features=4,
+        n_tasks=2,
+        replacement_interval=0,
+    )
+    birth = 1_700_000_000.125
+    uptime = float(2**24) + 0.25
+    state = learner.init(feature_dim=3, key=jr.key(7)).replace(
+        birth_timestamp=birth,
+        uptime_s=uptime,
+    )
+    obs = jnp.full((3,), obs_value, dtype=jnp.float32)
+    targets = jnp.zeros((2,), dtype=jnp.float32)
+
+    result = learner.update(state, obs, targets)
+    assert type(result.state.birth_timestamp) is float
+    assert type(result.state.uptime_s) is float
+    assert result.state.birth_timestamp == birth
+    assert result.state.uptime_s == uptime
+
+
+@pytest.mark.parametrize("bad_value", [float("inf"), float("-inf"), float("nan")])
+def test_feature_discovery_nonfinite_observation_fails_visible(bad_value: float) -> None:
+    """Non-finite observations must not saturate tanh into finite features."""
+    learner = FixedBudgetFeatureLearner(n_features=4, n_tasks=2)
+    state = learner.init(feature_dim=3, key=jr.key(11))
+    obs = jnp.array([bad_value, 0.25, -0.5], dtype=jnp.float32)
+
+    assert bool(jnp.all(jnp.isnan(learner.constructed_features(state, obs))))
+    assert bool(jnp.all(jnp.isnan(learner.augmented_observation(state, obs)[3:])))
+    assert bool(jnp.all(jnp.isnan(learner.predict(state, obs))))

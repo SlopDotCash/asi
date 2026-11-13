@@ -1115,3 +1115,102 @@ def test_horde_loop_finishes_device_work_before_stopping_uptime_clock(
     assert scan_outputs
     assert int(result.state.step_count) == 1024
     assert bool(jnp.all(result.updates_applied))
+
+
+@pytest.mark.parametrize("obs_value", [0.25, float("nan")], ids=["accepted", "rejected"])
+def test_horde_update_and_update_with_discounts_preserve_host_clocks(
+    obs_value: float,
+) -> None:
+    """Single-step Horde updates must retain Python-float lifecycle clocks."""
+    horde, state = _shape_contract_horde()
+    birth_timestamp = 1_700_000_000.125
+    uptime_s = float(2**24) + 0.25
+    state = state.replace(
+        birth_timestamp=birth_timestamp,
+        uptime_s=uptime_s,
+    )
+    obs = jnp.full((5,), obs_value, dtype=jnp.float32)
+    cumulants = jnp.array([1.0, 0.5, -0.25], dtype=jnp.float32)
+    next_obs = jnp.zeros((5,), dtype=jnp.float32)
+    discounts = jnp.array([0.0, 0.9, 0.5], dtype=jnp.float32)
+
+    direct = horde.update(state, obs, cumulants, next_obs)
+    assert type(direct.state.birth_timestamp) is float
+    assert type(direct.state.uptime_s) is float
+    assert direct.state.birth_timestamp == birth_timestamp
+    assert direct.state.uptime_s == uptime_s
+
+    discounted = horde.update_with_discounts(
+        state, obs, cumulants, next_obs, discounts
+    )
+    assert type(discounted.state.birth_timestamp) is float
+    assert type(discounted.state.uptime_s) is float
+    assert discounted.state.birth_timestamp == birth_timestamp
+    assert discounted.state.uptime_s == uptime_s
+
+
+def test_horde_final_state_and_batched_loops_finish_device_work_before_stopping_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final-state and batched Horde loops must synchronize before timing."""
+    import time
+    from types import SimpleNamespace
+
+    import jax
+
+    import alberta_framework.core.horde as module
+    from alberta_framework.core.horde import run_horde_learning_loop_final_state
+
+    horde = HordeLearner(
+        horde_spec=create_horde_spec(_make_all_gamma0_spec(2)),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+        step_size=0.1,
+    )
+    state = horde.init(5, jr.key(0))
+    observations = jnp.full((64, 5), 0.1, dtype=jnp.float32)
+    cumulants = jnp.full((64, 2), 0.2, dtype=jnp.float32)
+    tracked_outputs: list[object] = []
+    real_scan = jax.lax.scan
+    real_vmap = jax.vmap
+    real_time = time.time
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        result = real_scan(*args, **kwargs)
+        tracked_outputs.extend(jax.tree.leaves(result))
+        return result
+
+    def recording_vmap(fun: object, *args: object, **kwargs: object) -> object:
+        mapped = real_vmap(fun, *args, **kwargs)
+
+        def wrapped(*call_args: object, **call_kwargs: object) -> object:
+            result = mapped(*call_args, **call_kwargs)
+            tracked_outputs.extend(jax.tree.leaves(result))
+            return result
+
+        return wrapped
+
+    def clock() -> float:
+        if tracked_outputs:
+            assert all(
+                leaf.is_ready()
+                for leaf in tracked_outputs
+                if isinstance(leaf, jax.Array)
+                and not isinstance(leaf, jax.core.Tracer)
+            )
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(jax, "vmap", recording_vmap)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+
+    final_state = run_horde_learning_loop_final_state(
+        horde, state, observations, cumulants, observations
+    )
+    assert int(final_state.step_count) == 64
+
+    tracked_outputs.clear()
+    batched = run_horde_learning_loop_batched(
+        horde, observations, cumulants, observations, jr.split(jr.key(1), 2)
+    )
+    assert batched.per_demon_metrics.shape == (2, 64, 2, 3)

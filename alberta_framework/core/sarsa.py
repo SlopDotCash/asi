@@ -31,7 +31,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import Array
-from jaxtyping import Float, Int
+from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.horde import HordeLearner
@@ -360,6 +360,8 @@ class SARSAUpdateResult:
         q_values: Q-values for all actions at s_{t+1}
         td_error: TD error for the taken action
         reward: Reward received
+        update_applied: Whether the transaction committed (``False`` when the
+            state rolled back)
     """
 
     state: SARSAState
@@ -367,6 +369,7 @@ class SARSAUpdateResult:
     q_values: Float[Array, " n_actions"]
     td_error: Float[Array, ""]
     reward: Float[Array, ""]
+    update_applied: Bool[Array, ""]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -643,6 +646,30 @@ class SARSAAgent:
         n_actions = self._sarsa_config.n_actions
         head_traces = list(state.learner_state.head_traces)
         for i in range(n_actions):
+            w_trace, b_trace = head_traces[i]
+            head_traces[i] = (jnp.zeros_like(w_trace), jnp.zeros_like(b_trace))
+        learner_state = state.learner_state.replace(  # type: ignore[attr-defined]
+            head_traces=tuple(head_traces)
+        )
+        return cast(
+            SARSAState,
+            state.replace(learner_state=learner_state),  # type: ignore[attr-defined]
+        )
+
+    def reset_episode_traces(self, state: SARSAState) -> SARSAState:
+        """Clear every head eligibility trace at an episode boundary.
+
+        ``reset_control_traces`` clears only control heads, but prediction
+        demons are not exempt from the boundary: ``update`` clears their
+        traces at a terminal transition, and a truncated episode (or one
+        cut off by ``max_steps``) ends the trajectory just the same, so
+        their traces must not credit the next episode's first update
+        either. Parameters, optimizer states, and counters are untouched.
+        """
+        if type(state) is not SARSAState:
+            raise ValueError("state must be a SARSAState")
+        head_traces = list(state.learner_state.head_traces)
+        for i in range(len(head_traces)):
             w_trace, b_trace = head_traces[i]
             head_traces[i] = (jnp.zeros_like(w_trace), jnp.zeros_like(b_trace))
         learner_state = state.learner_state.replace(  # type: ignore[attr-defined]
@@ -1098,8 +1125,8 @@ class SARSAAgent:
                 new_w = jnp.where(safe_terminated, jnp.zeros_like(w_trace), skipped_w)
                 new_b = jnp.where(safe_terminated, jnp.zeros_like(b_trace), skipped_b)
                 head_traces[i] = (new_w, new_b)
-            new_learner_state = new_learner_state.replace(
-                head_params=new_learner_state.head_params.replace(
+            new_learner_state = new_learner_state.replace(  # type: ignore[attr-defined]
+                head_params=new_learner_state.head_params.replace(  # type: ignore[attr-defined]
                     weights=tuple(head_weights), biases=tuple(head_biases)
                 ),
                 head_traces=tuple(head_traces),
@@ -1119,7 +1146,7 @@ class SARSAAgent:
                     jnp.where(safe_terminated, jnp.zeros_like(w_trace), w_trace),
                     jnp.where(safe_terminated, jnp.zeros_like(b_trace), b_trace),
                 )
-            new_learner_state = new_learner_state.replace(
+            new_learner_state = new_learner_state.replace(  # type: ignore[attr-defined]
                 head_traces=tuple(head_traces),
             )
 
@@ -1145,9 +1172,20 @@ class SARSAAgent:
             step_count=new_step_count,
         )
         candidate_valid = _floating_tree_is_finite(proposed_state)
-        zero_decay_trace_recovery = jnp.asarray(
-            self._lamda > 0.0 and gamma == 0.0,
-            dtype=jnp.bool_,
+        # The zero-decay recovery exists only to repair poisoned
+        # eligibility traces: with gamma == 0 the trace decay is 0, so the
+        # update replaces inf traces with zeros instead of multiplying
+        # 0 * inf. It must fire only when the source traces are actually
+        # non-finite; an unconditional recovery would also rescue a genuine
+        # Horde rejection (e.g. an overflowing candidate) and commit a step
+        # that learned nothing.
+        traces_need_recovery = ~_floating_tree_is_finite(state.learner_state.head_traces)
+        zero_decay_trace_recovery = (
+            jnp.asarray(
+                self._lamda > 0.0 and gamma == 0.0,
+                dtype=jnp.bool_,
+            )
+            & traces_need_recovery
         )
         transaction_applied = (
             state_valid
@@ -1177,6 +1215,7 @@ class SARSAAgent:
             q_values=jnp.where(transaction_applied, q_next, jnp.zeros_like(q_next)),
             td_error=jnp.where(diagnostic_valid, td_error, 0.0),
             reward=jnp.where(jnp.isfinite(raw_reward), raw_reward, 0.0),
+            update_applied=transaction_applied,
         )
 
 
@@ -1265,14 +1304,16 @@ def run_sarsa_episode(
             if truncated and not terminated:
                 # The update above bootstrapped correctly (no terminal), but
                 # the episode still ends here: never let its eligibility
-                # traces credit the next episode's first transition.
-                state = agent.reset_control_traces(state)
+                # traces credit the next episode's first transition. This
+                # clears prediction-demon traces too, matching what
+                # ``update`` does at a terminal transition.
+                state = agent.reset_episode_traces(state)
             break
     else:
         # The max_steps budget ran out before either flag ended the episode.
         # The next call resets the environment just as it does after a
         # truncation, so the traces must not carry over either.
-        state = agent.reset_control_traces(state)
+        state = agent.reset_episode_traces(state)
 
     return SARSAEpisodeResult(
         state=state,

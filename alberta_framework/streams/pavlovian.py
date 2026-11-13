@@ -285,15 +285,23 @@ class PavlovianPhase:
             raise ValueError("phase name must be a non-empty exact string")
         _require_builtin_int(self.n_steps, name="n_steps", minimum=1)
         try:
-            _require_unit_interval(self.cs_us_contingency, name="cs_us_contingency")
+            contingency = _require_unit_interval(
+                self.cs_us_contingency, name="cs_us_contingency"
+            )
         except ValueError:
             raise ValueError("cs_us_contingency must be a finite probability in [0, 1]") from None
+        object.__setattr__(self, "cs_us_contingency", contingency)
         if type(self.cs_active) is not tuple:
             raise ValueError("cs_active must be an exact tuple")
         if not self.cs_active:
             raise ValueError("cs_active must contain at least one CS index")
-        if any(type(index) is not int or index < 0 for index in self.cs_active):
-            raise ValueError("cs_active indices must be non-negative built-in integers")
+        if any(
+            type(index) is not int or index < 0 or index > _INT32_MAX
+            for index in self.cs_active
+        ):
+            raise ValueError(
+                "cs_active indices must be non-negative built-in integers fitting signed int32"
+            )
         if len(set(self.cs_active)) != len(self.cs_active):
             raise ValueError("cs_active indices must be unique")
         _require_builtin_int(self.compound_index, name="compound_index", minimum=-1)
@@ -457,6 +465,20 @@ class ClassicalConditioningStream:
             distractor_prob, name="distractor_prob"
         )
 
+        feature_dim = int(n_cs) + int(n_distractors)
+        if feature_dim > _INT32_MAX:
+            raise ValueError("feature_dim must fit signed int32")
+        _require_pavlovian_resources(
+            n_phases=len(phases),
+            n_cs=n_cs,
+            n_distractors=n_distractors,
+        )
+        _preflight_pavlovian_step_working_set(
+            n_phases=len(phases),
+            n_cs=n_cs,
+            n_distractors=n_distractors,
+        )
+
         canonical_phases: list[PavlovianPhase] = []
         for phase in phases:
             if type(phase) is not PavlovianPhase:
@@ -501,19 +523,6 @@ class ClassicalConditioningStream:
             )
 
         phases = tuple(canonical_phases)
-        feature_dim = int(n_cs) + int(n_distractors)
-        if feature_dim > _INT32_MAX:
-            raise ValueError("feature_dim must fit signed int32")
-        _require_pavlovian_resources(
-            n_phases=len(phases),
-            n_cs=n_cs,
-            n_distractors=n_distractors,
-        )
-        _preflight_pavlovian_step_working_set(
-            n_phases=len(phases),
-            n_cs=n_cs,
-            n_distractors=n_distractors,
-        )
 
         self._phases = tuple(phases)
         self._n_cs = int(n_cs)
@@ -635,7 +644,9 @@ class ClassicalConditioningStream:
         """
         key_array = _require_typed_threefry_key(key, name="key")
         key, k_iti = jr.split(key_array)
-        iti = jr.randint(k_iti, (), self._iti_min, self._iti_max + 1)
+        # Pin int32: without a dtype, x64 mode draws an int64 counter that
+        # ``step``'s state contract rejects.
+        iti = jr.randint(k_iti, (), self._iti_min, self._iti_max + 1, dtype=jnp.int32)
         return PavlovianState(
             key=key,
             cs_active_steps_remaining=jnp.zeros(self._n_cs, dtype=jnp.int32),
@@ -735,9 +746,15 @@ class ClassicalConditioningStream:
         # Use a Gumbel-style argmax over the CS-active mask so the choice
         # is JIT-friendly and respects the per-phase mask.
         gumbel = jr.gumbel(k_phase_cs, (self._n_cs,))
-        # log-mask: -inf for inactive entries so they cannot be argmax'd.
-        log_mask = jnp.where(cs_mask > 0.0, jnp.float32(0.0), jnp.float32(-1e9))
-        chosen_cs = jnp.argmax(gumbel + log_mask).astype(jnp.int32)
+        # Mask inactive entries with -inf and floor active Gumbel draws at
+        # -float32_max so a 0.0 uniform draw (-inf Gumbel) on an active CS
+        # still beats every inactive CS.
+        masked_gumbel = jnp.where(
+            cs_mask > 0.0,
+            jnp.maximum(gumbel, jnp.float32(-_FLOAT32_MAX)),
+            jnp.float32(-jnp.inf),
+        )
+        chosen_cs = jnp.argmax(masked_gumbel).astype(jnp.int32)
 
         # ------------------------------------------------------------------
         # 4. Decide reinforcement and ITI on trial start

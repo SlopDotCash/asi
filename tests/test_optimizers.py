@@ -17,6 +17,7 @@ from alberta_framework import (
     Autostep,
     AutostepGTDLambda,
     ObGD,
+    ObGDBounding,
     optimizer_from_config,
 )
 from alberta_framework.core.optimizers import TDIDBD, AutoTDIDBD
@@ -1029,6 +1030,136 @@ class TestObGD:
         assert bool(result.update_applied)
         chex.assert_trees_all_close(result.new_state.traces, observation)
         assert bool(jnp.isfinite(result.new_state.bias_trace))
+
+    def test_overflowing_bound_from_finite_inputs_preserves_bounded_step(self) -> None:
+        """An overflowing bound preserves representable deltas through factorization."""
+        optimizer = ObGD(step_size=1.0, kappa=2.0)
+        state = optimizer.init(2)
+        observation = jnp.asarray([1e20, 1.0], dtype=jnp.float32)
+        result = optimizer.update(state, jnp.asarray(1e25, dtype=jnp.float32), observation)
+        assert bool(result.update_applied)
+        np.testing.assert_allclose(result.weight_delta, [0.5, 5e-21], rtol=1e-5, atol=0.0)
+        assert float(result.bias_delta) == pytest.approx(5e-21, rel=1e-5, abs=0.0)
+        assert float(result.metrics["effective_step_size"]) == 0.0
+        assert bool(jnp.isfinite(result.metrics["bounding_factor"]))
+        chex.assert_trees_all_close(result.new_state.traces, observation)
+
+    def test_zero_kappa_with_large_finite_error_and_traces_avoids_nan_and_overflow(
+        self,
+    ) -> None:
+        """kappa=0 must skip 0 * inf in M and reassociate alpha * error * z."""
+        optimizer = ObGD(step_size=1e-30, kappa=0.0)
+        state = optimizer.init(2)
+        observation = jnp.asarray([1e20, 1.0], dtype=jnp.float32)
+        result = optimizer.update(state, jnp.asarray(1e25, dtype=jnp.float32), observation)
+        assert bool(result.update_applied)
+        assert float(result.metrics["bounding_factor"]) == 0.0
+        np.testing.assert_allclose(
+            result.weight_delta,
+            jnp.asarray([1e15, 1e-5], dtype=jnp.float32),
+            rtol=1e-6,
+        )
+
+    @pytest.mark.parametrize("step_size,kappa", [(1e-30, 1e-30), (1e-38, 1e-38)])
+    def test_overflowing_trace_sum_keeps_inactive_bound(
+        self, step_size: float, kappa: float
+    ) -> None:
+        optimizer = ObGD(step_size=step_size, kappa=kappa)
+        state = optimizer.init(2)
+        observation = jnp.asarray([2e38, 2e38], dtype=jnp.float32)
+        result = jax.jit(optimizer.update)(state, jnp.float32(1.0), observation)
+        expected = np.float64(np.float32(step_size)) * np.asarray(observation, dtype=np.float64)
+        assert bool(result.update_applied)
+        np.testing.assert_allclose(result.weight_delta, expected, rtol=1e-5)
+        assert float(result.metrics["bounding_factor"]) < 1.0
+
+    @pytest.mark.parametrize("kappa", [1e-38, 1e-40])
+    def test_obgd_bounding_overflowing_total_respects_small_kappa(self, kappa: float) -> None:
+        bounder = ObGDBounding(kappa=kappa)
+        steps = (jnp.asarray([2e38, 2e38], dtype=jnp.float32),)
+        bounded, scale = jax.jit(bounder.bound)(steps, jnp.float32(1.0), steps)
+        values = np.asarray(steps[0], dtype=np.float64)
+        expected_scale = 1.0 / max(float(np.float32(kappa)) * values.sum(), 1.0)
+        np.testing.assert_allclose(bounded[0], values * expected_scale, rtol=1e-5)
+        assert float(scale) == pytest.approx(expected_scale, rel=1e-5)
+
+    def test_obgd_bounding_overflowing_total_retains_small_finite_steps(self) -> None:
+        bounder = ObGDBounding(kappa=1e-20)
+        steps = (jnp.asarray([2e38, 2e38, 1e-10], dtype=jnp.float32),)
+        bounded, _ = jax.jit(bounder.bound)(steps, jnp.float32(1.0), steps)
+        values = np.asarray(steps[0], dtype=np.float64)
+        expected = values / (float(np.float32(1e-20)) * values.sum())
+        np.testing.assert_allclose(bounded[0], expected, rtol=1e-5, atol=0.0)
+
+    def test_obgd_bounding_zero_kappa_with_overflowing_total_step_keeps_unit_scale(
+        self,
+    ) -> None:
+        """ObGDBounding(kappa=0.0) must not evaluate 0.0 * inf = NaN when L1 sum overflows."""
+        bounder = ObGDBounding(kappa=0.0)
+        steps = (jnp.asarray([2e38, 2e38], dtype=jnp.float32),)
+        bounded, scale = bounder.bound(
+            steps,
+            jnp.asarray(1.0, dtype=jnp.float32),
+            (jnp.zeros(2, dtype=jnp.float32),),
+        )
+        assert float(scale) == 1.0
+        chex.assert_trees_all_close(bounded[0], steps[0])
+
+    def test_huge_traces_keep_finite_bounded_step(self):
+        """A bound that overflows float32 must rescale, not drop the update.
+
+        With traces of 1e30 and step_size 1e30 the true bound is 6e60, so
+        the direct product overflows float32, the effective step-size
+        collapsed to zero, and the inf ``bounding_factor`` metric vetoed
+        the whole transaction. The factored bound keeps the finite ``1/6``
+        weight step and the ``1.67e-31`` bias step and effective step-size.
+        This is the optimizer counterpart of the standalone-bounder fix
+        for the same overflow class (open PR #3811 covers only the UPGD
+        bounder).
+        """
+        optimizer = ObGD(step_size=1e30, kappa=2.0, gamma=0.0, lamda=0.0)
+        state = optimizer.init(3)
+        result = optimizer.update(
+            state,
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.array([1e30, 1e30, 1e30], dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_trees_all_close(
+            result.weight_delta,
+            jnp.full(3, 1.0 / 6.0, dtype=jnp.float32),
+            rtol=1e-5,
+            atol=1e-7,
+        )
+        assert float(result.bias_delta) == pytest.approx(1.0 / 6e30, rel=1e-5)
+        assert float(result.metrics["effective_step_size"]) == pytest.approx(
+            1.0 / 6e30, rel=1e-5
+        )
+        chex.assert_trees_all_close(result.new_state.traces, jnp.full(3, 1e30))
+
+    def test_huge_trace_sum_keeps_finite_bounded_step(self):
+        """An overflowing L1 trace sum must rescale, not drop the update.
+
+        Ten traces of 1e38 sum to 1e39, past float32 max, so the true
+        weight steps are 1e38 / (2 * 1e39) = 0.05 each. The bias step's
+        true value is subnormal and flushes to zero under FTZ, so only its
+        magnitude is asserted.
+        """
+        optimizer = ObGD(step_size=1e30, kappa=2.0, gamma=0.0, lamda=0.0)
+        state = optimizer.init(10)
+        result = optimizer.update(
+            state,
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.full((10,), 1e38, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_trees_all_close(
+            result.weight_delta,
+            jnp.full((10,), 0.05, dtype=jnp.float32),
+            rtol=1e-5,
+            atol=1e-7,
+        )
+        assert abs(float(result.bias_delta)) <= 1e-38
 
 
 class TestAdaptiveObGDBounding:

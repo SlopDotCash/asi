@@ -150,9 +150,12 @@ class FeatureBankRouterConfig:
         if not issubclass(type(config), Mapping):
             raise ValueError("feature-bank router config must be a mapping")
         try:
-            payload = dict(config)
+            raw_items = list(config.items())
         except Exception:
             raise ValueError("feature-bank router config could not be read") from None
+        if any(type(key) is not str for key, _ in raw_items):
+            raise ValueError("feature-bank router config keys must be exact strings")
+        payload = dict(raw_items)
         expected_keys = {
             "type",
             "schema_version",
@@ -367,8 +370,23 @@ def _require_descriptor_contract(
 ) -> Array:
     # Check the source dtype before JAX can narrow int64 identities to int32.
     source_dtype = getattr(descriptors, "dtype", None)
-    if source_dtype is not None and np.dtype(source_dtype) != np.dtype(np.int32):
-        raise TypeError(f"{location} must have dtype int32")
+    if source_dtype is not None:
+        if np.dtype(source_dtype) != np.dtype(np.int32):
+            raise TypeError(f"{location} must have dtype int32")
+    elif not isinstance(descriptors, (jax.Array, jax.core.Tracer)):
+        try:
+            host_array = np.asarray(descriptors, dtype=object)
+        except Exception as exc:
+            raise TypeError(f"{location} must have dtype int32") from exc
+        if host_array.shape != (active_slots, 2):
+            raise ValueError(f"{location} must have shape ({active_slots}, 2)")
+        for item in host_array.flat:
+            if not any(type(item) is allowed_type for allowed_type in _ACTUAL_INT_TYPES):
+                raise TypeError(f"{location} must have dtype int32")
+            canonical = operator.index(cast(SupportsIndex, item))
+            if canonical < -2**31 or canonical > _INT32_MAX:
+                raise TypeError(f"{location} must have dtype int32")
+        descriptors = np.asarray(host_array, dtype=np.int32)
     value = jnp.asarray(descriptors)
     if value.shape != (active_slots, 2):
         raise ValueError(f"{location} must have shape ({active_slots}, 2)")
@@ -450,6 +468,8 @@ class FeatureBankRouter:
     """Atomic fixed-shape router for every downstream feature consumer."""
 
     def __init__(self, config: FeatureBankRouterConfig):
+        if type(config) is not FeatureBankRouterConfig:
+            raise TypeError("config must be a FeatureBankRouterConfig")
         self._config = config
 
     @property
@@ -538,9 +558,10 @@ class FeatureBankRouter:
         normalized_axes: list[int] = []
         for index, (leaf, raw_axis) in enumerate(zip(leaves, raw_axes, strict=True)):
             value = jnp.asarray(leaf)
-            if type(raw_axis) is not int:
+            if not any(type(raw_axis) is allowed_type for allowed_type in _ACTUAL_INT_TYPES):
                 raise TypeError(f"feature axis for consumer leaf {index} must be an integer")
-            axis = raw_axis if raw_axis >= 0 else value.ndim + raw_axis
+            axis_int = operator.index(cast(SupportsIndex, raw_axis))
+            axis = axis_int if axis_int >= 0 else value.ndim + axis_int
             if axis < 0 or axis >= value.ndim:
                 raise ValueError(f"feature axis for consumer leaf {index} is out of range")
             if value.shape[axis] != self._config.total_feature_dim:
@@ -553,6 +574,8 @@ class FeatureBankRouter:
         return arrays, tree_definition, tuple(normalized_axes)
 
     def _require_state_contract(self, state: FeatureBankRouterState) -> None:
+        if type(state) is not FeatureBankRouterState:
+            raise TypeError("state must be a FeatureBankRouterState")
         _require_descriptor_contract(
             state.descriptors,
             active_slots=self._config.active_slots,
@@ -562,6 +585,13 @@ class FeatureBankRouter:
             ("state.route_count", state.route_count),
             ("state.generation_count", state.generation_count),
         ):
+            source_dtype = getattr(value, "dtype", None)
+            if source_dtype is not None:
+                if np.dtype(source_dtype) != np.dtype(np.int32):
+                    raise TypeError(f"{name} must have dtype int32")
+            elif not isinstance(value, (jax.Array, jax.core.Tracer)):
+                if type(value) is not int or value < -2**31 or value > _INT32_MAX:
+                    raise TypeError(f"{name} must have dtype int32")
             array = jnp.asarray(value)
             if array.shape != ():
                 raise ValueError(f"{name} must be scalar")

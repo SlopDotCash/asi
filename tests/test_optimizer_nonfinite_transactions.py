@@ -409,6 +409,89 @@ def test_obgd_bounders_only_zero_actual_collapsed_infinities() -> None:
     chex.assert_trees_all_equal(dynamic, tuple(jnp.zeros_like(step) for step in steps))
 
 
+def test_upgd_obgd_bound_keeps_finite_huge_steps() -> None:
+    """Finite steps whose L1 total overflows the bound must rescale, not vanish.
+
+    With steps of 1e38 the exact ObGD scale is ~1.67e-39, so the bounded
+    steps are ~1/6; the direct ``kappa * total`` product overflows float32
+    and previously collapsed the scale to zero, discarding the update.
+    The scale itself is subnormal and flushes to zero under FTZ, so only
+    the factored steps carry the fix -- assert on them, not on the scale.
+    """
+    steps = (jnp.array([1e38, 1e38, 1e38], dtype=jnp.float32),)
+    bounded, _scale = jax.jit(UPGDLearner._obgd_bound_with_kappa)(
+        steps, jnp.array(1.0, dtype=jnp.float32), jnp.array(2.0, dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(
+        bounded[0],
+        jnp.full(3, 1.0 / 6.0, dtype=jnp.float32),
+        rtol=1e-5,
+        atol=1e-7,
+    )
+
+    # The same overflow through a large kappa on moderate steps.
+    steps = (jnp.array([1e37, 1e37, 1e37], dtype=jnp.float32),)
+    bounded, _scale = jax.jit(UPGDLearner._obgd_bound_with_kappa)(
+        steps, jnp.array(1.0, dtype=jnp.float32), jnp.array(200.0, dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(
+        bounded[0],
+        jnp.full(3, 1.0 / 600.0, dtype=jnp.float32),
+        rtol=1e-5,
+        atol=1e-7,
+    )
+
+def test_obgd_bounders_keep_finite_huge_steps() -> None:
+    """Finite steps whose ObGD bound overflows float32 must rescale, not vanish.
+
+    With steps of 1e38 the exact ObGD scale is ~1.67e-39, so the bounded
+    steps are ~1/6; the direct ``kappa * max(|error|, 1) * total`` product
+    overflows float32 and previously collapsed the scale to zero,
+    discarding the update. The scale itself is subnormal and flushes to
+    zero under FTZ, so only the factored steps carry the fix -- assert on
+    them, not on the scale. This is the standalone-bounder counterpart of
+    the UPGD-side fix in open PR #3811, which covers only
+    ``UPGDLearner._obgd_bound_with_kappa``.
+    """
+    steps = (jnp.array([1e38, 1e38, 1e38], dtype=jnp.float32),)
+    params = (jnp.ones(3, dtype=jnp.float32),)
+    for bounder in (ObGDBounding(kappa=2.0), AdaptiveObGDBounding(kappa=2.0)):
+        bounded, _scale = jax.jit(bounder.bound)(
+            steps, jnp.array(1.0, dtype=jnp.float32), params
+        )
+        chex.assert_trees_all_close(
+            bounded[0],
+            jnp.full(3, 1.0 / 6.0, dtype=jnp.float32),
+            rtol=1e-5,
+            atol=1e-7,
+        )
+
+    # The same overflow through an overflowing L1 total itself: ten steps
+    # of 1e38 sum to 1e39, past float32 max, so the true bounded steps are
+    # 1e38 / (2 * 1e39) = 0.05 each.
+    steps = (jnp.full((10,), 1e38, dtype=jnp.float32),)
+    params = (jnp.ones((10,), dtype=jnp.float32),)
+    for bounder in (ObGDBounding(kappa=2.0), AdaptiveObGDBounding(kappa=2.0)):
+        bounded, _scale = jax.jit(bounder.bound)(
+            steps, jnp.array(1.0, dtype=jnp.float32), params
+        )
+        chex.assert_trees_all_close(
+            bounded[0],
+            jnp.full((10,), 0.05, dtype=jnp.float32),
+            rtol=1e-5,
+            atol=1e-7,
+        )
+
+
+@pytest.mark.parametrize("kappa,expected", [(0.1, 10.0), (1e-37, 1e37)])
+def test_upgd_obgd_bound_small_kappa_keeps_finite_step(kappa: float, expected: float) -> None:
+    steps = (jnp.asarray([1e38], dtype=jnp.float32),)
+    bounded, _ = jax.jit(UPGDLearner._obgd_bound_with_kappa)(
+        steps, jnp.float32(1.0), jnp.float32(kappa)
+    )
+    np.testing.assert_allclose(np.asarray(bounded[0]), [expected], rtol=1e-6)
+
+
 def test_bounders_do_not_launder_arbitrary_nan() -> None:
     nan_step = (jnp.array([jnp.nan, 0.5]),)
     params = (jnp.ones(2),)
@@ -526,8 +609,16 @@ def test_feature_finite_one_steps_are_bitwise_unchanged() -> None:
         fixed_state, _OBSERVATION, jnp.array([0.4, -0.2], dtype=jnp.float32)
     )
     assert bool(fixed_result.update_applied)
+    assert type(fixed_result.state.birth_timestamp) is float
+    assert type(fixed_result.state.uptime_s) is float
+    # Host clocks now preserve Python precision. Project those two fields to
+    # their historical device dtype while retaining the original numeric digest.
+    fixed_numeric_state = fixed_result.state.replace(
+        birth_timestamp=jnp.float32(fixed_result.state.birth_timestamp),
+        uptime_s=jnp.float32(fixed_result.state.uptime_s),
+    )
     assert _digest(
-        fixed_result.state,
+        fixed_numeric_state,
         fixed_result.predictions,
         fixed_result.errors,
         fixed_result.metrics,
@@ -555,8 +646,14 @@ def test_feature_finite_one_steps_are_bitwise_unchanged() -> None:
     # the float32 consecutive-integer limit.  The golden digest includes dtype.
     assert compositional_result.state.candidate_selector_action_counts.dtype == jnp.int32
     assert compositional_result.state.generator_resource_state.action_counts.dtype == jnp.int32
+    assert type(compositional_result.state.birth_timestamp) is float
+    assert type(compositional_result.state.uptime_s) is float
+    compositional_numeric_state = compositional_result.state.replace(
+        birth_timestamp=jnp.float32(compositional_result.state.birth_timestamp),
+        uptime_s=jnp.float32(compositional_result.state.uptime_s),
+    )
     assert _digest(
-        compositional_result.state,
+        compositional_numeric_state,
         compositional_result.predictions,
         compositional_result.errors,
         compositional_result.metrics,
