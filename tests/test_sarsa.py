@@ -383,6 +383,84 @@ class TestSARSAUpdate:
         chex.assert_trees_all_equal(actual, expected)
         assert float(result.td_error) == 0.0
 
+    def test_gamma_zero_lambda_rejected_horde_rolls_back(self):
+        """A Horde rejection must roll back even at gamma=0, lamda>0.
+
+        The commit gate's zero-decay recovery exists only to repair
+        poisoned eligibility traces (see
+        test_zero_gamma_does_not_decay_inf_inactive_traces); it must not
+        rescue a genuine Horde rejection on a healthy state. Here an
+        overflowing candidate from a huge finite reward rejects the Horde
+        update, so the step must roll back instead of advancing while no
+        head learned the transition. The gamma > 0 regime already rolls
+        back the identical input.
+        """
+        agent = _make_agent(
+            n_actions=2,
+            hidden_sizes=(8,),
+            gamma=0.0,
+            epsilon_start=0.0,
+            lamda=0.9,
+        )
+        state = agent.init(feature_dim=3, key=jr.key(0))
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(1, dtype=jnp.int32),
+            last_observation=jnp.zeros(3, dtype=jnp.float32),
+        )
+
+        result = agent.update(
+            state,
+            reward=jnp.array(3e38, dtype=jnp.float32),
+            observation=jnp.ones(3, dtype=jnp.float32),
+            terminated=jnp.array(0.0),
+            next_action=jnp.array(0, dtype=jnp.int32),
+        )
+
+        assert int(result.state.step_count) == 0
+        assert int(result.state.last_action) == 1
+        chex.assert_trees_all_close(
+            result.state.learner_state.head_params.weights,
+            state.learner_state.head_params.weights,
+            atol=0.0,
+        )
+        chex.assert_trees_all_close(
+            result.state.learner_state.head_params.biases,
+            state.learner_state.head_params.biases,
+            atol=0.0,
+        )
+
+    def test_gamma_zero_lambda_finite_reward_still_commits(self):
+        """Removing the recovery must not stop ordinary gamma=0 learning."""
+        agent = _make_agent(
+            n_actions=2,
+            hidden_sizes=(8,),
+            gamma=0.0,
+            epsilon_start=0.0,
+            lamda=0.9,
+        )
+        state = agent.init(feature_dim=3, key=jr.key(0))
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(1, dtype=jnp.int32),
+            last_observation=jnp.zeros(3, dtype=jnp.float32),
+        )
+
+        result = agent.update(
+            state,
+            reward=jnp.array(1.0, dtype=jnp.float32),
+            observation=jnp.ones(3, dtype=jnp.float32),
+            terminated=jnp.array(0.0),
+            next_action=jnp.array(0, dtype=jnp.int32),
+        )
+
+        assert int(result.state.step_count) == 1
+        assert int(result.state.last_action) == 0
+        assert not bool(
+            jnp.array_equal(
+                result.state.learner_state.head_params.biases[1],
+                state.learner_state.head_params.biases[1],
+            )
+        )
+
     def test_terminated_no_bootstrap(self):
         """At terminal state, target = r (no bootstrapping)."""
         agent = _make_agent(n_actions=2, gamma=0.99, epsilon_start=0.0)
