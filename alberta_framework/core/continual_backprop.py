@@ -98,6 +98,7 @@ from alberta_framework.core.multi_head_learner import (
     MultiHeadMLPLearner,
     MultiHeadMLPState,
     MultiHeadMLPUpdateResult,
+    _finite_layer_norm,
 )
 from alberta_framework.core.normalizers import (
     Normalizer,
@@ -412,44 +413,6 @@ def init_cbp_state(
         ages=ages,
         replacement_accumulators=accumulators,
         rng_key=key,
-    )
-
-
-def _finite_layer_norm(values: Array) -> Array:
-    """Preserve parameterless layer norm and its VJP when reductions overflow."""
-    mean = jnp.mean(values)
-    variance = jnp.var(values)
-    reduction_overflowed = (
-        (~jnp.isfinite(mean) | ~jnp.isfinite(variance))
-        & jnp.all(jnp.isfinite(values))
-    )
-    safe_values = jnp.where(reduction_overflowed, jnp.zeros_like(values), values)
-    safe_mean = jnp.mean(safe_values)
-    safe_variance = jnp.var(safe_values)
-    direct = (safe_values - safe_mean) / jnp.sqrt(safe_variance + 1e-5)
-
-    def scaled_layer_norm(finite_values: Array) -> Array:
-        scale = jnp.max(jnp.abs(finite_values))
-        _, exponent = jnp.frexp(scale)
-        scaled = jnp.ldexp(finite_values, -exponent)
-        centered = scaled - jnp.mean(scaled)
-        scaled_variance = jnp.mean(centered * centered)
-        positive_variance = scaled_variance > 0.0
-        denom_variance = jnp.where(
-            positive_variance,
-            scaled_variance,
-            jnp.ones_like(scaled_variance),
-        )
-        contrast = centered * jax.lax.rsqrt(denom_variance)
-        return jnp.where(positive_variance, contrast, jnp.zeros_like(contrast))
-
-    safe_scaled_input = jnp.where(
-        reduction_overflowed, values, jnp.zeros_like(values)
-    )
-    return jnp.where(
-        reduction_overflowed,
-        scaled_layer_norm(safe_scaled_input),
-        direct,
     )
 
 

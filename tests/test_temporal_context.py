@@ -629,3 +629,26 @@ def test_temporal_context_zeros_corrupt_ema_delta_and_validates_scan_boundaries(
 
     with pytest.raises(ValueError, match="config must be an exact TemporalContextConfig"):
         TemporalContextFeaturizer(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize(
+    "small", [np.finfo(np.float32).tiny, np.nextafter(np.float32(0), np.float32(1))]
+)
+def test_temporal_ema_mixed_scales_preserve_weighted_observation(
+    compiled: bool, small: float
+) -> None:
+    featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(input_dim=2, ema_decay=0.25, periods=())
+    )
+    state = featurizer.init().replace(
+        observation_ema=jnp.asarray([small, 1e38], dtype=jnp.float32)
+    )
+    observation = jnp.asarray([1e38, small], dtype=jnp.float32)
+    with jax.disable_jit(not compiled):
+        updated = featurizer.update(state, observation)
+    np.testing.assert_allclose(
+        np.asarray(updated.observation_ema),
+        np.asarray([7.5e37, 2.5e37], dtype=np.float32),
+        rtol=1e-6,
+    )

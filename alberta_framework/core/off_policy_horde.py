@@ -682,7 +682,7 @@ class OffPolicyHordeLearner:
         head_decay_unused = (previous_discounts == 0.0) | (
             jnp.asarray(lamdas, dtype=jnp.float32) == 0.0
         )
-        checked_state = checked_state.replace(  # type: ignore[attr-defined]
+        checked_state = checked_state.replace(
             head_traces=tuple(
                 (
                     jnp.where(unused, jnp.zeros_like(old_w), old_w),

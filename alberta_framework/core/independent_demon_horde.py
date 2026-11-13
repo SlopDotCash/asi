@@ -48,6 +48,7 @@ from jax import Array
 from jaxtyping import Bool, Float
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core.baseline_optimizers import Adam, RMSprop
 from alberta_framework.core.horde import HordeUpdateResult
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.learners import (
@@ -145,8 +146,9 @@ def _optimizer_state_scalars(optimizer: AnyOptimizer | None, size: int) -> int:
 
     LMS keeps a single scalar step size. IDBD keeps two per-element arrays
     plus a meta step size; Autostep keeps three per-element arrays plus two
-    scalars. An unknown optimizer is charged the largest known shape
-    (Autostep) so the guard stays conservative instead of undercounting.
+    scalars. Adam keeps two arrays plus five scalars, and RMSprop keeps one
+    array plus three scalars. The fallback covers both Autostep's array-heavy
+    state and Adam's scalar-heavy state at small parameter sizes.
     """
     if optimizer is None or type(optimizer) is LMS:
         return 1
@@ -154,7 +156,11 @@ def _optimizer_state_scalars(optimizer: AnyOptimizer | None, size: int) -> int:
         return 2 * size + 1
     if type(optimizer) is Autostep:
         return 3 * size + 2
-    return 3 * size + 2
+    if type(optimizer) is Adam:
+        return 2 * size + 5
+    if type(optimizer) is RMSprop:
+        return size + 3
+    return max(3 * size + 2, 2 * size + 5)
 
 
 def _normalizer_state_scalars(normalizer: Normalizer[Any] | None, feature_dim: int) -> int:

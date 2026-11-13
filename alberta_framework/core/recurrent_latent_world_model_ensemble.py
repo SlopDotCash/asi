@@ -245,10 +245,14 @@ def _scale_safe_ratio(numerator: Array, denominator: float) -> Array:
     """Divide by one positive float32 scalar without a subnormal reciprocal."""
     scale = jnp.asarray(denominator, dtype=numerator.dtype)
     mantissa, exponent = jnp.frexp(scale)
+    divided = numerator / mantissa
+    scaled_first = jnp.ldexp(numerator, -exponent) / mantissa
+    # Dividing first retains tiny numerators, but can overflow near the
+    # float32 limit even when the downscaled quotient is representable.
     return jnp.where(
-        exponent > 0,
-        jnp.ldexp(numerator / mantissa, -exponent),
-        jnp.ldexp(numerator, -exponent) / mantissa,
+        (exponent > 0) & jnp.isfinite(divided),
+        jnp.ldexp(divided, -exponent),
+        scaled_first,
     )
 
 

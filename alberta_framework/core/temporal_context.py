@@ -609,7 +609,7 @@ class TemporalContextFeaturizer:
         underflowed = (
             ((decay != 0.0) & (state.observation_ema != 0.0) & (decayed_ema == 0.0))
             | ((one_minus_decay != 0.0) & (obs != 0.0) & (weighted_obs == 0.0))
-        )
+        ) & jnp.isfinite(rescaled_ema)
         proposed_ema = jnp.where(underflowed, rescaled_ema, direct_ema)
         ema_finite = jnp.isfinite(state.observation_ema)
         low_bound = jnp.minimum(state.observation_ema, obs)

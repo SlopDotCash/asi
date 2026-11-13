@@ -1060,6 +1060,37 @@ class TestObGD:
             rtol=1e-6,
         )
 
+    @pytest.mark.parametrize("step_size,kappa", [(1e-30, 1e-30), (1e-38, 1e-38)])
+    def test_overflowing_trace_sum_keeps_inactive_bound(
+        self, step_size: float, kappa: float
+    ) -> None:
+        optimizer = ObGD(step_size=step_size, kappa=kappa)
+        state = optimizer.init(2)
+        observation = jnp.asarray([2e38, 2e38], dtype=jnp.float32)
+        result = jax.jit(optimizer.update)(state, jnp.float32(1.0), observation)
+        expected = np.float64(np.float32(step_size)) * np.asarray(observation, dtype=np.float64)
+        assert bool(result.update_applied)
+        np.testing.assert_allclose(result.weight_delta, expected, rtol=1e-5)
+        assert float(result.metrics["bounding_factor"]) < 1.0
+
+    @pytest.mark.parametrize("kappa", [1e-38, 1e-40])
+    def test_obgd_bounding_overflowing_total_respects_small_kappa(self, kappa: float) -> None:
+        bounder = ObGDBounding(kappa=kappa)
+        steps = (jnp.asarray([2e38, 2e38], dtype=jnp.float32),)
+        bounded, scale = jax.jit(bounder.bound)(steps, jnp.float32(1.0), steps)
+        values = np.asarray(steps[0], dtype=np.float64)
+        expected_scale = 1.0 / max(float(np.float32(kappa)) * values.sum(), 1.0)
+        np.testing.assert_allclose(bounded[0], values * expected_scale, rtol=1e-5)
+        assert float(scale) == pytest.approx(expected_scale, rel=1e-5)
+
+    def test_obgd_bounding_overflowing_total_retains_small_finite_steps(self) -> None:
+        bounder = ObGDBounding(kappa=1e-20)
+        steps = (jnp.asarray([2e38, 2e38, 1e-10], dtype=jnp.float32),)
+        bounded, _ = jax.jit(bounder.bound)(steps, jnp.float32(1.0), steps)
+        values = np.asarray(steps[0], dtype=np.float64)
+        expected = values / (float(np.float32(1e-20)) * values.sum())
+        np.testing.assert_allclose(bounded[0], expected, rtol=1e-5, atol=0.0)
+
     def test_obgd_bounding_zero_kappa_with_overflowing_total_step_keeps_unit_scale(
         self,
     ) -> None:

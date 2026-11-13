@@ -32,6 +32,7 @@ from alberta_framework.core.optimizers import AdaptiveObGDBounding, ObGDBounding
 from alberta_framework.core.upgd import (
     UPGDLearner,
     UPGDLearningResult,
+    _finite_layer_norm,
     run_upgd_arrays,
     run_upgd_loop,
 )
@@ -2702,3 +2703,23 @@ def test_all_nan_targets_freeze_upgd_state_and_metrics() -> None:
     assert bool(jnp.all(jnp.isfinite(result.predictions)))
     assert bool(jnp.all(jnp.isnan(result.errors)))
     np.testing.assert_array_equal(np.asarray(result.metrics), np.zeros(4, dtype=np.float32))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("values", [(2.0e38, 2.0e38, 2.0e38), (3.0e38, 2.0e38, 1.0e38)])
+def test_layer_norm_preserves_extreme_mean_and_constant_gradient(
+    values: tuple[float, ...], compiled: bool
+) -> None:
+    inputs = jnp.asarray(values, dtype=jnp.float32)
+    normalize = jax.jit(_finite_layer_norm) if compiled else _finite_layer_norm
+    reference = np.asarray(inputs, dtype=np.float64)
+    centered = reference - reference.mean()
+    expected = centered / np.sqrt(np.mean(centered ** 2) + 1e-5)
+    np.testing.assert_allclose(normalize(inputs), expected, rtol=1e-6, atol=1e-6)
+
+    cotangent = jnp.arange(3, dtype=jnp.float32)
+    gradient = jax.grad(lambda x: jnp.sum(normalize(x) * cotangent))(inputs)
+    assert bool(jnp.all(jnp.isfinite(gradient)))
+    if values[0] == values[-1]:
+        expected_gradient = (np.arange(3) - 1.0) / np.sqrt(1e-5)
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-6, atol=1e-5)

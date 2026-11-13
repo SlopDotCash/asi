@@ -36,6 +36,7 @@ from alberta_framework import (
     ObGDBounding,
     create_horde_spec,
 )
+from alberta_framework.core.baseline_optimizers import Adam, RMSprop
 from alberta_framework.core.independent_demon_horde import (
     BatchedIndependentDemonHordeResult,
     IndependentDemonHorde,
@@ -873,6 +874,32 @@ def test_direct_state_count_matches_measured_state_for_two_demon_autostep() -> N
     state = horde.init(6, jr.key(0))
     assert _measured_state_bytes(state) == 4 * _direct_state_scalars(
         2, (4, 5), 6, optimizer=Autostep()
+    )
+
+
+@pytest.mark.parametrize("optimizer", [Adam(), RMSprop()])
+@pytest.mark.parametrize("feature_dim", [1, 2, 4])
+def test_direct_state_count_matches_baseline_optimizer_state(
+    optimizer, feature_dim: int
+) -> None:
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=(), optimizer=optimizer)
+    state = horde.init(feature_dim, jr.key(0))
+    assert _measured_state_bytes(state) == 4 * _direct_state_scalars(
+        1, (), feature_dim, optimizer=optimizer
+    )
+
+
+def test_direct_state_count_is_conservative_for_inherited_adam() -> None:
+    class InheritedAdam(Adam):
+        pass
+
+    optimizer = InheritedAdam()
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=(), optimizer=optimizer)
+    state = horde.init(1, jr.key(0))
+    assert _measured_state_bytes(state) <= 4 * _direct_state_scalars(
+        1, (), 1, optimizer=optimizer
     )
 
 

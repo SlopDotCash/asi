@@ -407,14 +407,15 @@ def _require_p_value(value: object, *, name: str) -> float:
     return _require_probability(value, name=name, strict=False)
 
 
-def _summary_quartile(sorted_values: NDArray[np.float64], quarter: int) -> float:
+def _summary_quantile(sorted_values: NDArray[np.float64], quantile: float) -> float:
     """Interpolate only the selected neighbors, preserving their original units."""
-    index, remainder = divmod((len(sorted_values) - 1) * quarter, 4)
+    position = (len(sorted_values) - 1) * quantile
+    index = math.floor(position)
+    weight = position - index
     lower = float(sorted_values[index])
-    if remainder == 0:
+    if weight == 0.0:
         return lower
     upper = float(sorted_values[index + 1])
-    weight = remainder / 4.0
     if (lower >= 0.0) == (upper >= 0.0):
         # Same-sign differences fit even when adding the endpoints would not.
         return lower + (upper - lower) * weight
@@ -456,9 +457,9 @@ def compute_statistics(
         mean = _compensated_mean(work, name="values")
         std = float(np.std(scaled, ddof=1) * scale) if n > 1 else 0.0
         sem = std / np.sqrt(n) if n > 1 else 0.0
-        median = _summary_quartile(ordered, 2)
-        q25 = _summary_quartile(ordered, 1)
-        q75 = _summary_quartile(ordered, 3)
+        median = _summary_quantile(ordered, 0.5)
+        q25 = _summary_quantile(ordered, 0.25)
+        q75 = _summary_quantile(ordered, 0.75)
         iqr = q75 - q25
 
     # Compute confidence interval
@@ -1452,7 +1453,8 @@ def bootstrap_ci(
     # Percentile method
     lower_percentile = (1 - confidence_level) / 2 * 100
     upper_percentile = (1 + confidence_level) / 2 * 100
-    ci_lower = float(np.percentile(bootstrap_stats, lower_percentile) * restore)
-    ci_upper = float(np.percentile(bootstrap_stats, upper_percentile) * restore)
+    ordered = np.sort(bootstrap_stats)
+    ci_lower = _summary_quantile(ordered, lower_percentile / 100.0) * restore
+    ci_upper = _summary_quantile(ordered, upper_percentile / 100.0) * restore
 
     return point_estimate, ci_lower, ci_upper

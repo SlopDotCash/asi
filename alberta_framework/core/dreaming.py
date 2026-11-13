@@ -489,7 +489,7 @@ class GuardedDreamer:
         # transition. This mirrors the terminal-discount rule in the rollout
         # path (``dream_one_step``), where ``discount <= discount_floor``
         # terminates the imagined step and forces its discount to zero.
-        transition = transition.replace(
+        transition = transition.replace(  # type: ignore[attr-defined]
             discount=jnp.where(
                 prediction.discount <= self._config.discount_floor,
                 jnp.zeros_like(transition.discount),

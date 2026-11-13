@@ -59,6 +59,7 @@ from alberta_framework.core._float32_scalars import (
     validated_float32_scalar_with_ratio,
 )
 from alberta_framework.core.initializers import sparse_init
+from alberta_framework.core.multi_head_learner import _finite_layer_norm
 from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import Bounder, ObGDBounding
 from alberta_framework.core.types import MLPParams
@@ -192,37 +193,6 @@ def _copy_mapping(payload: object, *, name: str) -> dict[str, object]:
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Skip ``0 * inf`` so a disabled decay does not poison the next EMA."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
-
-
-def _finite_layer_norm(x: Array) -> Array:
-    """Layer-normalize 1D activations without overflowing float32 variance."""
-    mean = jnp.mean(x)
-    centered = x - mean
-    var = jnp.mean(jnp.square(centered))
-
-    def _direct(operand: tuple[Array, Array]) -> Array:
-        centered_op, var_op = operand
-        return centered_op / jnp.sqrt(var_op + jnp.float32(1e-5))
-
-    def _rescaled(operand: tuple[Array, Array]) -> Array:
-        centered_op, _ = operand
-        scale = jnp.max(jnp.abs(centered_op))
-        nonzero = scale > jnp.float32(0.0)
-        safe_scale = jnp.where(nonzero, scale, jnp.float32(1.0))
-        _, exp = jnp.frexp(safe_scale)
-        scaled = jnp.where(nonzero, jnp.ldexp(centered_op, -exp), jnp.zeros_like(centered_op))
-        scaled = scaled - jnp.mean(scaled)
-        scaled_var = jnp.mean(jnp.square(scaled))
-        eps_scale = jnp.ldexp(jnp.float32(1.0), -exp)
-        scaled_eps = jnp.float32(1e-5) * jnp.square(eps_scale)
-        return jnp.where(
-            scaled_var > jnp.float32(0.0),
-            scaled / jnp.sqrt(scaled_var + scaled_eps),
-            jnp.zeros_like(scaled),
-        )
-
-    use_direct = jnp.isfinite(var) | ~jnp.all(jnp.isfinite(x))
-    return cast(Array, jax.lax.cond(use_direct, _direct, _rescaled, (centered, var)))
 
 
 # =============================================================================
@@ -2009,11 +1979,9 @@ class UPGDLearner:
         # the true bound exceeds float32 max even though every input is
         # finite, which collapsed the scale to zero and silently discarded
         # the whole update. Compare the bound against the error unit in
-        # exponent space instead, then apply the exact scale to the steps in
-        # factored form -- with ``total_step = mantissa * 2**exponent`` the
-        # scale is ``ratio * 2**-exponent`` for
-        # ``ratio = error_unit / (kappa * mantissa)``, and rescaling each
-        # step by ``2**-exponent`` first keeps the product in normal range.
+        # exponent space instead, then combine each step's mantissa and
+        # exponent with the bound's factors. This keeps intermediates finite
+        # when small kappa values require a large mantissa-space ratio.
         # The scale itself is subnormal exactly in this regime and flushes
         # to zero under FTZ, so only the factored steps carry the fix; the
         # reported scale stays zero there, as before.
@@ -2048,28 +2016,31 @@ class UPGDLearner:
         )
         nan_case = jnp.isnan(total_step) | jnp.isnan(kappa_nonneg)
         no_bound = ~bounding_needed & ~nan_case
-        ratio = error_unit / (kappa_nonneg * total_mant)
+        ratio = unit_mant / product_mant
+        ratio_exponent = unit_exp - product_exp
         collapsed = jnp.isinf(total_step)
         scale = jnp.where(
             no_bound,
             jnp.asarray(1.0, dtype=jnp.float32),
             jnp.minimum(
-                jnp.ldexp(ratio, -total_exp), jnp.asarray(1.0, dtype=jnp.float32)
+                jnp.ldexp(ratio, ratio_exponent), jnp.asarray(1.0, dtype=jnp.float32)
             ),
         )
-        return (
-            tuple(
+        bounded_steps = []
+        for step in steps:
+            step_mantissa, step_exponent = jnp.frexp(step)
+            bounded_steps.append(
                 zero_if_collapsed_infinity(
                     jnp.where(
-                        no_bound, step, jnp.ldexp(ratio * step, -total_exp)
+                        no_bound,
+                        step,
+                        jnp.ldexp(ratio * step_mantissa, ratio_exponent + step_exponent),
                     ),
                     step,
                     collapsed,
                 )
-                for step in steps
-            ),
-            scale,
-        )
+            )
+        return tuple(bounded_steps), scale
 
     def _bound_error_carrying_steps(
         self,

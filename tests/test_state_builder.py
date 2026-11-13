@@ -1806,3 +1806,23 @@ def test_online_builder_init_supports_jit_and_vmap() -> None:
     )
     jitted_state = jax.jit(builder.init)(jr.key(0))
     assert bool(builder.state_valid(jitted_state))
+
+
+def test_finite_product_matvec_supports_reverse_mode_and_batched_derivatives() -> None:
+    matrix = jnp.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=jnp.float32)
+    vector = jnp.asarray([0.5, -1.0, 2.0], dtype=jnp.float32)
+
+    def total(weights: jax.Array, features: jax.Array) -> jax.Array:
+        return jnp.sum(_finite_product_matvec(weights, features))
+
+    matrix_grad, vector_grad = jax.jit(jax.grad(total, argnums=(0, 1)))(matrix, vector)
+    np.testing.assert_array_equal(matrix_grad, jnp.broadcast_to(vector, matrix.shape))
+    np.testing.assert_array_equal(vector_grad, jnp.sum(matrix, axis=0))
+    batched_grad = jax.jit(jax.vmap(jax.grad(total, argnums=0)))(
+        jnp.stack((matrix, matrix)), jnp.stack((vector, vector))
+    )
+    np.testing.assert_array_equal(
+        batched_grad, jnp.broadcast_to(vector, (2, *matrix.shape))
+    )
+    jacobian_forward = jax.jacfwd(total, argnums=0)(matrix, vector)
+    np.testing.assert_array_equal(jacobian_forward, matrix_grad)

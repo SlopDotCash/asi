@@ -119,6 +119,16 @@ class TestComputeStatistics:
         assert point == pytest.approx(1.0 / 3.0)
         assert lo <= point <= hi
 
+    def test_bootstrap_percentiles_interpolate_opposite_extremes_without_overflow(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            point, lower, upper = bootstrap_ci(
+                [-1.7e308, 1.7e308], n_bootstrap=2, seed=10
+            )
+        assert point == 0.0
+        assert lower == pytest.approx(-1.615e308)
+        assert upper == pytest.approx(1.615e308)
+
     def test_bootstrap_chunked_draws_match_unchunked(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

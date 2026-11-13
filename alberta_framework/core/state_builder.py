@@ -54,6 +54,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import Array
+from jax.extend import core as extend_core
+from jax.interpreters import ad, batching, mlir
 from jaxtyping import Bool, Float, Int, UInt
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
@@ -1585,8 +1587,7 @@ def _prefer_scaled_sum(scaled_direct: Array, scaled_sum: Array) -> Array:
     return jnp.isfinite(scaled_sum) & (gap > threshold)
 
 
-@jax.custom_jvp
-def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
+def _finite_product_matvec_impl(matrix: Array, vector: Array) -> Array:
     """Return ``matrix @ vector`` unless a compiled residue corrupts a cancelling row.
 
     ``matrix`` has shape ``(..., rows, cols)`` and ``vector`` shape ``(cols,)``;
@@ -1631,20 +1632,60 @@ def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
     return jnp.where(use_stable, stable, direct)
 
 
-@_finite_product_matvec.defjvp
-def _finite_product_matvec_jvp(
-    primals: tuple[Array, Array],
-    tangents: tuple[Array, Array],
-) -> tuple[Array, Array]:
-    """Differentiate the mathematical matvec without expanding fallback intermediates."""
-
-    matrix, vector = primals
-    matrix_tangent, vector_tangent = tangents
-    value = _finite_product_matvec(matrix, vector)
-    tangent = _finite_product_matvec(matrix_tangent, vector) + _finite_product_matvec(
-        matrix, vector_tangent
+_finite_product_matvec_p = extend_core.Primitive("asi_finite_product_matvec")
+_finite_product_matvec_p.def_impl(_finite_product_matvec_impl)  # type: ignore[no-untyped-call]
+_finite_product_matvec_p.def_abstract_eval(  # type: ignore[no-untyped-call]
+    lambda matrix, vector: jax.core.ShapedArray(
+        matrix.shape[:-1], jnp.result_type(matrix.dtype, vector.dtype)
     )
-    return value, tangent
+)
+mlir.register_lowering(
+    _finite_product_matvec_p,
+    mlir.lower_fun(_finite_product_matvec_impl, multiple_results=False),
+)
+
+
+def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
+    """Apply the stable matvec with bilinear JVP and explicit mathematical adjoints."""
+    return cast(Array, _finite_product_matvec_p.bind(matrix, vector))  # type: ignore[no-untyped-call]
+
+
+def _finite_product_matvec_batch(
+    values: tuple[Array, Array], dimensions: tuple[int | None, int | None]
+) -> tuple[Array, int]:
+    matrix, vector = values
+    matrix_axis, vector_axis = dimensions
+    size = (
+        matrix.shape[matrix_axis]
+        if matrix_axis is not None
+        else vector.shape[cast(int, vector_axis)]
+    )
+    matrices = (
+        jnp.broadcast_to(matrix, (size, *matrix.shape))
+        if matrix_axis is None
+        else jnp.moveaxis(matrix, matrix_axis, 0)
+    )
+    vectors = (
+        jnp.broadcast_to(vector, (size, *vector.shape))
+        if vector_axis is None
+        else jnp.moveaxis(vector, vector_axis, 0)
+    )
+    result = jax.lax.map(
+        lambda pair: _finite_product_matvec(pair[0], pair[1]), (matrices, vectors)
+    )
+    return result, 0
+
+
+# The robust kernel branches on operand magnitudes. Register its bilinear
+# derivatives explicitly so reverse mode never transposes those branches.
+ad.defbilinear(  # type: ignore[no-untyped-call]
+    _finite_product_matvec_p,
+    lambda cotangent, matrix, vector: cotangent[..., None] * vector,
+    lambda cotangent, matrix, vector: jnp.sum(
+        matrix * cotangent[..., None], axis=tuple(range(matrix.ndim - 1))
+    ),
+)
+batching.primitive_batchers[_finite_product_matvec_p] = _finite_product_matvec_batch
 
 
 class OnlineGatedStateBuilder:

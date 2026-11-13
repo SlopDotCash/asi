@@ -1051,7 +1051,7 @@ def test_generator_resource_manager_preserves_finite_extreme_convex_baseline() -
 
 @pytest.mark.parametrize("offset", [float(np.finfo(np.float32).max), 2e38, -2e38, 0.0])
 @pytest.mark.parametrize("compiled", [False, True])
-def test_generator_resource_manager_finite_logit_centering(
+def test_generator_resource_manager_explicit_config_finite_logit_centering(
     offset: float, compiled: bool
 ) -> None:
     count = 4

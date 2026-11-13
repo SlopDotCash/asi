@@ -921,8 +921,10 @@ class QHordeActorCriticAgent:
                     jnp.where(terminated, jnp.zeros_like(_w), _w),
                     jnp.where(terminated, jnp.zeros_like(_b), _b),
                 )
-            critic_result = critic_result.replace(
-                state=critic_result.state.replace(head_traces=tuple(_pred_traces))
+            critic_result = critic_result.replace(  # type: ignore[attr-defined]
+                state=critic_result.state.replace(  # type: ignore[attr-defined]
+                    head_traces=tuple(_pred_traces)
+                )
             )
 
         actor_td_error = (
@@ -2994,8 +2996,10 @@ class NonlinearQHordeActorCriticAgent:
                     jnp.where(terminated, jnp.zeros_like(_w), _w),
                     jnp.where(terminated, jnp.zeros_like(_b), _b),
                 )
-            critic_result = critic_result.replace(
-                state=critic_result.state.replace(head_traces=tuple(_pred_traces))
+            critic_result = critic_result.replace(  # type: ignore[attr-defined]
+                state=critic_result.state.replace(  # type: ignore[attr-defined]
+                    head_traces=tuple(_pred_traces)
+                )
             )
 
         actor_td_error = (

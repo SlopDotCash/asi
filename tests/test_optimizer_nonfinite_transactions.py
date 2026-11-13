@@ -483,6 +483,15 @@ def test_obgd_bounders_keep_finite_huge_steps() -> None:
         )
 
 
+@pytest.mark.parametrize("kappa,expected", [(0.1, 10.0), (1e-37, 1e37)])
+def test_upgd_obgd_bound_small_kappa_keeps_finite_step(kappa: float, expected: float) -> None:
+    steps = (jnp.asarray([1e38], dtype=jnp.float32),)
+    bounded, _ = jax.jit(UPGDLearner._obgd_bound_with_kappa)(
+        steps, jnp.float32(1.0), jnp.float32(kappa)
+    )
+    np.testing.assert_allclose(np.asarray(bounded[0]), [expected], rtol=1e-6)
+
+
 def test_bounders_do_not_launder_arbitrary_nan() -> None:
     nan_step = (jnp.array([jnp.nan, 0.5]),)
     params = (jnp.ones(2),)

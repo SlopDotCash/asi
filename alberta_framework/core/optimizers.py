@@ -19,6 +19,7 @@ from math import log, prod
 from typing import TYPE_CHECKING, Any, SupportsIndex, cast
 
 import chex
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -170,6 +171,22 @@ class Bounder(ABC):
         ...
 
 
+def _frexp_without_subnormal_flush(value: Array) -> tuple[Array, Array]:
+    """Decompose float32 subnormals through their exact integer significand."""
+    mantissa, exponent = jnp.frexp(value)
+    if value.dtype != jnp.float32:
+        return mantissa, exponent
+    bits = jax.lax.bitcast_convert_type(value, jnp.uint32)
+    magnitude = bits & jnp.uint32(0x7FFFFFFF)
+    subnormal = (magnitude > 0) & (magnitude < jnp.uint32(0x00800000))
+    significand, significand_exponent = jnp.frexp(magnitude.astype(jnp.float32))
+    significand = jnp.where(bits >> jnp.uint32(31), -significand, significand)
+    return (
+        jnp.where(subnormal, significand, mantissa),
+        jnp.where(subnormal, significand_exponent - 149, exponent),
+    )
+
+
 def _renormalize_mantissa(
     mantissa: Array, exponent: Array
 ) -> tuple[Array, Array]:
@@ -206,13 +223,13 @@ def _apply_obgd_bound(
     discarded the whole update. The factored path evaluates the same
     quotient in mantissa/exponent form -- with
     ``kappa * max(|error|, 1) = kd_mant * 2**kd_exp`` and
-    ``total = total_mant * 2**total_exp``, each bounded step is
-    ``ldexp(ldexp(step, -total_exp) / (kd_mant * total_mant), -kd_exp)``
-    -- so a finite-but-huge total still rescales the steps instead of
-    vanishing. The factored path runs only when the direct scale collapsed
-    to zero on finite inputs; every other input keeps the historical
-    direct arithmetic bit-identical, and an actually infinite step still
-    collapses to zero through :func:`zero_if_collapsed_infinity`.
+    ``total = total_mant * 2**total_exp``, each step's mantissa and exponent
+    can be combined with the reciprocal bound without losing small steps
+    during intermediate scaling. The factored path handles an overflowing
+    bound or total and subnormal kappa values. It retains the original step
+    when the true bound is below one. Other inputs keep the historical direct
+    arithmetic, and an actually infinite step still collapses to zero through
+    :func:`zero_if_collapsed_infinity`.
     """
     error_scalar = jnp.squeeze(error)
     total_step = jnp.array(0.0)
@@ -235,7 +252,6 @@ def _apply_obgd_bound(
     all_steps_finite = jnp.asarray(True, dtype=jnp.bool_)
     for s in steps:
         all_steps_finite = all_steps_finite & jnp.all(jnp.isfinite(s))
-    use_factored = collapsed & all_steps_finite & jnp.isfinite(error_scalar)
     # Mantissa/exponent split of the step total. The direct sum can itself
     # overflow to inf, so fall back to a max-scaled sum whose product with
     # the max reconstructs the same total. The rescaling uses ldexp, not
@@ -259,19 +275,37 @@ def _apply_obgd_bound(
     )
     total_mant = jnp.where(jnp.isfinite(total_step), direct_mant, prod_mant)
     total_exp = jnp.where(jnp.isfinite(total_step), direct_exp, prod_exp)
-    kappa_mant, kappa_exp = jnp.frexp(jnp.asarray(kappa, dtype=jnp.float32))
+    kappa_mant, kappa_exp = _frexp_without_subnormal_flush(kappa_arr)
     delta_mant, delta_exp = jnp.frexp(delta_bar)
     kd_mant, kd_exp = _renormalize_mantissa(
         kappa_mant * delta_mant, kappa_exp + delta_exp
     )
-    factored_scale = jnp.ldexp(
-        1.0 / (kd_mant * total_mant), -(kd_exp + total_exp)
+    bound_mant, bound_exp = _renormalize_mantissa(
+        kd_mant * total_mant, kd_exp + total_exp
     )
-    factored = tuple(
-        jnp.ldexp(
-            jnp.ldexp(step, -total_exp) / (kd_mant * total_mant), -kd_exp
+    bounding_needed = (bound_mant > 0.0) & (
+        (bound_exp > 1) | ((bound_exp == 1) & (bound_mant > 0.5))
+    )
+    inverse_mant = 1.0 / bound_mant
+    factored_scale = jnp.where(
+        bounding_needed, jnp.ldexp(inverse_mant, -bound_exp), 1.0
+    )
+    factored = []
+    for step in steps:
+        step_mant, step_exp = _frexp_without_subnormal_flush(step)
+        factored.append(
+            jnp.where(
+                bounding_needed,
+                jnp.ldexp(step_mant * inverse_mant, step_exp - bound_exp),
+                step,
+            )
         )
-        for step in steps
+    kappa_subnormal = (kappa_arr == 0.0) & (kappa_mant != 0.0)
+    use_factored = (
+        (collapsed | ~jnp.isfinite(total_step) | kappa_subnormal)
+        & all_steps_finite
+        & jnp.isfinite(error_scalar)
+        & jnp.isfinite(kappa_arr)
     )
     bounded = tuple(
         jnp.where(use_factored, f, d) for f, d in zip(factored, direct, strict=True)
@@ -1992,9 +2026,10 @@ class ObGD(Optimizer[ObGDState]):
         # ``z_sum = z_mant * 2**z_exp``, each delta is
         # ``(err_mant * trace_mant / (kd_mant * z_mant))``
         # times ``2**(err_exp + trace_exp - kd_exp - z_exp)``. The
-        # factored path runs only when the direct bound overflowed on
-        # finite inputs; every other input keeps the historical direct
-        # arithmetic bit-identical. The ``bounding_factor`` metric is
+        # factored path handles an overflowing bound or trace sum and
+        # subnormal parameters. It compares the true bound against one so
+        # an overflowing intermediate cannot increase the base step size.
+        # Other inputs keep the historical direct arithmetic. The ``bounding_factor`` metric is
         # saturated at float32 max in the overflow regime (its true value
         # does not fit float32) so the finite update is not vetoed by its
         # own diagnostic.
@@ -2005,7 +2040,6 @@ class ObGD(Optimizer[ObGDState]):
             & jnp.isfinite(alpha)
             & jnp.isfinite(kappa)
         )
-        use_factored = jnp.isinf(dot_product) & factored_inputs_finite
         z_direct_mant, z_direct_exp = jnp.frexp(z_sum)
         z_max = jnp.abs(new_bias_trace)
         if new_traces.size:
@@ -2026,24 +2060,58 @@ class ObGD(Optimizer[ObGDState]):
         )
         z_mant = jnp.where(jnp.isfinite(z_sum), z_direct_mant, z_prod_mant)
         z_exp = jnp.where(jnp.isfinite(z_sum), z_direct_exp, z_prod_exp)
-        kappa_mant, kappa_exp = jnp.frexp(kappa)
+        kappa_mant, kappa_exp = _frexp_without_subnormal_flush(kappa)
         delta_mant, delta_exp = jnp.frexp(delta_bar)
         kd_mant, kd_exp = _renormalize_mantissa(
             kappa_mant * delta_mant, kappa_exp + delta_exp
         )
-        alpha_eff_factored = jnp.ldexp(
-            1.0 / (kd_mant * z_mant), -(kd_exp + z_exp)
+        alpha_mant, alpha_exp = _frexp_without_subnormal_flush(alpha)
+        bound_mant, bound_exp = _renormalize_mantissa(
+            alpha_mant * kd_mant * z_mant, alpha_exp + kd_exp + z_exp
         )
-        error_mant, error_exp = jnp.frexp(error_scalar)
-        trace_mant, trace_exp = jnp.frexp(new_traces)
-        weight_delta_factored = jnp.ldexp(
-            (error_mant * trace_mant) / (kd_mant * z_mant),
-            error_exp + trace_exp - kd_exp - z_exp,
+        bounding_needed = (bound_mant > 0.0) & (
+            (bound_exp > 1) | ((bound_exp == 1) & (bound_mant > 0.5))
         )
-        bias_mant, bias_exp = jnp.frexp(new_bias_trace)
-        bias_delta_factored = jnp.ldexp(
-            (error_mant * bias_mant) / (kd_mant * z_mant),
-            error_exp + bias_exp - kd_exp - z_exp,
+        alpha_eff_factored = jnp.where(
+            bounding_needed,
+            jnp.ldexp(1.0 / (kd_mant * z_mant), -(kd_exp + z_exp)),
+            alpha,
+        )
+        error_mant, error_exp = _frexp_without_subnormal_flush(error_scalar)
+        trace_mant, trace_exp = _frexp_without_subnormal_flush(new_traces)
+        weight_delta_factored = jnp.where(
+            bounding_needed,
+            jnp.ldexp(
+                (error_mant * trace_mant) / (kd_mant * z_mant),
+                error_exp + trace_exp - kd_exp - z_exp,
+            ),
+            jnp.ldexp(
+                alpha_mant * error_mant * trace_mant,
+                alpha_exp + error_exp + trace_exp,
+            ),
+        )
+        bias_mant, bias_exp = _frexp_without_subnormal_flush(new_bias_trace)
+        bias_delta_factored = jnp.where(
+            bounding_needed,
+            jnp.ldexp(
+                (error_mant * bias_mant) / (kd_mant * z_mant),
+                error_exp + bias_exp - kd_exp - z_exp,
+            ),
+            jnp.ldexp(
+                alpha_mant * error_mant * bias_mant,
+                alpha_exp + error_exp + bias_exp,
+            ),
+        )
+        subnormal_parameter = ((alpha == 0.0) & (alpha_mant != 0.0)) | (
+            (kappa == 0.0) & (kappa_mant != 0.0)
+        )
+        use_factored = (
+            ~jnp.isfinite(dot_product) | ~jnp.isfinite(z_sum) | subnormal_parameter
+        ) & factored_inputs_finite
+        dot_product = jnp.where(
+            use_factored,
+            jnp.ldexp(bound_mant, bound_exp),
+            dot_product,
         )
         alpha_eff = jnp.where(use_factored, alpha_eff_factored, alpha_eff_direct)
 

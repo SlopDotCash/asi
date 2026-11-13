@@ -1125,8 +1125,8 @@ class SARSAAgent:
                 new_w = jnp.where(safe_terminated, jnp.zeros_like(w_trace), skipped_w)
                 new_b = jnp.where(safe_terminated, jnp.zeros_like(b_trace), skipped_b)
                 head_traces[i] = (new_w, new_b)
-            new_learner_state = new_learner_state.replace(
-                head_params=new_learner_state.head_params.replace(
+            new_learner_state = new_learner_state.replace(  # type: ignore[attr-defined]
+                head_params=new_learner_state.head_params.replace(  # type: ignore[attr-defined]
                     weights=tuple(head_weights), biases=tuple(head_biases)
                 ),
                 head_traces=tuple(head_traces),
@@ -1146,7 +1146,7 @@ class SARSAAgent:
                     jnp.where(safe_terminated, jnp.zeros_like(w_trace), w_trace),
                     jnp.where(safe_terminated, jnp.zeros_like(b_trace), b_trace),
                 )
-            new_learner_state = new_learner_state.replace(
+            new_learner_state = new_learner_state.replace(  # type: ignore[attr-defined]
                 head_traces=tuple(head_traces),
             )
 

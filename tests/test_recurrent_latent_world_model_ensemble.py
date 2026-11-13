@@ -27,6 +27,8 @@ from alberta_framework.core.recurrent_latent_world_model_ensemble import (
     RecurrentLatentWorldModelEnsembleState,
     _scale_safe_mean,
     _scale_safe_mean_and_variance,
+    _scale_safe_ratio,
+    _scaled_tanh,
     _tree_l2_norm,
     load_recurrent_latent_world_model_ensemble_checkpoint,
     save_recurrent_latent_world_model_ensemble_checkpoint,
@@ -1512,3 +1514,28 @@ def test_scaled_tanh_gradient_is_unit_at_zero_and_finite_near_float32_max() -> N
     assert float(grad_at_zero[0]) == 1.0
     grad_at_nonzero = grad_fn(jnp.asarray((1.0, 0.0, 0.0, 0.0), dtype=jnp.float32))
     assert float(grad_at_nonzero[0]) == 1.0
+
+
+@pytest.mark.parametrize("scale", [2.0e38, 3.0e38, float(np.finfo(np.float32).max)])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_scaled_tanh_preserves_finite_ratio_near_float32_limit(
+    scale: float, compiled: bool
+) -> None:
+    numerator = jnp.asarray(scale, dtype=jnp.float32)
+    def ratio_fn(value: jax.Array) -> jax.Array:
+        return _scale_safe_ratio(value, scale)
+
+    def prediction_fn(value: jax.Array) -> jax.Array:
+        return _scaled_tanh(value, scale)
+
+    if compiled:
+        ratio_fn = jax.jit(ratio_fn)
+        prediction_fn = jax.jit(prediction_fn)
+
+    np.testing.assert_allclose(ratio_fn(numerator), 1.0, rtol=1e-6)
+    prediction = prediction_fn(numerator)
+    expected = float(numerator) * np.tanh(1.0)
+    np.testing.assert_allclose(prediction, expected, rtol=1e-6)
+    np.testing.assert_allclose(
+        jax.grad(prediction_fn)(numerator), 1.0 - np.tanh(1.0) ** 2, rtol=1e-6
+    )
