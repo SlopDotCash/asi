@@ -356,3 +356,45 @@ def test_dynamic_scale_shift_and_scale_drift_init_respect_scale_bounds() -> None
     )
     drift_state = drift.init(jr.key(0))
     assert bool(jnp.all((drift_state.log_scales >= 1.5) & (drift_state.log_scales <= 2.5)))
+
+def test_hidden_ar2_init_is_stationary():
+    """``init`` draws both lags from the stationary distribution.
+
+    Under the default coefficients the stationary variance is
+    ``gamma0 = sigma^2 / (1 - phi1*rho1 - phi2*rho2)`` ~= 0.0556 with
+    lag-1 autocorrelation ``rho1 = phi1 / (1 - phi2)`` = 0.5.
+    Independent unit-variance lags would start the stream ~18x above
+    its stationary variance with zero lag correlation.
+    """
+    stream = HiddenStateAR2Stream(feature_dim=4, visible_dim=2)
+    keys = jr.split(jr.key(0), 2048)
+    x_prev = []
+    x_prev2 = []
+    for key in keys:
+        state = stream.init(key)
+        x_prev.append(state.x_prev)
+        x_prev2.append(state.x_prev2)
+    x_prev = jnp.concatenate(x_prev)
+    x_prev2 = jnp.concatenate(x_prev2)
+    gamma0 = 0.2**2 / (1.0 - 0.6 * 0.5 - (-0.2) * 0.1)
+    assert jnp.isclose(jnp.var(x_prev), gamma0, rtol=0.25)
+    assert jnp.isclose(jnp.var(x_prev2), gamma0, rtol=0.25)
+    corr = jnp.mean(x_prev * x_prev2) / jnp.sqrt(
+        jnp.mean(x_prev * x_prev) * jnp.mean(x_prev2 * x_prev2)
+    )
+    assert jnp.isclose(corr, 0.5, atol=0.06)
+
+
+def test_hidden_ar2_init_keeps_unit_variance_without_innovation():
+    """With zero innovation there is no stationary variance to draw from.
+
+    The stationary law is degenerate (or arbitrary for the
+    deterministic-copy case), so ``init`` keeps its unit-variance
+    start instead of collapsing the stream to zeros.
+    """
+    stream = HiddenStateAR2Stream(
+        feature_dim=4, visible_dim=2, phi1=1.0, phi2=0.0, innovation_std=0.0
+    )
+    keys = jr.split(jr.key(0), 512)
+    x_prev = jnp.concatenate([stream.init(key).x_prev for key in keys])
+    assert jnp.isclose(jnp.var(x_prev), 1.0, rtol=0.25)
