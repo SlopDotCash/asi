@@ -618,6 +618,52 @@ def test_zero_outgoing_discount_does_not_hide_required_poisoned_trace(
         _assert_learning_state_equal(result.state, state)
 
 
+def test_mixed_incoming_discounts_poisoned_zero_decay_trace_does_not_block() -> None:
+    """A poisoned trace on a zero-incoming-discount demon must not block the rest.
+
+    The checked-state finiteness gate zeroes a carried head trace only when
+    that demon's trace decays to zero. The decay is per demon, so with mixed
+    incoming discounts a poisoned trace on the zero-decay demon must not
+    reject the update for the demon whose trace is still consumed.
+    """
+    learner = _history_learner(n_demons=2)
+    first = _history_step(learner, _zeroed_history_state(learner), 0, [0.0, 0.0], [0.5, 0.0])
+    assert bool(first.update_applied)
+    np.testing.assert_array_equal(first.state.previous_discounts, [0.5, 0.0])
+    state = first.state.replace(
+        head_traces=(
+            first.state.head_traces[0],
+            (
+                jnp.full_like(first.state.head_traces[1][0], jnp.inf),
+                jnp.full_like(first.state.head_traces[1][1], jnp.inf),
+            ),
+        )
+    )
+    result = _history_step(learner, state, 1, [1.0, 1.0], [0.0, 0.0])
+    assert bool(result.update_applied)
+    for leaf in jax.tree.leaves(result.state.head_traces[1]):
+        chex.assert_tree_all_finite(leaf)
+
+
+def test_mixed_incoming_discounts_poisoned_consumed_trace_still_rejects() -> None:
+    """A poisoned trace on a demon whose trace is still consumed still rejects."""
+    learner = _history_learner(n_demons=2)
+    first = _history_step(learner, _zeroed_history_state(learner), 0, [0.0, 0.0], [0.5, 0.0])
+    assert bool(first.update_applied)
+    state = first.state.replace(
+        head_traces=(
+            (
+                jnp.full_like(first.state.head_traces[0][0], jnp.inf),
+                jnp.full_like(first.state.head_traces[0][1], jnp.inf),
+            ),
+            first.state.head_traces[1],
+        )
+    )
+    result = _history_step(learner, state, 1, [1.0, 1.0], [0.0, 0.0])
+    assert not bool(result.update_applied)
+    _assert_learning_state_equal(result.state, state)
+
+
 def test_pickle_and_public_scan_preserve_discount_history() -> None:
     learner = _history_learner()
     initial = _zeroed_history_state(learner)
@@ -1014,6 +1060,39 @@ def test_replacing_zero_grad_does_not_multiply_inf_trunk_trace() -> None:
     )
     state = learner.init(2, jax.random.key(1))
     state = state.replace(  # type: ignore[attr-defined]
+        trunk_traces=tuple(jnp.full_like(trace, jnp.inf) for trace in state.trunk_traces)
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    result = learner.update_with_ratios(
+        state,
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+        jnp.array([0.5, -0.25], dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.array([1.0, 1.0], dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    for trace in result.state.trunk_traces:
+        chex.assert_tree_all_finite(trace)
+
+
+def test_accumulating_inf_trunk_trace_does_not_block_update() -> None:
+    """Accumulating mode also rebuilds the trunk trace from the current gradient.
+
+    The carried trunk trace is never consumed in either trace mode (the
+    wrapped learner has gamma=lamda=0), so a poisoned carried trunk trace
+    must not fail the finiteness gate in accumulating mode either.
+    """
+    learner = OffPolicyHordeLearner(
+        _spec(gammas=(0.0, 0.0)),
+        hidden_sizes=(3,),
+        optimizer=LMS(step_size=0.01),
+        trace_mode=TraceMode.ACCUMULATING,
+        sparsity=0.0,
+    )
+    state = learner.init(2, jax.random.key(1))
+    state = state.replace(
         trunk_traces=tuple(jnp.full_like(trace, jnp.inf) for trace in state.trunk_traces)
     )
     raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
