@@ -1919,13 +1919,13 @@ def load_recurrent_latent_world_model_ensemble_checkpoint(
     # validated immediately after it is reconstructed.
     template = model._initial_state(key)
     restored, second_metadata = load_checkpoint(template, path)
-    if second_metadata != metadata:
+    if not _strict_json_equal(second_metadata, metadata):
         raise ValueError("checkpoint metadata changed between reads")
     state = cast(RecurrentLatentWorldModelEnsembleState, restored)
     if not bool(jax.device_get(model.state_valid(state))):
         raise ValueError("restored recurrent latent ensemble state is invalid")
     expected_budget = model.resource_budget(state).to_config()
-    if metadata.get("resource_budget") != expected_budget:
+    if not _strict_json_equal(metadata.get("resource_budget"), expected_budget):
         raise ValueError("checkpoint resource budget does not match config and state")
     return model, state
 
