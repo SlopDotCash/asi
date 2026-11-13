@@ -31,7 +31,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import Array
-from jaxtyping import Float, Int
+from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.horde import HordeLearner
@@ -360,6 +360,8 @@ class SARSAUpdateResult:
         q_values: Q-values for all actions at s_{t+1}
         td_error: TD error for the taken action
         reward: Reward received
+        update_applied: Whether the transaction committed (``False`` when the
+            state rolled back)
     """
 
     state: SARSAState
@@ -367,6 +369,7 @@ class SARSAUpdateResult:
     q_values: Float[Array, " n_actions"]
     td_error: Float[Array, ""]
     reward: Float[Array, ""]
+    update_applied: Bool[Array, ""]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1177,6 +1180,7 @@ class SARSAAgent:
             q_values=jnp.where(transaction_applied, q_next, jnp.zeros_like(q_next)),
             td_error=jnp.where(diagnostic_valid, td_error, 0.0),
             reward=jnp.where(jnp.isfinite(raw_reward), raw_reward, 0.0),
+            update_applied=transaction_applied,
         )
 
 

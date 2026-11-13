@@ -292,6 +292,52 @@ def test_pipeline_sarsa_control_contains_step3_prediction_demons() -> None:
     assert not jnp.allclose(old_prediction_head, new_prediction_head)
 
 
+def test_pipeline_rejects_transition_when_sarsa_control_rolls_back() -> None:
+    """A rolled-back SARSA update must not commit the rest of the transition.
+
+    A rejected ``SARSAAgent.update`` reports the prior action rather than -1
+    (#3726), so the action is no longer a signal that the update applied.
+    Unbounded LMS control with step size 1.0 diverges on a constant reward;
+    once SARSA starts rolling back, the pipeline must stop advancing too.
+    """
+    base = _small_pipeline_config()
+    config = replace(base, control=replace(base.control, bounder="none", step_size=1.0))
+    pipeline = make_alberta_pipeline(config)
+    observation = jnp.full((3,), 4.0, dtype=jnp.float32)
+    steps = 40
+    initial = pipeline.init(jr.key(0), observation)
+
+    result = pipeline.run_arrays(
+        initial,
+        jnp.broadcast_to(observation, (steps, 3)),
+        jnp.ones(steps, dtype=jnp.float32),
+        jnp.zeros(steps, dtype=jnp.float32),
+        jnp.zeros((steps, 2), dtype=jnp.float32),
+    )
+
+    control_steps = int(result.state.control_state.step_count)
+    assert 0 < control_steps < steps
+    assert int(result.state.step_count) == control_steps
+    assert bool(jnp.all(result.actions[:control_steps] >= 0))
+    assert bool(jnp.all(result.actions[control_steps:] == -1))
+
+    state = result.state
+    rejected = pipeline.update(
+        state,
+        observation,
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+    )
+    # ``update`` narrows the host-only clocks; compare the learned state.
+    chex.assert_trees_all_equal(
+        rejected.state.horde_state.replace(birth_timestamp=0.0, uptime_s=0.0),
+        state.horde_state.replace(birth_timestamp=0.0, uptime_s=0.0),
+    )
+    assert int(rejected.state.step_count) == int(state.step_count)
+    assert int(rejected.action) == -1
+
+
 def test_pipeline_scan_smoke_is_finite() -> None:
     config = _small_pipeline_config()
     result = run_pipeline_smoke(config, steps=8, seed=3)

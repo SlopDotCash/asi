@@ -162,6 +162,7 @@ class Step4OneStepResult:
     q_values: Array
     td_error: Array
     reward: Array
+    update_applied: Array
 
 
 def _require_unit_interval(name: str, value: object) -> float:
@@ -386,6 +387,7 @@ def step4_update(
         q_values=result.q_values,
         td_error=result.td_error,
         reward=result.reward,
+        update_applied=result.update_applied,
     )
 
 
