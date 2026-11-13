@@ -2643,3 +2643,95 @@ def test_obgd_zero_factors_keep_unbounded_rule(alpha: float, kappa: float) -> No
     assert float(result.scale) == 1.0
     assert float(result.step_size) == alpha
     np.testing.assert_array_equal(result.updates["weight"], [alpha * 6.0])
+
+
+def test_running_statistics_handles_opposite_sign_float32_extremes_and_negative_count() -> None:
+    from alberta_framework.core.recurrent_trace_actor_critic import (
+        RunningStatistics,
+        _update_running_statistics,
+    )
+
+    stats = RunningStatistics(
+        sample_count=jnp.asarray(0, dtype=jnp.int32),
+        mean=jnp.asarray(0.0, dtype=jnp.float32),
+        m2=jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    stats1 = _update_running_statistics(stats, jnp.asarray(-2.0e38, dtype=jnp.float32))
+    stats2 = _update_running_statistics(stats1, jnp.asarray(2.0e38, dtype=jnp.float32))
+    assert int(stats2.sample_count) == 2
+    assert bool(jnp.isfinite(stats2.mean))
+    assert float(stats2.mean) == 0.0
+    assert float(stats2.m2) >= 0.0
+
+    corrupted = RunningStatistics(
+        sample_count=jnp.asarray(-1, dtype=jnp.int32),
+        mean=jnp.asarray(1.5, dtype=jnp.float32),
+        m2=jnp.asarray(0.25, dtype=jnp.float32),
+    )
+    frozen = _update_running_statistics(corrupted, jnp.asarray(3.0, dtype=jnp.float32))
+    assert int(frozen.sample_count) == -1
+    assert float(frozen.mean) == 1.5
+    assert float(frozen.m2) == 0.25
+
+
+def test_rtu_taylor_step_zero_parameter_delta_ignores_nonfinite_taylor_trace() -> None:
+    from alberta_framework.core.recurrent_trace_actor_critic import (
+        RTUParameters,
+        RTUSensitivities,
+        RTUState,
+        rtu_step,
+        rtu_taylor_step,
+    )
+
+    params = RTUParameters(
+        nu_log=jnp.asarray([-1.0], dtype=jnp.float32),
+        theta_log=jnp.asarray([-1.0], dtype=jnp.float32),
+        b_real=jnp.asarray([[0.5]], dtype=jnp.float32),
+        b_imag=jnp.asarray([[-0.25]], dtype=jnp.float32),
+    )
+    zero_delta = RTUParameters(
+        nu_log=jnp.zeros((1,), dtype=jnp.float32),
+        theta_log=jnp.zeros((1,), dtype=jnp.float32),
+        b_real=jnp.zeros((1, 1), dtype=jnp.float32),
+        b_imag=jnp.zeros((1, 1), dtype=jnp.float32),
+    )
+    state = RTUState(
+        real=jnp.asarray([0.1], dtype=jnp.float32),
+        imaginary=jnp.asarray([-0.2], dtype=jnp.float32),
+    )
+    sens = RTUSensitivities(
+        nu_log=jnp.zeros((2, 1), dtype=jnp.float32),
+        theta_log=jnp.zeros((2, 1), dtype=jnp.float32),
+        b_real=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+        b_imag=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+    )
+    inf_trace = RTUSensitivities(
+        nu_log=jnp.full((2, 1), jnp.inf, dtype=jnp.float32),
+        theta_log=jnp.full((2, 1), -jnp.inf, dtype=jnp.float32),
+        b_real=jnp.full((2, 1, 1), jnp.inf, dtype=jnp.float32),
+        b_imag=jnp.full((2, 1, 1), -jnp.inf, dtype=jnp.float32),
+    )
+    inputs = jnp.asarray([1.0], dtype=jnp.float32)
+    next_state, next_sens, _ = rtu_taylor_step(
+        params, state, sens, inf_trace, zero_delta, inputs
+    )
+    expected_state, expected_sens = rtu_step(params, state, sens, inputs)
+    np.testing.assert_allclose(next_state.real, expected_state.real)
+    np.testing.assert_allclose(next_sens.nu_log, expected_sens.nu_log)
+    np.testing.assert_allclose(next_sens.b_real, expected_sens.b_real)
+
+
+def test_validated_scalar_and_finite_array_reject_complex_dtypes() -> None:
+    from alberta_framework.core.recurrent_trace_actor_critic import (
+        _validated_finite_array,
+        _validated_scalar,
+    )
+
+    with pytest.raises(ValueError, match="must have numeric dtype"):
+        _validated_scalar("alpha", jnp.asarray(1.0 + 2.0j, dtype=jnp.complex64), boolean=False)
+    with pytest.raises(ValueError, match="must have numeric dtype"):
+        _validated_finite_array(
+            "observation",
+            jnp.asarray([1.0 + 2.0j], dtype=jnp.complex64),
+            expected_shape=(1,),
+        )
