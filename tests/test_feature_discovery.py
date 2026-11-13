@@ -3778,3 +3778,39 @@ def test_update_preserves_finite_mean_squared_error_metric(
     else:
         assert not bool(result.update_applied)
         assert int(result.state.step_count) == 0
+
+
+@pytest.mark.parametrize("obs_value", [0.25, float("nan")], ids=["accepted", "rejected"])
+def test_feature_discovery_update_preserves_host_clocks(obs_value: float) -> None:
+    """Single-step FixedBudgetFeatureLearner.update must retain Python-float clocks."""
+    learner = FixedBudgetFeatureLearner(
+        n_features=4,
+        n_tasks=2,
+        replacement_interval=0,
+    )
+    birth = 1_700_000_000.125
+    uptime = float(2**24) + 0.25
+    state = learner.init(feature_dim=3, key=jr.key(7)).replace(
+        birth_timestamp=birth,
+        uptime_s=uptime,
+    )
+    obs = jnp.full((3,), obs_value, dtype=jnp.float32)
+    targets = jnp.zeros((2,), dtype=jnp.float32)
+
+    result = learner.update(state, obs, targets)
+    assert type(result.state.birth_timestamp) is float
+    assert type(result.state.uptime_s) is float
+    assert result.state.birth_timestamp == birth
+    assert result.state.uptime_s == uptime
+
+
+@pytest.mark.parametrize("bad_value", [float("inf"), float("-inf"), float("nan")])
+def test_feature_discovery_nonfinite_observation_fails_visible(bad_value: float) -> None:
+    """Non-finite observations must not saturate tanh into finite features."""
+    learner = FixedBudgetFeatureLearner(n_features=4, n_tasks=2)
+    state = learner.init(feature_dim=3, key=jr.key(11))
+    obs = jnp.array([bad_value, 0.25, -0.5], dtype=jnp.float32)
+
+    assert bool(jnp.all(jnp.isnan(learner.constructed_features(state, obs))))
+    assert bool(jnp.all(jnp.isnan(learner.augmented_observation(state, obs)[3:])))
+    assert bool(jnp.all(jnp.isnan(learner.predict(state, obs))))
