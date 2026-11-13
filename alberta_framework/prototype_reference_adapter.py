@@ -160,6 +160,8 @@ def _bool_scalar(value: Any, *, name: str) -> bool:
 
 
 def _float32_scalar(value: float, *, name: str) -> np.float32:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must not be boolean")
     try:
         with np.errstate(over="ignore", invalid="ignore", under="ignore"):
             converted = np.asarray(value, dtype=np.float32)
@@ -586,8 +588,23 @@ class PrototypeReferenceAdapter:
                 is not AuthorizationStatus.EXACT
             ):
                 raise DecisionOwnershipError("outcome does not use an exact authorization")
+            if transaction.receipt.dispatch.authorization.decision != transaction.decision:
+                raise DecisionOwnershipError(
+                    "authorization decision does not match the transaction decision"
+                )
+            if (
+                transaction.receipt.dispatch.authorization.authorized_action
+                != transaction.decision.proposed_action
+            ):
+                raise DecisionOwnershipError(
+                    "authorized action differs from the current proposal"
+                )
             if transaction.receipt.effective_action != transaction.decision.proposed_action:
                 raise DecisionOwnershipError("receipt action differs from the current proposal")
+            if transaction.next_decision_observation_id == state.current_observation_id:
+                raise DecisionOwnershipError(
+                    "next decision observation identity must advance beyond current observation"
+                )
             self.manifest.action_spec.encode(transaction.receipt.effective_action)
             self.manifest.observation_spec.encode(transaction.bootstrap_observation)
             self.manifest.observation_spec.encode(
@@ -601,8 +618,12 @@ class PrototypeReferenceAdapter:
             next_observation = transaction.next_decision_observation.to_numpy()
             reward = _float32_scalar(transaction.reward, name="reward")
             discount = _float32_scalar(transaction.discount, name="discount")
+            if not (0.0 <= float(discount) <= 1.0):
+                raise ValueError("discount must be in [0, 1] in float32")
             if (transaction.discount == 0.0) != (float(discount) == 0.0):
                 raise ValueError("discount changes zero/nonzero semantics in float32")
+            if (transaction.discount == 1.0) != (float(discount) == 1.0):
+                raise ValueError("discount changes unit/non-unit semantics in float32")
 
             result = self._agent.update_transition(
                 state.agent_state,
@@ -681,7 +702,8 @@ class PrototypeReferenceAdapter:
             TypeError,
             ValueError,
         ) as exc:
-            return self._rejected(state, str(exc))
+            reason = str(exc).strip() or type(exc).__name__
+            return self._rejected(state, reason)
 
 
 __all__ = [
