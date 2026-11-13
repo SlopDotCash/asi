@@ -17,6 +17,7 @@ from alberta_framework import (
     Autostep,
     AutostepGTDLambda,
     ObGD,
+    ObGDBounding,
     optimizer_from_config,
 )
 from alberta_framework.core.optimizers import TDIDBD, AutoTDIDBD
@@ -1029,6 +1030,49 @@ class TestObGD:
         assert bool(result.update_applied)
         chex.assert_trees_all_close(result.new_state.traces, observation)
         assert bool(jnp.isfinite(result.new_state.bias_trace))
+
+    def test_collapsed_infinite_bound_from_finite_inputs_commits_noop_step(self) -> None:
+        """When M overflows to +inf from finite inputs, alpha_eff collapses to 0 and commits."""
+        optimizer = ObGD(step_size=1.0, kappa=2.0)
+        state = optimizer.init(2)
+        observation = jnp.asarray([1e20, 1.0], dtype=jnp.float32)
+        result = optimizer.update(state, jnp.asarray(1e25, dtype=jnp.float32), observation)
+        assert bool(result.update_applied)
+        chex.assert_trees_all_close(result.weight_delta, jnp.zeros(2, dtype=jnp.float32))
+        assert float(result.bias_delta) == 0.0
+        assert float(result.metrics["effective_step_size"]) == 0.0
+        assert bool(jnp.isfinite(result.metrics["bounding_factor"]))
+        chex.assert_trees_all_close(result.new_state.traces, observation)
+
+    def test_zero_kappa_with_large_finite_error_and_traces_avoids_nan_and_overflow(
+        self,
+    ) -> None:
+        """kappa=0 must skip 0 * inf in M and reassociate alpha * error * z."""
+        optimizer = ObGD(step_size=1e-30, kappa=0.0)
+        state = optimizer.init(2)
+        observation = jnp.asarray([1e20, 1.0], dtype=jnp.float32)
+        result = optimizer.update(state, jnp.asarray(1e25, dtype=jnp.float32), observation)
+        assert bool(result.update_applied)
+        assert float(result.metrics["bounding_factor"]) == 0.0
+        np.testing.assert_allclose(
+            result.weight_delta,
+            jnp.asarray([1e15, 1e-5], dtype=jnp.float32),
+            rtol=1e-6,
+        )
+
+    def test_obgd_bounding_zero_kappa_with_overflowing_total_step_keeps_unit_scale(
+        self,
+    ) -> None:
+        """ObGDBounding(kappa=0.0) must not evaluate 0.0 * inf = NaN when L1 sum overflows."""
+        bounder = ObGDBounding(kappa=0.0)
+        steps = (jnp.asarray([2e38, 2e38], dtype=jnp.float32),)
+        bounded, scale = bounder.bound(
+            steps,
+            jnp.asarray(1.0, dtype=jnp.float32),
+            (jnp.zeros(2, dtype=jnp.float32),),
+        )
+        assert float(scale) == 1.0
+        chex.assert_trees_all_close(bounded[0], steps[0])
 
 
 class TestAdaptiveObGDBounding:
