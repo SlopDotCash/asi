@@ -365,3 +365,25 @@ def test_lifetime_gauntlet_checkpoint_rejects_float_aliased_accounting(
 
     with pytest.raises(ValueError, match="resource contract"):
         load_lifetime_gauntlet_checkpoint(tampered_path)
+
+
+def test_recurring_two_agent_checkpoint_rejects_float_aliased_accounting(
+    tmp_path,
+) -> None:
+    """A float-aliased memory-accounting scalar must not load as an int."""
+    world = RecurringTwoAgentWorld(context_length=5, nuisance_dim=1)
+    state = world.init(jr.key(7))
+    original_path = tmp_path / "original"
+    save_recurring_two_agent_checkpoint(world, state, original_path)
+    metadata = load_checkpoint_metadata(original_path)
+    load_recurring_two_agent_checkpoint(original_path)
+
+    tampered_accounting = dict(metadata["memory_accounting"])
+    tampered_accounting["state_nbytes"] = float(tampered_accounting["state_nbytes"])
+    tampered_metadata = dict(metadata)
+    tampered_metadata["memory_accounting"] = tampered_accounting
+    tampered_path = tmp_path / "tampered"
+    save_checkpoint(state, tampered_path, metadata=tampered_metadata)
+
+    with pytest.raises(ValueError, match="resource contract"):
+        load_recurring_two_agent_checkpoint(tampered_path)
