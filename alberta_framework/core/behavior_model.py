@@ -367,7 +367,7 @@ def selected_action_probabilities(
         expected_shape=tuple(probs.shape[:-1]),
     )
     one_hot = jax.nn.one_hot(action_ids, probs.shape[-1], dtype=jnp.float32)
-    selected = jnp.sum(probs * one_hot, axis=-1)
+    selected = jnp.sum(jnp.where(one_hot > 0.0, probs, 0.0), axis=-1)
     floor = jnp.asarray(min_probability, dtype=jnp.float32)
     return jnp.where(actions_valid, jnp.maximum(selected, floor), floor)
 
@@ -387,13 +387,23 @@ def action_log_likelihoods(
     )
 
 
-def _require_target_distribution(target_probabilities: Array, n_actions: int) -> None:
-    """Reject a target policy that is not a distribution over ``n_actions``."""
+def _require_target_distribution(
+    target_probabilities: Array,
+    expected_shape: tuple[int, ...],
+) -> None:
+    """Reject a target policy that is not a distribution with ``expected_shape``."""
+    if not expected_shape:
+        raise ValueError("behavior_probabilities must have at least one axis")
+    n_actions = expected_shape[-1]
     target = jnp.asarray(target_probabilities)
     if not jnp.issubdtype(target.dtype, jnp.floating):
         raise ValueError("target_probabilities must have a real floating dtype")
     if target.ndim == 0 or target.shape[-1] != n_actions:
         raise ValueError(f"target_probabilities must have {n_actions} actions on the last axis")
+    if tuple(target.shape) != expected_shape:
+        raise ValueError(
+            f"target_probabilities must have shape {expected_shape}, got {tuple(target.shape)}"
+        )
     if isinstance(target, jax.core.Tracer):
         return
     probabilities = np.asarray(target, dtype=np.float64)
@@ -427,11 +437,14 @@ def clipped_importance_ratios(
         Per-sample ratios with shape ``target_probabilities.shape[:-1]``.
 
     Raises:
-        ValueError: If ``target_probabilities`` is not real floating with one
-            entry per behavior action or, when concrete, is not a finite
-            non-negative distribution along its last axis.
+        ValueError: If ``target_probabilities`` is not real floating with the
+            same shape as ``behavior_probabilities`` or, when concrete, is not a
+            finite non-negative distribution along its last axis.
     """
-    _require_target_distribution(target_probabilities, jnp.shape(behavior_probabilities)[-1])
+    _require_target_distribution(
+        target_probabilities,
+        tuple(jnp.shape(behavior_probabilities)),
+    )
     target = selected_action_probabilities(
         target_probabilities,
         actions,

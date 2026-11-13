@@ -1452,3 +1452,42 @@ def test_input_gradient_true_norm_overflow_remains_invalid(compiled):
     assert not bool(result.valid)
     np.testing.assert_array_equal(np.asarray(result.gradient), np.zeros(2))
     assert float(result.gradient_norm) == 0.0
+
+
+def test_selected_action_probabilities_ignores_nonfinite_unselected_actions() -> None:
+    probs = jnp.array(
+        [
+            [0.7, jnp.nan, 0.3],
+            [jnp.inf, 0.25, -jnp.inf],
+        ],
+        dtype=jnp.float32,
+    )
+    actions = jnp.array([0, 1], dtype=jnp.int32)
+
+    selected = selected_action_probabilities(probs, actions, min_probability=1e-6)
+    log_likes = action_log_likelihoods(probs, actions, min_probability=1e-6)
+
+    chex.assert_trees_all_close(selected, jnp.array([0.7, 0.25], dtype=jnp.float32))
+    chex.assert_trees_all_close(
+        log_likes, jnp.log(jnp.array([0.7, 0.25], dtype=jnp.float32))
+    )
+
+
+def test_clipped_importance_ratios_rejects_mismatched_leading_shapes() -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+
+    with pytest.raises(ValueError, match=r"target_probabilities must have shape \(2,\)"):
+        model.importance_ratio(
+            state,
+            jnp.ones(2, dtype=jnp.float32),
+            jnp.array(0, dtype=jnp.int32),
+            jnp.array([[0.5, 0.5], [0.5, 0.5]], dtype=jnp.float32),
+        )
+
+    with pytest.raises(ValueError, match=r"target_probabilities must have shape \(2, 2\)"):
+        clipped_importance_ratios(
+            jnp.array([0.5, 0.5], dtype=jnp.float32),
+            jnp.array([[0.4, 0.6], [0.5, 0.5]], dtype=jnp.float32),
+            jnp.array(0, dtype=jnp.int32),
+        )
