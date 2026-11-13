@@ -6,7 +6,10 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 
-from alberta_framework.streams.out_of_class import CompositionalStream
+from alberta_framework.streams.out_of_class import (
+    CompositionalStream,
+    OutOfClassPolynomialStream,
+)
 
 
 def test_compositional_cancelling_component_sum_stays_finite_and_negative() -> None:
@@ -155,3 +158,76 @@ def test_compositional_ordinary_step_is_bitwise_identical() -> None:
     timestep, _ = stream.step(state, jnp.asarray(0, dtype=jnp.int32))
     assert jnp.array_equal(timestep.observation, x)
     assert jnp.array_equal(timestep.target, expected_target)
+
+
+def test_polynomial_cancelling_triple_and_linear_sums_stay_finite() -> None:
+    """Cancelling polynomial triple and linear terms must not overflow to inf/NaN."""
+    stream = OutOfClassPolynomialStream(
+        feature_dim=4,
+        n_tasks=1,
+        n_contexts=1,
+        context_length=1,
+        active_triples_per_context=4,
+        feature_std=20.0,
+        linear_scale=0.0,
+        noise_std=0.0,
+    )
+    state = stream.init(jr.key(3))
+    _key, k_x, _k_noise = jr.split(state.key, 3)
+    x = stream._feature_std * jr.normal(k_x, (4,), dtype=jnp.float32)  # noqa: SLF001
+    triples = (
+        x[state.triples_left]
+        * x[state.triples_middle]
+        * x[state.triples_right]
+    )
+    desired_terms = jnp.asarray(
+        [2.0e38, 2.0e38, -2.0e38, -3.0e38],
+        dtype=jnp.float32,
+    )
+    weights = (desired_terms / triples).reshape(1, 1, 4)
+    assert bool(jnp.all(jnp.isfinite(weights)))
+    assert not bool(jnp.isfinite(weights[0] @ triples))
+
+    planted = state.replace(  # type: ignore[attr-defined]
+        context_weights=weights,
+        linear_weights=jnp.zeros_like(state.linear_weights),
+    )
+    timestep, _ = stream.step(planted, jnp.asarray(0, dtype=jnp.int32))
+    assert bool(jnp.all(jnp.isfinite(timestep.target)))
+    assert float(timestep.target[0]) < 0.0
+
+    # Ordinary finite step stays bitwise identical to direct dot products.
+    ordinary_ts, _ = stream.step(state, jnp.asarray(0, dtype=jnp.int32))
+    expected_ordinary = state.context_weights[0] @ triples + state.linear_weights @ x
+    assert jnp.array_equal(ordinary_ts.target, expected_ordinary)
+
+
+def test_polynomial_overflowing_raw_triple_with_zero_and_small_weights_stays_finite() -> None:
+    """Overflowing raw x_i*x_j*x_l must not turn zero weights into NaN or small weights into inf."""
+    stream_hi = OutOfClassPolynomialStream(
+        feature_dim=4,
+        n_tasks=1,
+        n_contexts=1,
+        context_length=1,
+        active_triples_per_context=1,
+        feature_std=1.0,
+        linear_scale=0.0,
+        noise_std=0.0,
+    )
+    object.__setattr__(stream_hi, "_feature_std", float(np.float32(1.0e14)))
+    state_hi = stream_hi.init(jr.key(0))
+    _key, k_x, _k_noise = jr.split(state_hi.key, 3)
+    x_hi = stream_hi._feature_std * jr.normal(k_x, (4,), dtype=jnp.float32)  # noqa: SLF001
+    raw_triples = (
+        x_hi[state_hi.triples_left]
+        * x_hi[state_hi.triples_middle]
+        * x_hi[state_hi.triples_right]
+    )
+    assert bool(jnp.any(~jnp.isfinite(raw_triples)))
+    weights = jnp.asarray([[[1.0e-20, 0.0, 0.0, 0.0]]], dtype=jnp.float32)
+    planted_hi = state_hi.replace(  # type: ignore[attr-defined]
+        context_weights=weights,
+        linear_weights=jnp.zeros_like(state_hi.linear_weights),
+    )
+    ts_hi, _ = stream_hi.step(planted_hi, jnp.asarray(0, dtype=jnp.int32))
+    assert bool(jnp.all(jnp.isfinite(ts_hi.target)))
