@@ -66,6 +66,106 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _finite_cancelling_dot(left: Array, right: Array) -> Array:
+    """Dot product that recovers finite results when intermediate products cancel."""
+    left_f32 = jnp.asarray(left, dtype=jnp.float32)
+    right_f32 = jnp.asarray(right, dtype=jnp.float32)
+    direct = jnp.dot(left_f32, right_f32)
+    all_finite = jnp.all(jnp.isfinite(left_f32)) & jnp.all(jnp.isfinite(right_f32))
+    scale_l = jnp.max(jnp.abs(left_f32))
+    scale_r = jnp.max(jnp.abs(right_f32))
+    _, exp_l = jnp.frexp(
+        jnp.where(all_finite & (scale_l > 0.0), scale_l, jnp.float32(1.0))
+    )
+    _, exp_r = jnp.frexp(
+        jnp.where(all_finite & (scale_r > 0.0), scale_r, jnp.float32(1.0))
+    )
+    shift_l = jnp.maximum(exp_l - jnp.int32(30), jnp.int32(0))
+    shift_r = jnp.maximum(exp_r - jnp.int32(30), jnp.int32(0))
+    scaled = jnp.dot(jnp.ldexp(left_f32, -shift_l), jnp.ldexp(right_f32, -shift_r))
+    rescaled = jnp.ldexp(scaled, shift_l + shift_r)
+    return jnp.where((~jnp.isfinite(direct)) & all_finite, rescaled, direct)
+
+
+def _finite_three_factor_product(first: Array, second: Array, third: Array) -> Array:
+    """Multiply three arrays while avoiding intermediate overflow/underflow or 0*inf."""
+    ab = first * second
+    direct = ab * third
+    factors_finite = (
+        jnp.isfinite(first) & jnp.isfinite(second) & jnp.isfinite(third)
+    )
+    any_zero = (
+        (first == jnp.float32(0.0))
+        | (second == jnp.float32(0.0))
+        | (third == jnp.float32(0.0))
+    )
+    need_rescaled = (
+        factors_finite
+        & (~any_zero)
+        & ((~jnp.isfinite(ab)) | (ab == jnp.float32(0.0)))
+    )
+    safe_first = jnp.where(need_rescaled, first, jnp.float32(1.0))
+    safe_second = jnp.where(need_rescaled, second, jnp.float32(1.0))
+    safe_third = jnp.where(need_rescaled, third, jnp.float32(1.0))
+    m1, e1 = jnp.frexp(safe_first)
+    m2, e2 = jnp.frexp(safe_second)
+    m3, e3 = jnp.frexp(safe_third)
+    rescaled = jnp.ldexp(m1 * m2 * m3, e1 + e2 + e3)
+    return jnp.where(
+        factors_finite & any_zero,
+        jnp.zeros_like(direct),
+        jnp.where(need_rescaled, rescaled, direct),
+    )
+
+
+def _compute_meta_delta(
+    p_ext: Array,
+    theta: Array,
+    log_alphas: Array,
+    td_error_scalar: Array,
+    delta: Array,
+    v_delta: Array,
+) -> Array:
+    """Compute ``(theta / exp(log_alphas)) * (delta - v_delta) * p_ext`` safely."""
+    raw_diff = delta - v_delta
+    effective_error = jnp.where(
+        jnp.isfinite(raw_diff) & ((raw_diff != 0.0) | (td_error_scalar == 0.0)),
+        raw_diff,
+        td_error_scalar,
+    )
+    alphas = jnp.exp(log_alphas)
+    direct = _skip_zero_scale(p_ext, (theta / alphas) * effective_error)
+    scalars_finite = (
+        jnp.isfinite(theta)
+        & jnp.isfinite(effective_error)
+        & jnp.isfinite(alphas)
+        & (alphas > 0.0)
+    )
+    all_finite = jnp.isfinite(p_ext) & scalars_finite
+    zero_factor = (
+        (p_ext == 0.0) | (theta == 0.0) | (effective_error == 0.0)
+    )
+    need_rescaled = (
+        all_finite
+        & (~zero_factor)
+        & ((~jnp.isfinite(direct)) | (direct == 0.0))
+    )
+    safe_p = jnp.where(need_rescaled, p_ext, jnp.float32(1.0))
+    safe_theta = jnp.where(need_rescaled, theta, jnp.float32(1.0))
+    safe_err = jnp.where(need_rescaled, effective_error, jnp.float32(1.0))
+    safe_alpha = jnp.where(need_rescaled, alphas, jnp.float32(1.0))
+    mp, ep = jnp.frexp(safe_p)
+    mt, et = jnp.frexp(safe_theta)
+    me, ee = jnp.frexp(safe_err)
+    ma, ea = jnp.frexp(safe_alpha)
+    rescaled = jnp.ldexp((mp * mt * me) / ma, ep + et + ee - ea)
+    return jnp.where(
+        scalars_finite & (~jnp.isnan(p_ext)) & zero_factor,
+        jnp.zeros_like(direct),
+        jnp.where(need_rescaled, rescaled, direct),
+    )
+
+
 def _finite_nonnegative_mean(values: Array) -> Array:
     """Preserve an ordinary mean unless only its reduction overflowed."""
     ordinary = jnp.mean(values)
@@ -522,22 +622,28 @@ class SwiftTD:
 
         # --- Trace extension for phi (second loop of Algorithm 1) ---
         # True Online correction: change the previous update made to V(phi).
-        v_delta = jnp.dot(state.prev_weight_update, phi)
+        v_delta = _finite_cancelling_dot(state.prev_weight_update, phi)
         # Correction ratio tau = sum_i alpha_i * phi_i^2; the overshoot bound
         # caps the effective ratio of this update at eta.
         z_delta, bound_scale, decay_triggered = _bounded_trace_increment(
             state.log_step_sizes, phi, eta
         )
-        trace_dot = jnp.dot(state.eligibility_traces, phi)
+        trace_dot = _finite_cancelling_dot(state.eligibility_traces, phi)
         z_ext = state.eligibility_traces + z_delta * (1.0 - trace_dot)
         p_ext = state.p_traces + state.h_old_traces * phi
-        z_bar_ext = state.z_bar_traces + z_delta * (
-            1.0 - trace_dot - state.z_bar_traces * phi
+        z_delta_phi = z_delta * phi
+        raw_z_bar_inner = 1.0 - trace_dot - state.z_bar_traces * phi
+        z_bar_ext = jnp.where(
+            jnp.isfinite(raw_z_bar_inner),
+            state.z_bar_traces + z_delta * raw_z_bar_inner,
+            state.z_bar_traces
+            + z_delta * (1.0 - trace_dot)
+            - state.z_bar_traces * z_delta_phi,
         )
         h_temp_ext = (
             state.h_traces
-            - state.h_old_traces * phi * (z_ext - z_delta)
-            - state.h_traces * z_delta * phi
+            - _finite_three_factor_product(state.h_old_traces, phi, z_ext - z_delta)
+            - _finite_three_factor_product(state.h_traces, z_delta, phi)
         )
 
         # Step-size decay: when the bound is active, decay the step-sizes of
@@ -562,15 +668,16 @@ class SwiftTD:
         # --- Weight and meta update (first loop of Algorithm 1) ---
         # delta' = r + gamma*V(phi') - v_old, with v_old the prediction of
         # phi made before the previous weight update.
-        delta = jnp.squeeze(td_error) + v_delta
+        td_error_scalar = jnp.squeeze(td_error)
+        delta = td_error_scalar + v_delta
         delta_w = delta * z_ext - z_delta * v_delta
 
         # Meta-update: beta_i += (theta / alpha_i) * (delta' - v_delta) * p_i,
         # clipped to [ln(eta_min), ln(eta)].
         # A zero meta trace contributes exactly zero even if the unused
         # learning-rate/error prefactor overflows for a valid transition.
-        meta_delta = _skip_zero_scale(
-            p_ext, (theta / jnp.exp(log_alphas)) * (delta - v_delta)
+        meta_delta = _compute_meta_delta(
+            p_ext, theta, log_alphas, td_error_scalar, delta, v_delta
         )
         new_log_step_sizes = jnp.where(
             jnp.isfinite(meta_delta),
