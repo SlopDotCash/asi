@@ -507,6 +507,8 @@ class LearningSignalEstimator:
     """Fixed-state producer for typed, predict-before-update learning signals."""
 
     def __init__(self, config: LearningSignalEstimatorConfig):
+        if type(config) is not LearningSignalEstimatorConfig:
+            raise TypeError("config must be a LearningSignalEstimatorConfig")
         self._config = config
 
     @property
@@ -562,6 +564,8 @@ class LearningSignalEstimator:
 
     @staticmethod
     def _validate_state_shapes(state: LearningSignalEstimatorState) -> None:
+        if type(state) is not LearningSignalEstimatorState:
+            raise TypeError("state must be a LearningSignalEstimatorState")
         integer_values = {
             "step_count": state.step_count,
             "valid_count": state.valid_count,
@@ -642,6 +646,11 @@ class LearningSignalEstimator:
             if self._config.change_decay == 0.0
             else state.sustained_change_probability
         )
+        max_residual_f32 = jnp.asarray(self._config.max_normalized_residual, dtype=jnp.float32)
+        max_calibration_m2 = (
+            jnp.asarray(self._config.change_calibration_steps, dtype=jnp.float32)
+            * jnp.square(max_residual_f32)
+        )
         state_valid = (
             (state.step_count >= 0)
             & (state.valid_count >= 0)
@@ -661,6 +670,7 @@ class LearningSignalEstimator:
             & (state.calibration_mean <= self._config.max_normalized_residual)
             & jnp.isfinite(state.calibration_m2)
             & (state.calibration_m2 >= 0.0)
+            & (state.calibration_m2 <= max_calibration_m2)
             & jnp.isfinite(checked_fast_loss)
             & (checked_fast_loss >= 0.0)
             & (checked_fast_loss <= self._config.max_observed_loss)
@@ -736,8 +746,13 @@ class LearningSignalEstimator:
         per_dimension_aleatoric = _stable_mean(safe_variances, axis=0)
         epistemic_disagreement = _stable_mean(per_dimension_epistemic)
         epistemic_surprise = _stable_mean(
-            per_dimension_epistemic
-            / jnp.maximum(per_dimension_aleatoric, self._config.variance_floor)
+            jnp.nan_to_num(
+                per_dimension_epistemic
+                / jnp.maximum(per_dimension_aleatoric, self._config.variance_floor),
+                nan=0.0,
+                posinf=_FLOAT32_MAX,
+                neginf=0.0,
+            )
         )
         epistemic_surprise = jnp.minimum(
             epistemic_surprise,
@@ -749,7 +764,12 @@ class LearningSignalEstimator:
             self._config.variance_floor,
         )
         normalized_residual = _stable_mean(
-            jnp.square(safe_target - ensemble_mean) / total_variance
+            jnp.nan_to_num(
+                jnp.square(safe_target - ensemble_mean) / total_variance,
+                nan=0.0,
+                posinf=_FLOAT32_MAX,
+                neginf=0.0,
+            )
         )
         normalized_residual = jnp.minimum(
             normalized_residual,
@@ -760,17 +780,25 @@ class LearningSignalEstimator:
         fast_decay = jnp.asarray(self._config.fast_loss_decay, dtype=jnp.float32)
         slow_decay = jnp.asarray(self._config.slow_loss_decay, dtype=jnp.float32)
         change_decay = jnp.asarray(self._config.change_decay, dtype=jnp.float32)
-        fast_loss = jnp.where(
-            first_valid_event,
-            safe_loss,
-            _skip_zero_scale(fast_decay, state.fast_loss_ema)
-            + (1.0 - fast_decay) * safe_loss,
+        fast_loss = jnp.clip(
+            jnp.where(
+                first_valid_event,
+                safe_loss,
+                _skip_zero_scale(fast_decay, state.fast_loss_ema)
+                + (1.0 - fast_decay) * safe_loss,
+            ),
+            0.0,
+            self._config.max_observed_loss,
         )
-        slow_loss = jnp.where(
-            first_valid_event,
-            safe_loss,
-            _skip_zero_scale(slow_decay, state.slow_loss_ema)
-            + (1.0 - slow_decay) * safe_loss,
+        slow_loss = jnp.clip(
+            jnp.where(
+                first_valid_event,
+                safe_loss,
+                _skip_zero_scale(slow_decay, state.slow_loss_ema)
+                + (1.0 - slow_decay) * safe_loss,
+            ),
+            0.0,
+            self._config.max_observed_loss,
         )
         learning_progress = slow_loss - fast_loss
         next_valid_count = _saturating_increment(state.valid_count)
@@ -782,11 +810,15 @@ class LearningSignalEstimator:
             state.calibration_count
         )
         calibration_delta = normalized_residual - state.calibration_mean
-        next_calibration_mean = (
-            state.calibration_mean + calibration_delta / next_calibration_count.astype(jnp.float32)
+        next_calibration_mean = jnp.clip(
+            state.calibration_mean + calibration_delta / next_calibration_count.astype(jnp.float32),
+            0.0,
+            self._config.max_normalized_residual,
         )
-        next_calibration_m2 = state.calibration_m2 + calibration_delta * (
-            normalized_residual - next_calibration_mean
+        next_calibration_m2 = jnp.minimum(
+            state.calibration_m2
+            + calibration_delta * (normalized_residual - next_calibration_mean),
+            max_calibration_m2,
         )
 
         calibration_denominator = jnp.maximum(
