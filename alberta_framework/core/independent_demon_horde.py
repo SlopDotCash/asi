@@ -54,8 +54,13 @@ from alberta_framework.core.learners import (
     AnyOptimizer,
     _update_from_gradient_with_diagnostics,
 )
-from alberta_framework.core.normalizers import Normalizer
-from alberta_framework.core.optimizers import LMS, Bounder
+from alberta_framework.core.normalizers import (
+    EMANormalizer,
+    Normalizer,
+    StreamingBatchNormalizer,
+    WelfordNormalizer,
+)
+from alberta_framework.core.optimizers import IDBD, LMS, Autostep, Bounder
 from alberta_framework.core.types import (
     AutostepParamState,
     AutostepState,
@@ -135,17 +140,113 @@ def _decode_tuple(name: str, value: object) -> tuple[Any, ...]:
     return tuple(cast(list[Any] | tuple[Any, ...], value))
 
 
-def _require_direct_state_resources(
-    n_demons: int, hidden_sizes: tuple[int, ...], feature_dim: int
-) -> None:
-    """Bound arrays directly owned by the independent networks before allocation."""
+def _optimizer_state_scalars(optimizer: AnyOptimizer | None, size: int) -> int:
+    """Exact persistent scalars in one optimizer state for a parameter of ``size`` elements.
+
+    LMS keeps a single scalar step size. IDBD keeps two per-element arrays
+    plus a meta step size; Autostep keeps three per-element arrays plus two
+    scalars. An unknown optimizer is charged the largest known shape
+    (Autostep) so the guard stays conservative instead of undercounting.
+    """
+    if optimizer is None or type(optimizer) is LMS:
+        return 1
+    if type(optimizer) is IDBD:
+        return 2 * size + 1
+    if type(optimizer) is Autostep:
+        return 3 * size + 2
+    return 3 * size + 2
+
+
+def _normalizer_state_scalars(normalizer: Normalizer[Any] | None, feature_dim: int) -> int:
+    """Exact persistent scalars in one per-demon normalizer state.
+
+    EMA and streaming-batch normalizers keep two feature-width arrays plus
+    four scalars; Welford keeps three feature-width arrays plus three
+    scalars. An unknown normalizer is charged the largest known shape
+    (Welford) so the guard stays conservative instead of undercounting.
+    """
+    if normalizer is None:
+        return 0
+    if type(normalizer) is WelfordNormalizer:
+        return 3 * feature_dim + 3
+    if type(normalizer) is EMANormalizer or type(normalizer) is StreamingBatchNormalizer:
+        return 2 * feature_dim + 4
+    return 3 * feature_dim + 3
+
+
+def _direct_state_scalars(
+    n_demons: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+    *,
+    optimizer: AnyOptimizer | None = None,
+    head_optimizer: AnyOptimizer | None = None,
+    normalizer: Normalizer[Any] | None = None,
+) -> int:
+    """Exact persistent scalars directly owned by the independent networks.
+
+    Each demon holds parameters and traces (two copies each), one optimizer
+    state per (weight, bias) pair sized by the configured trunk/head
+    optimizer, its own step counter, and its normalizer state when one is
+    configured; one shared step counter covers the whole horde. The default
+    (``optimizer=None``) is the LMS configuration the previous formula
+    assumed for every optimizer.
+    """
     layer_sizes = (feature_dim, *hidden_sizes, 1)
     per_demon_parameters = sum(
         fan_out * (fan_in + 1)
         for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
     )
     n_layers = len(layer_sizes) - 1
-    direct_state_scalars = n_demons * (2 * per_demon_parameters + 2 * n_layers + 1) + 1
+    trunk_optimizer = optimizer
+    head_opt = head_optimizer if head_optimizer is not None else trunk_optimizer
+    optimizer_scalars = 0
+    for i in range(n_layers):
+        fan_out = layer_sizes[i + 1]
+        fan_in = layer_sizes[i]
+        opt = head_opt if i == n_layers - 1 else trunk_optimizer
+        optimizer_scalars += _optimizer_state_scalars(opt, fan_out * fan_in)
+        optimizer_scalars += _optimizer_state_scalars(opt, fan_out)
+    per_demon_scalars = (
+        2 * per_demon_parameters
+        + optimizer_scalars
+        + 1  # per-demon step_count
+        + _normalizer_state_scalars(normalizer, feature_dim)
+    )
+    return n_demons * per_demon_scalars + 1  # shared step_count
+
+
+def _require_direct_state_resources(
+    n_demons: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+    *,
+    optimizer: AnyOptimizer | None = None,
+    head_optimizer: AnyOptimizer | None = None,
+    normalizer: Normalizer[Any] | None = None,
+) -> None:
+    """Bound arrays directly owned by the independent networks before allocation.
+
+    The count must match the state ``init`` actually builds, including the
+    configured optimizer and normalizer: the previous formula charged one
+    scalar per optimizer state, which is only true for LMS. Autostep and
+    IDBD keep per-element arrays and a normalizer adds feature-width arrays,
+    so the guard admitted configurations whose true state exceeds the
+    signed-int32 budget.
+    """
+    layer_sizes = (feature_dim, *hidden_sizes, 1)
+    per_demon_parameters = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    direct_state_scalars = _direct_state_scalars(
+        n_demons,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
+    )
     for name, value in (
         ("per_demon_parameter_count", per_demon_parameters),
         ("direct_state_scalars", direct_state_scalars),
@@ -666,7 +767,14 @@ class IndependentDemonHorde:
             Initial state with one ``MLPLearnerState`` per demon.
         """
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
-        _require_direct_state_resources(self.n_demons, self._hidden_sizes, feature_dim)
+        _require_direct_state_resources(
+            self.n_demons,
+            self._hidden_sizes,
+            feature_dim,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
+        )
         keys = jax.random.split(key, self.n_demons)
         demon_states = tuple(self._init_single_demon(feature_dim, k) for k in keys)
         return IndependentDemonHordeState(
