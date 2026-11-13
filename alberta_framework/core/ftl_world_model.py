@@ -45,10 +45,11 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import Array
-from jaxtyping import Float, Int
+from jaxtyping import Bool, Float, Int
 
 from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core.update_safety import neutralize_array, select_transaction
 
 _FLOAT32_TINY = 2.0**-126
 _INT32_MAX = 2**31 - 1
@@ -384,13 +385,21 @@ class SparseFTLWorldModelPrediction:
 
 @chex.dataclass(frozen=True)
 class SparseFTLWorldModelUpdateResult:
-    """Predict-before-update diagnostics and updated state."""
+    """Predict-before-update diagnostics and updated state.
+
+    ``update_applied`` is False when the transition was rejected: a
+    non-finite observation, action, or next observation, or a source state
+    whose sufficient statistics are already non-finite. In that case the
+    returned state is the unchanged source state and every reported
+    diagnostic is neutralized to zero.
+    """
 
     state: SparseFTLWorldModelState
     prediction: SparseFTLWorldModelPrediction
     target_delta: Float[Array, " observation_dim"]
     error: Float[Array, " observation_dim"]
     squared_error: Float[Array, ""]
+    update_applied: Bool[Array, ""]
 
 
 @chex.dataclass(frozen=True)
@@ -546,13 +555,34 @@ class SparseFTLWorldModel:
         action: Array,
         next_observation: Array,
     ) -> SparseFTLWorldModelUpdateResult:
-        """Predict, then incorporate exactly one real transition."""
+        """Predict, then incorporate exactly one real transition.
+
+        A non-finite observation, action, or next observation — or a source
+        state whose sufficient statistics are already non-finite — rejects
+        the transition: the state is returned unchanged, the reported
+        diagnostics are neutralized to zero, and ``update_applied`` is
+        False. The error EMA is a repairable diagnostic, so its own
+        finiteness is not a rejection condition (``error_decay=0`` replaces
+        an infinite prior EMA with the new squared error).
+        """
         cfg = self._config
         obs = _vector_without_complex("observation", observation, cfg.observation_dim)
+        act = _vector_without_complex("action", action, cfg.action_dim)
         next_obs = _vector_without_complex(
             "next_observation", next_observation, cfg.observation_dim
         )
-        prediction = self.predict(state, obs, action)
+        inputs_valid = (
+            jnp.all(jnp.isfinite(obs))
+            & jnp.all(jnp.isfinite(act))
+            & jnp.all(jnp.isfinite(next_obs))
+        )
+        source_valid = (
+            jnp.all(jnp.isfinite(state.projection))
+            & jnp.all(jnp.isfinite(state.gram))
+            & jnp.all(jnp.isfinite(state.cross))
+            & jnp.all(jnp.isfinite(state.weights))
+        )
+        prediction = self.predict(state, obs, act)
         target_delta = next_obs - obs
         error = target_delta - prediction.delta
         squared_components = error**2
@@ -622,12 +652,17 @@ class SparseFTLWorldModel:
             prediction_error_ema=error_ema,
             step_count=next_step_count,
         )
+        update_applied = inputs_valid & source_valid
         return SparseFTLWorldModelUpdateResult(
-            state=new_state,
-            prediction=prediction,
-            target_delta=target_delta,
-            error=error,
-            squared_error=squared_error,
+            state=select_transaction(update_applied, new_state, state),
+            prediction=jax.tree.map(
+                lambda leaf: neutralize_array(update_applied, leaf),
+                prediction,
+            ),
+            target_delta=neutralize_array(update_applied, target_delta),
+            error=neutralize_array(update_applied, error),
+            squared_error=neutralize_array(update_applied, squared_error),
+            update_applied=update_applied,
         )
 
 
