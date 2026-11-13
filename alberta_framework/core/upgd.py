@@ -194,6 +194,37 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _finite_layer_norm(x: Array) -> Array:
+    """Layer-normalize 1D activations without overflowing float32 variance."""
+    mean = jnp.mean(x)
+    centered = x - mean
+    var = jnp.mean(jnp.square(centered))
+
+    def _direct(operand: tuple[Array, Array]) -> Array:
+        centered_op, var_op = operand
+        return centered_op / jnp.sqrt(var_op + jnp.float32(1e-5))
+
+    def _rescaled(operand: tuple[Array, Array]) -> Array:
+        centered_op, _ = operand
+        scale = jnp.max(jnp.abs(centered_op))
+        nonzero = scale > jnp.float32(0.0)
+        safe_scale = jnp.where(nonzero, scale, jnp.float32(1.0))
+        _, exp = jnp.frexp(safe_scale)
+        scaled = jnp.where(nonzero, jnp.ldexp(centered_op, -exp), jnp.zeros_like(centered_op))
+        scaled = scaled - jnp.mean(scaled)
+        scaled_var = jnp.mean(jnp.square(scaled))
+        eps_scale = jnp.ldexp(jnp.float32(1.0), -exp)
+        scaled_eps = jnp.float32(1e-5) * jnp.square(eps_scale)
+        return jnp.where(
+            scaled_var > jnp.float32(0.0),
+            scaled / jnp.sqrt(scaled_var + scaled_eps),
+            jnp.zeros_like(scaled),
+        )
+
+    use_direct = jnp.isfinite(var) | ~jnp.all(jnp.isfinite(x))
+    return cast(Array, jax.lax.cond(use_direct, _direct, _rescaled, (centered, var)))
+
+
 # =============================================================================
 # Types
 # =============================================================================
@@ -1841,9 +1872,7 @@ class UPGDLearner:
         for i in range(len(weights)):
             x = weights[i] @ x + biases[i]
             if use_layer_norm:
-                mean = jnp.mean(x)
-                var = jnp.var(x)
-                x = (x - mean) / jnp.sqrt(var + 1e-5)
+                x = _finite_layer_norm(x)
             x = jnp.where(x >= 0, x, leaky_relu_slope * x)
         return x
 
@@ -2180,6 +2209,7 @@ class UPGDLearner:
         track_gradient_history = self._stores_gradient_history()
 
         active_mask = ~jnp.isnan(targets)  # (n_heads,)
+        any_active = jnp.any(active_mask)
         safe_targets = jnp.where(active_mask, targets, 0.0)
         n_active = jnp.maximum(jnp.sum(active_mask.astype(jnp.float32)), 1.0)
         n_nonzero_targets = jnp.maximum(
@@ -2525,7 +2555,12 @@ class UPGDLearner:
                 ),
                 0.0,
             )
-        target_delta = jnp.sum(jnp.abs(safe_targets - state.previous_targets)) / n_active
+        active_target_diff = jnp.where(
+            active_mask,
+            jnp.abs(safe_targets - state.previous_targets),
+            0.0,
+        )
+        target_delta = jnp.sum(active_target_diff) / n_active
         repeat_now = target_delta <= jnp.asarray(
             self._head_repetition_delta_threshold,
             dtype=jnp.float32,
@@ -3415,8 +3450,18 @@ class UPGDLearner:
         if track_gradient_history:
             next_previous_trunk_weight_grads = trunk_w_grads
             next_previous_trunk_bias_grads = trunk_b_grads
-            next_previous_head_weight_grads = head_w_grads
-            next_previous_head_bias_grads = head_b_grads
+            next_previous_head_weight_grads = tuple(
+                jnp.where(active_mask[i], new_g, old_g)
+                for i, (new_g, old_g) in enumerate(
+                    zip(head_w_grads, state.previous_head_weight_grads)
+                )
+            )
+            next_previous_head_bias_grads = tuple(
+                jnp.where(active_mask[i], new_g, old_g)
+                for i, (new_g, old_g) in enumerate(
+                    zip(head_b_grads, state.previous_head_bias_grads)
+                )
+            )
         else:
             next_previous_trunk_weight_grads = state.previous_trunk_weight_grads
             next_previous_trunk_bias_grads = state.previous_trunk_bias_grads
@@ -3443,7 +3488,7 @@ class UPGDLearner:
             ),
             loss_fast_ema=new_loss_fast_ema,
             loss_slow_ema=new_loss_slow_ema,
-            previous_targets=safe_targets,
+            previous_targets=jnp.where(active_mask, safe_targets, state.previous_targets),
             target_repeat_ema=new_target_repeat_ema,
             target_simplex_ema=new_target_simplex_ema,
             meta_trunk_log_scale=new_meta_trunk_log_scale,
@@ -3462,6 +3507,8 @@ class UPGDLearner:
         )
 
         metrics = jnp.stack([loss_value, mean_utility, min_utility, max_perturbation_magnitude])
+        new_state = select_transaction(any_active, new_state, state)
+        metrics = neutralize_array(any_active, metrics)
 
         # Fail closed: a non-finite observation, an infinite target, or a
         # non-finite candidate state must not commit. NaN targets remain
