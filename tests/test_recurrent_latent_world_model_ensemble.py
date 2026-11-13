@@ -1404,3 +1404,111 @@ def test_public_decision_retains_finite_raw_member_mean(
         np.testing.assert_array_equal(raw[:, 3], np.full(2, magnitude, dtype=np.float32))
         assert float(decision.prediction.mean_raw_output[3]) == float(np.float32(magnitude))
         assert np.all(np.isfinite(np.asarray(decision.prediction.mean_raw_output)))
+
+
+
+
+def test_recurrent_ensemble_config_rejects_huge_int_scalar_with_value_error() -> None:
+    with pytest.raises(ValueError, match="learning_rate"):
+        _config(learning_rate=10**400)
+
+
+def test_scale_safe_mean_preserves_normal_mantissa_near_subnormal_boundary() -> None:
+    x = jnp.full((3,), jnp.float32(1.5e-38), dtype=jnp.float32)
+    result = float(_scale_safe_mean(x, axis=0))
+    expected = float(np.float64(np.float32(1.5e-38)))
+    assert np.isclose(result, expected, rtol=1e-6)
+
+
+def test_member_nll_and_update_accept_large_residuals_with_large_variance() -> None:
+    model = RecurrentLatentWorldModelEnsemble(
+        _config(
+            ensemble_size=2,
+            bootstrap_probability=0.999999,
+            max_prediction_magnitude=3.0e38,
+            max_parameter_magnitude=3.0e38,
+            max_loss_magnitude=1.0e5,
+            max_raw_gradient_norm=1.0e5,
+            max_variance=1.0e38,
+            variance_floor=1.0e37,
+        )
+    )
+    state = model.init(jr.key(0))
+    mean_bias = jnp.asarray((2.0e19, 2.0e19, 2.0e19, 0.0), dtype=jnp.float32)
+    members = tuple(
+        member.replace(  # type: ignore[attr-defined]
+            mean_kernel=jnp.zeros_like(member.mean_kernel),
+            mean_bias=mean_bias,
+            variance_kernel=jnp.zeros_like(member.variance_kernel),
+            variance_bias=jnp.full_like(member.variance_bias, 88.0),
+        )
+        for member in state.member_parameters
+    )
+    state = state.replace(member_parameters=members)  # type: ignore[attr-defined]
+    decision = _decision(model, state)
+    result = model.update(state, decision, _transition())
+    assert bool(result.diagnostics.applied)
+    assert bool(jnp.all(jnp.isfinite(result.member_negative_log_likelihoods)))
+    assert bool(jnp.all(result.diagnostics.member_gradients_valid))
+
+
+def test_update_applies_clipped_step_when_lr_times_clip_ratio_underflows() -> None:
+    model = RecurrentLatentWorldModelEnsemble(
+        _config(
+            ensemble_size=2,
+            bootstrap_probability=0.999999,
+            learning_rate=1.0e-18,
+            gradient_clip_norm=1.0e-18,
+            max_raw_gradient_norm=1.0e30,
+            max_loss_magnitude=1.0e30,
+            max_prediction_magnitude=3.0e38,
+            max_parameter_magnitude=3.0e38,
+            variance_floor=1.0e-12,
+            max_variance=1.0,
+        )
+    )
+    state = model.init(jr.key(0))
+    members = tuple(
+        member.replace(  # type: ignore[attr-defined]
+            mean_kernel=jnp.zeros_like(member.mean_kernel),
+            mean_bias=jnp.zeros_like(member.mean_bias).at[0].set(1.0e-30),
+            variance_kernel=jnp.zeros_like(member.variance_kernel),
+            variance_bias=jnp.full_like(member.variance_bias, -30.0),
+        )
+        for member in state.member_parameters
+    )
+    state = state.replace(member_parameters=members)  # type: ignore[attr-defined]
+    decision = _decision(model, state)
+    result = model.update(state, decision, _transition())
+    assert bool(result.diagnostics.applied)
+    applied_idx = int(np.flatnonzero(np.asarray(result.bootstrap_mask))[0])
+    before_bias = float(state.member_parameters[applied_idx].mean_bias[0])
+    after_bias = float(result.state.member_parameters[applied_idx].mean_bias[0])
+    assert after_bias != before_bias
+
+
+def test_scaled_tanh_gradient_is_unit_at_zero_and_finite_near_float32_max() -> None:
+    model = RecurrentLatentWorldModelEnsemble(
+        _config(
+            ensemble_size=2,
+            max_prediction_magnitude=2.0e38,
+            max_parameter_magnitude=2.5e38,
+        )
+    )
+    state = model.init(jr.key(0))
+    p0 = state.member_parameters[0].replace(  # type: ignore[attr-defined]
+        mean_kernel=jnp.zeros_like(state.member_parameters[0].mean_kernel),
+        mean_bias=jnp.zeros_like(state.member_parameters[0].mean_bias),
+    )
+    grad_fn = jax.grad(
+        lambda bias: model._member_predict(
+            p0.replace(mean_bias=bias),  # type: ignore[attr-defined]
+            state.member_hidden_states[0],
+            OBSERVATION,
+            ACTION,
+        )[2][0]
+    )
+    grad_at_zero = grad_fn(jnp.zeros((4,), dtype=jnp.float32))
+    assert float(grad_at_zero[0]) == 1.0
+    grad_at_nonzero = grad_fn(jnp.asarray((1.0, 0.0, 0.0, 0.0), dtype=jnp.float32))
+    assert float(grad_at_nonzero[0]) == 1.0
