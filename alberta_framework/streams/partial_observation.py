@@ -199,10 +199,15 @@ class PartialObservationWrapper[InnerStateT]:
         mode = _require_mode(mode)
         self._inner = inner
         self._mode = mode
-        self._mask_prob = mask_prob
         self._sentinel = validated_float32_scalar("sentinel", sentinel)
 
         feature_dim = _require_feature_dim(inner.feature_dim)
+        self._feature_dim = feature_dim
+        self._mask_prob = (
+            _require_unit_interval_probability("mask_prob", mask_prob)
+            if mode == MaskMode.RANDOM
+            else 0.5
+        )
 
         if mode == MaskMode.FIXED:
             if fixed_mask is None:
@@ -244,13 +249,10 @@ class PartialObservationWrapper[InnerStateT]:
         else:
             self._schedule = None
 
-        if mode == MaskMode.RANDOM:
-            self._mask_prob = _require_unit_interval_probability("mask_prob", mask_prob)
-
     @property
     def feature_dim(self) -> int:
         """Same as the wrapped stream."""
-        return self._inner.feature_dim
+        return self._feature_dim
 
     @property
     def mode(self) -> MaskMode:
@@ -274,7 +276,27 @@ class PartialObservationWrapper[InnerStateT]:
         idx: Array,
     ) -> tuple[TimeStep, PartialObservationState[InnerStateT]]:
         """Step the wrapped stream and apply the channel mask."""
+        if type(state) is not PartialObservationState:
+            raise ValueError("state must be an exact PartialObservationState")
+        _require_typed_threefry_key("state.key", state.key)
+        if (
+            not isinstance(state.period_index, (jax.Array, jax.core.Tracer))
+            or state.period_index.shape != ()
+            or state.period_index.dtype != jnp.dtype(jnp.int32)
+        ):
+            raise ValueError("state.period_index must be a scalar int32 JAX array")
         timestep, new_inner = self._inner.step(state.inner_state, idx)
+        if type(timestep) is not TimeStep:
+            raise ValueError("inner.step must return an exact TimeStep")
+        if (
+            not isinstance(timestep.observation, (jax.Array, jax.core.Tracer))
+            or timestep.observation.shape != (self._feature_dim,)
+            or not jnp.issubdtype(timestep.observation.dtype, jnp.floating)
+        ):
+            raise ValueError(
+                f"inner.step observation must be a floating JAX array of shape "
+                f"(feature_dim={self._feature_dim},)"
+            )
 
         new_key = state.key
         new_period_index = state.period_index
@@ -284,7 +306,7 @@ class PartialObservationWrapper[InnerStateT]:
             mask = self._fixed_mask
         elif self._mode == MaskMode.RANDOM:
             new_key, k_use = jr.split(state.key)
-            mask = jr.uniform(k_use, (self._inner.feature_dim,)) < self._mask_prob
+            mask = jr.uniform(k_use, (self._feature_dim,)) < self._mask_prob
         else:  # PERIODIC
             assert self._schedule is not None
             schedule_length = jnp.asarray(self._schedule.shape[0], dtype=jnp.int32)
