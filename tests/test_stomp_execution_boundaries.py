@@ -22,6 +22,7 @@ def _config(
     *,
     threshold: float = 100.0,
     base_step_size: float = 0.0,
+    base_trace_decay: float = 0.0,
     option_step_size: float = 0.0,
     option_trace_decay: float = 0.75,
     option_model_step_size: float = 1.0,
@@ -38,7 +39,7 @@ def _config(
         n_primitive_actions=N_PRIMITIVE,
         base_step_size=base_step_size,
         base_avg_reward_step_size=0.0,
-        base_trace_decay=0.0,
+        base_trace_decay=base_trace_decay,
         option_step_size=option_step_size,
         option_avg_reward_step_size=0.0,
         option_trace_decay=option_trace_decay,
@@ -275,6 +276,145 @@ def test_natural_and_terminal_completions_still_train_option_model() -> None:
     )
     assert bool(terminal.option_terminated)
     assert int(terminal.state.option_models.n_completions[0]) == 1
+
+
+def test_censored_boundary_does_not_leak_base_traces_into_next_episode() -> None:
+    """A truncated option must not credit the next episode via base traces.
+
+    The intra-option trace is cleared at an execution boundary, but the base
+    learner's head traces survived: a terminal discount of zero erases them
+    on the next update through ``base_previous_discount``, while a boundary
+    discount of one kept them alive, so the next episode's first TD error
+    credited the dead episode's features. The boundary now stores a zero
+    prior discount, so the next update decays the carried traces away
+    before applying its TD error — exactly like a terminal transition.
+    """
+    agent = STOMPAgent(
+        _config(base_step_size=0.5, base_trace_decay=0.9, option_step_size=0.0)
+    )
+    state = _with_base_weights(
+        agent.init(jr.key(0)),
+        (
+            [[0.0, 0.0]],
+            [[0.0, 0.0]],
+            [[10.0, 10.0]],
+        ),
+    )
+    start_obs = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    reset_obs = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state = agent.start(state, start_obs)
+    assert int(state.executing_option) == 0
+
+    boundary = agent.update(
+        state,
+        jnp.array(0.0, dtype=jnp.float32),
+        reset_obs,
+        jnp.array(1.0, dtype=jnp.float32),
+        decision_observation=reset_obs,
+        execution_boundary=jnp.array(True),
+    )
+    assert bool(boundary.update_applied)
+    assert int(boundary.state.executing_option) == 0
+    # No continuation discount into the reset episode: the next update
+    # decays the carried base traces to zero before its TD error.
+    assert float(boundary.state.base_previous_discount) == 0.0
+
+    q_before = np.asarray(
+        boundary.state.base_learner_state.head_params.weights[2][0]
+    ).copy()
+    second = agent.update(
+        boundary.state,
+        jnp.array(1.0, dtype=jnp.float32),
+        reset_obs,
+        jnp.array(0.0, dtype=jnp.float32),
+        decision_observation=reset_obs,
+        execution_boundary=jnp.array(False),
+    )
+    assert bool(second.update_applied)
+    q_after = np.asarray(second.state.base_learner_state.head_params.weights[2][0])
+    # Episode 2 only ever saw reset_obs=[0, 1]: the episode-1 feature
+    # weight must not move. TD = 1 - 10 = -9, so the feature-1 weight
+    # moves by 0.5 * -9 = -4.5.
+    np.testing.assert_allclose(q_after[0], q_before[0], rtol=0.0, atol=1.0e-6)
+    np.testing.assert_allclose(q_after[1] - q_before[1], -4.5, rtol=0.0, atol=1.0e-6)
+
+
+def test_primitive_only_boundary_does_not_leak_base_traces_into_next_episode() -> None:
+    """Zero-option STOMP must end base traces at a boundary too.
+
+    ``_update_primitive_only`` discarded ``execution_boundary`` outright, so
+    a truncated primitive episode leaked its base traces the same way. The
+    boundary now stores a zero prior discount there as well.
+    """
+    agent = STOMPAgent(
+        STOMPConfig(
+            subtask_specs=(),
+            observation_dim=OBS_DIM,
+            n_primitive_actions=N_PRIMITIVE,
+            base_step_size=0.5,
+            base_avg_reward_step_size=0.0,
+            base_trace_decay=0.9,
+            epsilon_base=0.0,
+            option_planning_backups_per_step=0,
+        )
+    )
+    start_obs = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    reset_obs = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state = _with_base_weights(
+        agent.init(jr.key(0)),
+        (
+            [[10.0, 10.0]],
+            [[0.0, 0.0]],
+        ),
+    )
+    state = agent.start(state, start_obs)
+    assert int(state.last_primitive_action) == 0
+
+    first = agent.update(
+        state,
+        jnp.array(1.0, dtype=jnp.float32),
+        start_obs,
+        jnp.array(1.0, dtype=jnp.float32),
+        decision_observation=start_obs,
+        execution_boundary=jnp.array(False),
+    )
+    assert bool(first.update_applied)
+    boundary = agent.update(
+        first.state,
+        jnp.array(0.0, dtype=jnp.float32),
+        reset_obs,
+        jnp.array(1.0, dtype=jnp.float32),
+        decision_observation=reset_obs,
+        execution_boundary=jnp.array(True),
+    )
+    assert bool(boundary.update_applied)
+    assert float(boundary.state.base_previous_discount) == 0.0
+
+    # Episode 2 acts from the reset observation only. Zero the head weights
+    # (keeping the bias) so any feature-0 movement is pure stale-trace credit.
+    learner_state = boundary.state.base_learner_state
+    weights = list(learner_state.head_params.weights)
+    weights[0] = jnp.zeros_like(weights[0])
+    state = boundary.state.replace(
+        base_learner_state=learner_state.replace(
+            head_params=learner_state.head_params.replace(weights=tuple(weights))
+        )
+    )
+    assert int(state.last_primitive_action) == 0
+    w_before = np.asarray(state.base_learner_state.head_params.weights[0][0]).copy()
+    second = agent.update(
+        state,
+        jnp.array(1.0, dtype=jnp.float32),
+        reset_obs,
+        jnp.array(1.0, dtype=jnp.float32),
+        decision_observation=reset_obs,
+        execution_boundary=jnp.array(False),
+    )
+    assert bool(second.update_applied)
+    w_after = np.asarray(second.state.base_learner_state.head_params.weights[0][0])
+    # TD = 1.5 - 0.5 = 1, trace [0, 1]: only the feature-1 weight moves.
+    np.testing.assert_allclose(w_after[0], w_before[0], rtol=0.0, atol=1.0e-6)
+    np.testing.assert_allclose(w_after[1] - w_before[1], 0.5, rtol=0.0, atol=1.0e-6)
 
 
 def test_oak_and_scan_forward_boundary_contract() -> None:
