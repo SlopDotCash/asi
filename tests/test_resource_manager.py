@@ -941,6 +941,50 @@ def test_learned_resource_manager_finite_logit_centering(
     np.testing.assert_allclose(manager.weights(result.state), 0.25, atol=1e-6)
 
 
+def _uniform_generator_manager(count: int, **overrides: object) -> GeneratorMetaResourceManager:
+    kwargs: dict[str, object] = {
+        "policy_names": tuple(f"p{index}" for index in range(count)),
+        "op_ids": tuple(range(count)),
+        "parent_modes": (0,) * count,
+        "replacement_multipliers": (1.0,) * count,
+        "promotion_margin_multipliers": (1.0,) * count,
+        "candidate_min_age_multipliers": (1.0,) * count,
+        "imprint_scales": (0.0,) * count,
+    }
+    kwargs.update(overrides)
+    return GeneratorMetaResourceManager(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("offset", [float(np.finfo(np.float32).max), 2e38, -2e38, 0.0])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_generator_resource_manager_finite_logit_centering(offset: float, compiled: bool) -> None:
+    manager = _uniform_generator_manager(4, discount=1.0)
+    state = manager.init().replace(  # type: ignore[attr-defined]
+        log_weights=jnp.full((1, 4), offset, dtype=jnp.float32)
+    )
+    update = jax.jit(manager.update) if compiled else manager.update
+    result = update(state, jnp.ones(4, dtype=jnp.float32))
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    np.testing.assert_allclose(result.state.log_weights, 0.0, atol=1e-6)
+    np.testing.assert_allclose(manager.weights(result.state), 0.25, atol=1e-6)
+
+
+def test_generator_resource_manager_centers_a_fresh_overflowing_logit_row() -> None:
+    # A valid learning rate turns clipped advantages into finite logits whose
+    # float32 sum overflows on the first update from init().
+    manager = _uniform_generator_manager(4, learning_rate=3e37, exploration=0.0)
+    rewards = jnp.asarray([10.0, 10.0, -10.0, -10.0], dtype=jnp.float32)
+
+    result = manager.update(manager.init(), rewards)
+
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    np.testing.assert_array_equal(result.advantages, [10.0, 10.0, -10.0, -10.0])
+    assert bool(jnp.all(jnp.isfinite(result.state.log_weights)))
+    np.testing.assert_allclose(manager.weights(result.state), [0.5, 0.5, 0.0, 0.0], atol=1e-6)
+
+
 def test_learned_resource_manager_preserves_finite_extreme_convex_baseline() -> None:
     manager = LearnedResourceManager(
         n_actions=20,

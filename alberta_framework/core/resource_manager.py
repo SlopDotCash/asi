@@ -239,6 +239,16 @@ def _finite_convex_reduction(weights: Array, values: Array) -> Array:
     return jnp.where(reduction_only_overflow, stable, direct)
 
 
+def _finite_logit_center(logits: Array) -> Array:
+    """Return a bounded logit mean when only a finite row's float32 sum overflows."""
+    center = jnp.mean(logits)
+    peak = jnp.max(jnp.abs(logits))
+    _, exponent = jnp.frexp(peak)
+    scaled = jnp.ldexp(logits, -exponent)
+    bounded_center = jnp.clip(jnp.mean(scaled), jnp.min(scaled), jnp.max(scaled))
+    return jnp.where(jnp.isfinite(center), center, jnp.ldexp(bounded_center, exponent))
+
+
 def _validated_cost_weight(value: float) -> float:
     """Return a non-negative weight that stays finite and nonzero in float32."""
     return _validated_float32("cost_weight", value, lower=0.0, preserve_nonzero=True)
@@ -664,14 +674,7 @@ class LearnedResourceManager:
             _skip_zero_scale(self._discount, old_context_logits) + self._learning_rate * advantages
         )
         # Remove an arbitrary additive constant for numerical stability.
-        center = jnp.mean(new_context_logits)
-        # Compute a bounded mean when a finite row's sum overflows.
-        peak = jnp.max(jnp.abs(new_context_logits))
-        _, exponent = jnp.frexp(peak)
-        scaled = jnp.ldexp(new_context_logits, -exponent)
-        bounded_center = jnp.clip(jnp.mean(scaled), jnp.min(scaled), jnp.max(scaled))
-        center = jnp.where(jnp.isfinite(center), center, jnp.ldexp(bounded_center, exponent))
-        new_context_logits = new_context_logits - center
+        new_context_logits = new_context_logits - _finite_logit_center(new_context_logits)
         new_log_weights = state.log_weights.at[context].set(new_context_logits)
 
         old_ema = state.loss_ema[context]
@@ -1311,7 +1314,7 @@ class GeneratorMetaResourceManager:
         new_context_logits = (
             _skip_zero_scale(self._discount, old_context_logits) + self._learning_rate * advantages
         )
-        new_context_logits = new_context_logits - jnp.mean(new_context_logits)
+        new_context_logits = new_context_logits - _finite_logit_center(new_context_logits)
         new_log_weights = state.log_weights.at[context].set(new_context_logits)
 
         old_ema = state.reward_ema[context]
