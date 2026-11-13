@@ -118,46 +118,84 @@ def _symmetrize_matrix(matrix: Array) -> Array:
     return jnp.where(val_a == val_b, val_a, half * val_a + half * val_b)
 
 
+def _split_unit_mantissa(mantissa: Array) -> tuple[Array, Array]:
+    """Split a float32 mantissa in ``(-1, 1)`` into exact high and low parts."""
+    high = mantissa.astype(jnp.float16).astype(jnp.float32)
+    return high, mantissa - high
+
+
+def _neumaier_sum(values: Array) -> tuple[Array, Array]:
+    """Return ``(sum, compensation)`` for a 1D float32 vector via Neumaier summation."""
+
+    def _step(
+        carry: tuple[Array, Array], x: Array
+    ) -> tuple[tuple[Array, Array], None]:
+        total, comp = carry
+        next_total = total + x
+        err = jnp.where(
+            jnp.abs(total) >= jnp.abs(x),
+            (total - next_total) + x,
+            (x - next_total) + total,
+        )
+        return (next_total, comp + err), None
+
+    (total, comp), _ = jax.lax.scan(
+        _step,
+        (jnp.float32(0.0), jnp.float32(0.0)),
+        values,
+    )
+    return total, comp
+
+
+def _tier_cancelling_sum(
+    prod_hi: Array,
+    prod_lo: Array,
+    pair_exp: Array,
+    mask: Array,
+) -> Array:
+    """Sum exact mantissa products within one exponent tier using compensated summation."""
+    any_active = jnp.any(mask)
+    max_exp = jnp.max(jnp.where(mask, pair_exp, jnp.int32(-1024)))
+    scale_exp = jnp.where(any_active, max_exp - jnp.int32(60), jnp.int32(0))
+    rel_exp = jnp.clip(pair_exp - scale_exp, -149, 64)
+    scaled_hi = jnp.where(mask, jnp.ldexp(prod_hi, rel_exp), jnp.float32(0.0))
+    scaled_lo = jnp.where(mask, jnp.ldexp(prod_lo, rel_exp), jnp.float32(0.0))
+    sum_hi, comp_hi = _neumaier_sum(scaled_hi)
+    sum_lo, comp_lo = _neumaier_sum(scaled_lo)
+    total_scaled = (sum_hi + sum_lo) + (comp_hi + comp_lo)
+    return jnp.where(any_active, jnp.ldexp(total_scaled, scale_exp), jnp.float32(0.0))
+
+
 def _finite_cancelling_dot(left: Array, right: Array) -> Array:
     """Preserve a representable dot product when direct accumulation overflows."""
-
-    direct = jnp.dot(left, right)
-    left_scale = jnp.max(jnp.abs(left))
-    right_scale = jnp.max(jnp.abs(right))
-    magnitude_bound = left_scale * right_scale * left.size
-    use_fallback = (
-        (~jnp.isfinite(direct) | ~jnp.isfinite(magnitude_bound))
-        & jnp.isfinite(left_scale) & jnp.isfinite(right_scale)
+    left_f32 = jnp.asarray(left, dtype=jnp.float32)
+    right_f32 = jnp.asarray(right, dtype=jnp.float32)
+    direct = jnp.dot(left_f32, right_f32)
+    if left_f32.size == 0:
+        return direct
+    all_finite = jnp.all(jnp.isfinite(left_f32)) & jnp.all(jnp.isfinite(right_f32))
+    active = (left_f32 != jnp.float32(0.0)) & (right_f32 != jnp.float32(0.0))
+    _, exp_l = jnp.frexp(jnp.where(all_finite, left_f32, jnp.float32(0.0)))
+    _, exp_r = jnp.frexp(jnp.where(all_finite, right_f32, jnp.float32(0.0)))
+    pair_exp = exp_l + exp_r
+    max_pair_exp = jnp.max(jnp.where(active, pair_exp, jnp.int32(-1024)))
+    use_fallback = all_finite & (
+        (~jnp.isfinite(direct)) | (max_pair_exp > jnp.int32(100))
     )
 
     def compensated() -> Array:
-        _, left_exponent = jnp.frexp(left_scale)
-        _, right_exponent = jnp.frexp(right_scale)
-        normalized_left = jnp.ldexp(left, -left_exponent)
-        normalized_right = jnp.ldexp(right, -right_exponent)
-
-        def add_product(
-            carry: tuple[Array, Array], operands: tuple[Array, Array]
-        ) -> tuple[tuple[Array, Array], None]:
-            total, correction = carry
-            product = operands[0] * operands[1]
-            next_total = total + product
-            rounding_error = jnp.where(
-                jnp.abs(total) >= jnp.abs(product),
-                (total - next_total) + product,
-                (product - next_total) + total,
-            )
-            next_correction = correction + rounding_error
-            return (next_total, next_correction), None
-
-        (normalized_sum, correction), _ = jax.lax.scan(
-            add_product,
-            (jnp.asarray(0.0, dtype=left.dtype), jnp.asarray(0.0, dtype=left.dtype)),
-            (normalized_left, normalized_right),
-        )
-        normalized_dot = normalized_sum + correction
-        combined_exponent = left_exponent + right_exponent
-        return jnp.ldexp(normalized_dot, combined_exponent)
+        mant_l, exp_left = jnp.frexp(left_f32)
+        mant_r, exp_right = jnp.frexp(right_f32)
+        p_exp = exp_left + exp_right
+        l_hi, l_lo = _split_unit_mantissa(mant_l)
+        r_hi, r_lo = _split_unit_mantissa(mant_r)
+        prod_hi = mant_l * mant_r
+        prod_lo = ((l_hi * r_hi - prod_hi) + l_hi * r_lo + l_lo * r_hi) + l_lo * r_lo
+        high_mask = active & (p_exp >= max_pair_exp - jnp.int32(90))
+        low_mask = active & (~high_mask)
+        return _tier_cancelling_sum(
+            prod_hi, prod_lo, p_exp, high_mask
+        ) + _tier_cancelling_sum(prod_hi, prod_lo, p_exp, low_mask)
 
     return cast(Array, jax.lax.cond(use_fallback, compensated, lambda: direct))
 
@@ -340,9 +378,11 @@ class RLSRewardModel:
         target = raw_target.astype(jnp.float32)
         prediction = _finite_cancelling_dot(state.weights, x)
         error = target - prediction
-        covariance_features = state.covariance @ x
+        covariance_features = jax.vmap(
+            lambda row: _finite_cancelling_dot(row, x)
+        )(state.covariance)
         forgetting = jnp.asarray(self._config.forgetting, dtype=jnp.float32)
-        denominator = forgetting + jnp.dot(x, covariance_features)
+        denominator = forgetting + _finite_cancelling_dot(x, covariance_features)
         gain = covariance_features / denominator
         next_weights = state.weights + gain * error
         next_covariance = (state.covariance - jnp.outer(gain, covariance_features)) / forgetting
