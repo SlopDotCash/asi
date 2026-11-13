@@ -245,7 +245,8 @@ def _saturating_int32_sum(values: Array) -> Array:
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
 
     def add(total: Array, value: Array) -> Array:
-        return total + jnp.minimum(value, maximum - total)
+        clamped = jnp.clip(value, 0, maximum)
+        return total + jnp.minimum(clamped, maximum - total)
 
     return cast(
         Array,
@@ -1558,8 +1559,16 @@ class WorldModelEnsemble:
             & jnp.all(jnp.abs(next_obs) <= magnitude_bound)
         )
         state_valid = self._state_valid(state)
-        capacity_available = (state.replay_event_count < _INT32_MAX) & jnp.all(
-            state.member_update_counts + state.replay_member_update_counts < _INT32_MAX
+        max_count = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+        capacity_available = (
+            (state.replay_event_count >= 0)
+            & (state.replay_event_count < max_count)
+            & jnp.all(state.member_update_counts >= 0)
+            & jnp.all(state.replay_member_update_counts >= 0)
+            & jnp.all(
+                state.member_update_counts
+                < max_count - jnp.clip(state.replay_member_update_counts, 0, max_count)
+            )
         )
         can_attempt = state_valid & available & input_valid & capacity_available
 
@@ -1616,7 +1625,10 @@ class WorldModelEnsemble:
             member_updates_valid = (
                 jnp.all(jnp.stack(candidate_members_valid))
                 & jnp.all(replay_counts >= state.replay_member_update_counts)
-                & jnp.all(total_counts <= _INT32_MAX)
+                & jnp.all(
+                    state.member_update_counts
+                    <= max_count - jnp.clip(replay_counts, 0, max_count)
+                )
                 & jnp.all(
                     jnp.stack(
                         [
@@ -1668,7 +1680,9 @@ class WorldModelEnsemble:
                 member_prediction_losses=jnp.where(
                     applied, member_losses, jnp.zeros_like(member_losses)
                 ),
-                bootstrap_mask=bootstrap_mask,
+                bootstrap_mask=jnp.where(
+                    applied, bootstrap_mask, jnp.zeros_like(bootstrap_mask)
+                ),
                 member_updates_applied=bootstrap_mask & applied,
                 diagnostics=diagnostics,
             )
@@ -1730,8 +1744,16 @@ class WorldModelEnsemble:
             & jnp.all(jnp.abs(next_obs) <= magnitude_bound)
         )
         state_valid = self._state_valid(state)
-        capacity_available = (state.event_count < _INT32_MAX) & jnp.all(
-            state.member_update_counts + state.replay_member_update_counts < _INT32_MAX
+        max_count = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+        capacity_available = (
+            (state.event_count >= 0)
+            & (state.event_count < max_count)
+            & jnp.all(state.member_update_counts >= 0)
+            & jnp.all(state.replay_member_update_counts >= 0)
+            & jnp.all(
+                state.member_update_counts
+                < max_count - jnp.clip(state.replay_member_update_counts, 0, max_count)
+            )
         )
         can_attempt = state_valid & input_valid & capacity_available
 
@@ -1918,7 +1940,9 @@ class WorldModelEnsemble:
                     jnp.zeros_like(representation_gradient),
                 ),
                 representation_gradient_valid=(applied & representation_gradient_valid),
-                bootstrap_mask=bootstrap_mask,
+                bootstrap_mask=jnp.where(
+                    applied, bootstrap_mask, jnp.zeros_like(bootstrap_mask)
+                ),
                 member_updates_applied=bootstrap_mask & applied,
                 diagnostics=diagnostics,
             )
