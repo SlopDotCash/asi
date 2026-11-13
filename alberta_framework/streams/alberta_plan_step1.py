@@ -23,7 +23,7 @@ Reference: Sutton et al., "The Alberta Plan for AI Research", Step 1.
 
 import math
 from numbers import Integral, Real
-from typing import cast
+from typing import Any, cast
 
 import chex
 import jax
@@ -106,6 +106,77 @@ def _require_int(
     if maximum is not None and number > maximum:
         raise ValueError(f"{name} must be <= {maximum}")
     return number
+
+
+def _require_array_leaf(
+    value: object, *, name: str, shape: tuple[int, ...], dtype: Any
+) -> Array:
+    actual_type = type(value)
+    if not (
+        issubclass(actual_type, jax.Array) or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a JAX array")
+    trusted = cast(Array, value)
+    if trusted.shape != shape or trusted.dtype != jnp.dtype(dtype):
+        raise ValueError(f"{name} must have shape {shape} and dtype {jnp.dtype(dtype).name}")
+    return trusted
+
+
+def _finite_cancelling_dot(weights: Array, features: Array, *, num_relevant: int) -> Array:
+    """Compute ``jnp.dot(weights, features)`` without irrelevant 0*inf or cancelling overflow."""
+    direct = jnp.dot(weights, features)
+    w_rel = weights[:num_relevant]
+    x_rel = features[:num_relevant]
+    terms = jnp.where((w_rel == 0.0) | (x_rel == 0.0), 0.0, w_rel * x_rel)
+    pos_sum = jnp.sum(jnp.where(terms > 0.0, terms, 0.0))
+    neg_sum = jnp.sum(jnp.where(terms < 0.0, terms, 0.0))
+    signed_sum = pos_sum + neg_sum
+    max_w = jnp.maximum(jnp.max(jnp.abs(w_rel)), 1.0)
+    _, exp_w = jnp.frexp(max_w)
+    max_x = jnp.maximum(jnp.max(jnp.abs(x_rel)), 1.0)
+    _, exp_x = jnp.frexp(max_x)
+    scaled_w = jnp.ldexp(w_rel, -exp_w)
+    scaled_x = jnp.ldexp(x_rel, -exp_x)
+    scaled_terms = jnp.where(
+        (scaled_w == 0.0) | (scaled_x == 0.0),
+        0.0,
+        scaled_w * scaled_x,
+    )
+    scaled_pos = jnp.sum(jnp.where(scaled_terms > 0.0, scaled_terms, 0.0))
+    scaled_neg = jnp.sum(jnp.where(scaled_terms < 0.0, scaled_terms, 0.0))
+    rescaled = jnp.ldexp(scaled_pos + scaled_neg, exp_w + exp_x)
+    rel_finite = jnp.all(jnp.isfinite(w_rel)) & jnp.all(jnp.isfinite(x_rel))
+    extreme_cancelling = (pos_sum > 2.0**96) & (neg_sum < -(2.0**96))
+    need_signed = rel_finite & (
+        ~jnp.isfinite(direct) | ~jnp.all(jnp.isfinite(terms)) | extreme_cancelling
+    )
+    chosen = jnp.where(need_signed, signed_sum, direct)
+    return jnp.where(rel_finite & ~jnp.isfinite(chosen), rescaled, chosen)
+
+
+def _finite_target_sum(
+    weights: Array, features: Array, *, num_relevant: int, bias: Array, noise: Array
+) -> Array:
+    """Compute ``w . x + b + eta`` without intermediate partial-sum overflow."""
+    dot_val = _finite_cancelling_dot(weights, features, num_relevant=num_relevant)
+    direct_target = dot_val + bias + noise
+    w_rel = weights[:num_relevant]
+    x_rel = features[:num_relevant]
+    rel_finite = (
+        jnp.all(jnp.isfinite(w_rel))
+        & jnp.all(jnp.isfinite(x_rel))
+        & jnp.isfinite(bias)
+        & jnp.isfinite(noise)
+    )
+    terms = jnp.where((w_rel == 0.0) | (x_rel == 0.0), 0.0, w_rel * x_rel)
+    all_terms = jnp.concatenate([terms, jnp.asarray([bias, noise], dtype=jnp.float32)])
+    max_abs = jnp.maximum(jnp.max(jnp.abs(all_terms)), 1.0)
+    _, exp_all = jnp.frexp(max_abs)
+    scaled = jnp.ldexp(all_terms, -exp_all)
+    pos = jnp.sum(jnp.where(scaled > 0.0, scaled, 0.0))
+    neg = jnp.sum(jnp.where(scaled < 0.0, scaled, 0.0))
+    rescaled_target = jnp.ldexp(pos + neg, exp_all)
+    return jnp.where(rel_finite & ~jnp.isfinite(direct_target), rescaled_target, direct_target)
 
 
 def _require_key(value: object, *, name: str) -> Array:
@@ -304,6 +375,30 @@ class AlbertaPlanStep1Stream:
             step_count=jnp.array(0, dtype=jnp.int32),
         )
 
+    def _require_state(self, state: object) -> AlbertaPlanStep1State:
+        if type(state) is not AlbertaPlanStep1State:
+            raise TypeError("state must be an exact AlbertaPlanStep1State")
+        _require_key(state.key, name="state.key")
+        _require_array_leaf(
+            state.true_weights,
+            name="state.true_weights",
+            shape=(self._feature_dim,),
+            dtype=jnp.float32,
+        )
+        _require_array_leaf(
+            state.true_bias,
+            name="state.true_bias",
+            shape=(),
+            dtype=jnp.float32,
+        )
+        _require_array_leaf(
+            state.step_count,
+            name="state.step_count",
+            shape=(),
+            dtype=jnp.int32,
+        )
+        return state
+
     def step(
         self, state: AlbertaPlanStep1State, idx: Array
     ) -> tuple[TimeStep, AlbertaPlanStep1State]:
@@ -317,6 +412,7 @@ class AlbertaPlanStep1Stream:
             Tuple of (timestep, new_state)
         """
         del idx  # unused
+        state = self._require_state(state)
         key, k_w_drift, k_b_drift, k_x, k_eta = jr.split(state.key, 5)
 
         # Random walk on the relevant slice of w*_t. Use a full-length zero
@@ -338,7 +434,9 @@ class AlbertaPlanStep1Stream:
 
         # Compute target: y* = w* . x + b* + eta.
         eta = self._noise_std * jr.normal(k_eta, (), dtype=jnp.float32)
-        target = jnp.dot(new_weights, x) + new_bias + eta
+        target = _finite_target_sum(
+            new_weights, x, num_relevant=self._num_relevant, bias=new_bias, noise=eta
+        )
 
         timestep = TimeStep(observation=x, target=jnp.atleast_1d(target))
         new_state = AlbertaPlanStep1State(
@@ -530,12 +628,19 @@ class XDistShiftStream:
         relevant_w = jr.normal(k_w, (self._num_relevant,), dtype=jnp.float32)
         weights = jnp.zeros(self._feature_dim, dtype=jnp.float32)
         weights = weights.at[: self._num_relevant].set(relevant_w)
-        initial_scales = jr.uniform(
-            k_scales,
-            (self._feature_dim,),
-            minval=self._scale_min,
-            maxval=self._scale_max,
-            dtype=jnp.float32,
+        upper_exclusive = jnp.nextafter(
+            jnp.asarray(self._scale_max, dtype=jnp.float32),
+            jnp.asarray(self._scale_min, dtype=jnp.float32),
+        )
+        initial_scales = jnp.minimum(
+            jr.uniform(
+                k_scales,
+                (self._feature_dim,),
+                minval=self._scale_min,
+                maxval=self._scale_max,
+                dtype=jnp.float32,
+            ),
+            upper_exclusive,
         )
         return XDistShiftState(
             key=key,
@@ -543,6 +648,30 @@ class XDistShiftStream:
             current_scales=initial_scales,
             step_count=jnp.array(0, dtype=jnp.int32),
         )
+
+    def _require_state(self, state: object) -> XDistShiftState:
+        if type(state) is not XDistShiftState:
+            raise TypeError("state must be an exact XDistShiftState")
+        _require_key(state.key, name="state.key")
+        _require_array_leaf(
+            state.true_weights,
+            name="state.true_weights",
+            shape=(self._feature_dim,),
+            dtype=jnp.float32,
+        )
+        _require_array_leaf(
+            state.current_scales,
+            name="state.current_scales",
+            shape=(self._feature_dim,),
+            dtype=jnp.float32,
+        )
+        _require_array_leaf(
+            state.step_count,
+            name="state.step_count",
+            shape=(),
+            dtype=jnp.int32,
+        )
+        return state
 
     def step(self, state: XDistShiftState, idx: Array) -> tuple[TimeStep, XDistShiftState]:
         """Generate one time step.
@@ -555,6 +684,7 @@ class XDistShiftStream:
             Tuple of (timestep, new_state)
         """
         del idx  # unused
+        state = self._require_state(state)
         key, k_scales, k_z, k_eta = jr.split(state.key, 4)
 
         # Decide whether to redraw scales this step. Always sample candidate
@@ -562,12 +692,19 @@ class XDistShiftStream:
         should_change = (state.step_count > 0) & (
             state.step_count % self._scale_change_interval == 0
         )
-        candidate_scales = jr.uniform(
-            k_scales,
-            (self._feature_dim,),
-            minval=self._scale_min,
-            maxval=self._scale_max,
-            dtype=jnp.float32,
+        upper_exclusive = jnp.nextafter(
+            jnp.asarray(self._scale_max, dtype=jnp.float32),
+            jnp.asarray(self._scale_min, dtype=jnp.float32),
+        )
+        candidate_scales = jnp.minimum(
+            jr.uniform(
+                k_scales,
+                (self._feature_dim,),
+                minval=self._scale_min,
+                maxval=self._scale_max,
+                dtype=jnp.float32,
+            ),
+            upper_exclusive,
         )
         new_scales = jnp.where(should_change, candidate_scales, state.current_scales)
 
@@ -576,9 +713,18 @@ class XDistShiftStream:
         x = new_scales * z
 
         # Compute target from the SCALED observation.
-        target = jnp.dot(state.true_weights, x)
-        eta = self._noise_std * jr.normal(k_eta, (), dtype=jnp.float32)
-        target = target + jnp.where(self._noise_in_target, eta, jnp.float32(0.0))
+        eta = jnp.where(
+            self._noise_in_target,
+            self._noise_std * jr.normal(k_eta, (), dtype=jnp.float32),
+            jnp.float32(0.0),
+        )
+        target = _finite_target_sum(
+            state.true_weights,
+            x,
+            num_relevant=self._num_relevant,
+            bias=jnp.float32(0.0),
+            noise=eta,
+        )
 
         timestep = TimeStep(observation=x, target=jnp.atleast_1d(target))
         new_state = XDistShiftState(
