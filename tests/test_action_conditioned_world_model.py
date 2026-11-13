@@ -1234,3 +1234,67 @@ def test_absolute_decode_is_not_bounded_by_the_delta_clip() -> None:
     # The head really did learn the absolute target, so this is a decode bug.
     assert learned == pytest.approx(target, abs=0.5)
     assert decoded == pytest.approx(target, abs=0.5)
+
+
+def test_action_world_model_targets_and_bounds_stay_finite_near_float32_max() -> None:
+    """Scaled delta targets, boundary margin clips, and inverted-bound checks stay finite."""
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=1,
+            n_actions=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+            observation_scale=(2.0e38,),
+            max_delta_scale=1.0,
+            observation_clip_margin=1.0e38,
+        )
+    )
+    obs = jnp.array([-2.0e38], dtype=jnp.float32)
+    next_obs = jnp.array([2.0e38], dtype=jnp.float32)
+    targets = model.targets(
+        obs,
+        jnp.float32(0.0),
+        jnp.float32(0.99),
+        next_obs,
+    )
+    assert bool(jnp.all(jnp.isfinite(targets)))
+    assert float(targets[0]) == pytest.approx(2.0, rel=1e-6)
+
+    fmax = jnp.asarray(np.finfo(np.float32).max, dtype=jnp.float32)
+    state = model.init(jr.key(0))
+    heads = state.learner_state.head_params
+    biased_heads = dataclasses.replace(
+        heads,
+        biases=(
+            jnp.array([1.0], dtype=jnp.float32),
+            jnp.array([1.0], dtype=jnp.float32),
+            jnp.array([0.5], dtype=jnp.float32),
+        ),
+    )
+    warm_state = dataclasses.replace(
+        state,
+        learner_state=dataclasses.replace(state.learner_state, head_params=biased_heads),
+        observation_min=jnp.array([-fmax], dtype=jnp.float32),
+        observation_max=jnp.array([fmax], dtype=jnp.float32),
+        reward_min=-fmax,
+        reward_max=fmax,
+        step_count=jnp.array(1, dtype=jnp.int32),
+    )
+    pred = model.predict(warm_state, jnp.array([fmax], dtype=jnp.float32), jnp.int32(0))
+    assert bool(jnp.all(jnp.isfinite(pred.next_observation)))
+    assert float(pred.next_observation[0]) == float(fmax)
+
+    inverted_state = dataclasses.replace(
+        warm_state,
+        observation_min=jnp.array([1.0], dtype=jnp.float32),
+        observation_max=jnp.array([-1.0], dtype=jnp.float32),
+    )
+    res = model.update(
+        inverted_state,
+        jnp.array([0.0], dtype=jnp.float32),
+        jnp.int32(0),
+        jnp.float32(0.0),
+        jnp.float32(0.99),
+        jnp.array([0.0], dtype=jnp.float32),
+    )
+    assert not bool(res.update_applied)
