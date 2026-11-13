@@ -33,6 +33,7 @@ from alberta_framework.core.future_utility import (
     trace_output_loss_reduction,
 )
 from alberta_framework.core.interaction_features import (
+    CURATION_CANDIDATE_INELIGIBLE_RANK,
     RELEVANCE_PROBE_MODE_CONDITIONAL_V1,
     RELEVANCE_PROBE_MODE_TARGET_ONLY_V1,
     InteractionCurationPriorityOverride,
@@ -1087,6 +1088,89 @@ def test_curation_priority_override_controls_candidate_refresh_argmin() -> None:
     assert int(random.refreshed_candidate) == 1
     assert int(full.curation_selected_refresh_candidate) == 0
     assert int(random.curation_selected_refresh_candidate) == 1
+
+
+def test_curation_priority_override_ineligible_candidate_is_not_refreshed() -> None:
+    """An override-ineligible candidate survives candidate refresh.
+
+    The ineligible sentinel excludes a candidate from curation selection.
+    Refresh is a candidate deletion, so it must pick the worst *eligible*
+    candidate; selecting by argmin over the raw ranks instead hands the
+    -3.4e38 sentinel to the refresh and destroys the protected archive entry.
+    """
+    learner = FixedBudgetInteractionLearner(
+        n_features=1,
+        n_tasks=1,
+        step_size_output=0.0,
+        replacement_interval=1,
+        min_feature_age=0,
+        candidate_count=2,
+        candidate_min_age=100,
+        refresh_candidates=True,
+        refresh_promoted_candidate=False,
+        use_obgd=False,
+    )
+    state = learner.init(feature_dim=4, key=jr.key(704)).replace(
+        feature_left=jnp.asarray((0,), dtype=jnp.int32),
+        feature_right=jnp.asarray((1,), dtype=jnp.int32),
+        ages=jnp.asarray((5,), dtype=jnp.int32),
+        candidate_left=jnp.asarray((1, 2), dtype=jnp.int32),
+        candidate_right=jnp.asarray((3, 3), dtype=jnp.int32),
+        candidate_utilities=jnp.asarray((0.0, 10.0), dtype=jnp.float32),
+        candidate_ages=jnp.asarray((0, 0), dtype=jnp.int32),
+    )
+    observation = jnp.ones((4,), dtype=jnp.float32)
+    target = jnp.zeros((1,), dtype=jnp.float32)
+
+    ranks = InteractionCurationPriorityOverride(
+        enabled=jnp.asarray(True, dtype=jnp.bool_),
+        active_ranks=jnp.asarray((0.0,), dtype=jnp.float32),
+        candidate_ranks=jnp.asarray(
+            (0.0, CURATION_CANDIDATE_INELIGIBLE_RANK), dtype=jnp.float32
+        ),
+    )
+    result = learner.update(
+        state,
+        observation,
+        target,
+        curation_priority_override=ranks,
+    )
+    compiled = jax.jit(learner.update)(
+        state,
+        observation,
+        target,
+        curation_priority_override=ranks,
+    )
+    chex.assert_trees_all_equal(result, compiled)
+    assert int(result.promoted_candidate) == -1
+    assert int(result.refreshed_candidate) == 0
+    assert int(result.curation_selected_refresh_candidate) == 0
+    assert int(result.state.candidate_left[1]) == 2
+    assert int(result.state.candidate_right[1]) == 3
+    # Ordinary utility EMA decay still applies; refresh would have zeroed it.
+    assert float(result.state.candidate_utilities[1]) > 9.0
+
+    all_ineligible = ranks.replace(
+        candidate_ranks=jnp.asarray(
+            (
+                CURATION_CANDIDATE_INELIGIBLE_RANK,
+                CURATION_CANDIDATE_INELIGIBLE_RANK,
+            ),
+            dtype=jnp.float32,
+        )
+    )
+    untouched = learner.update(
+        state,
+        observation,
+        target,
+        curation_priority_override=all_ineligible,
+    )
+    assert int(untouched.refreshed_candidate) == -1
+    assert int(untouched.curation_selected_refresh_candidate) == -1
+    assert bool(jnp.array_equal(untouched.state.candidate_left, state.candidate_left))
+    assert bool(jnp.array_equal(untouched.state.candidate_right, state.candidate_right))
+    # Utilities still decay by the ordinary EMA; refresh would have zeroed them.
+    assert float(untouched.state.candidate_utilities[1]) > 9.0
 
 
 def test_nonfinite_curation_priority_override_rejects_atomically_in_all_modes() -> None:
