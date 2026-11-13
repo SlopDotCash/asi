@@ -550,7 +550,10 @@ def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
     direct = matrix @ vector
     gap = jnp.abs(direct - stable)
     limit = jnp.maximum(jnp.abs(stable), jnp.asarray(1.0, dtype=jnp.float32))
-    use_stable = jnp.isfinite(stable) & (gap > limit * jnp.asarray(1024.0, dtype=jnp.float32))
+    use_stable = jnp.isfinite(stable) & (
+        ~jnp.isfinite(direct)
+        | ((gap / jnp.asarray(1024.0, dtype=jnp.float32)) > limit)
+    )
     return jnp.where(use_stable, stable, direct)
 
 
@@ -570,10 +573,13 @@ def _gru_step(
     r = jax.nn.sigmoid(
         _finite_product_matvec(gru.W_r, obs) + _finite_product_matvec(gru.U_r, h) + gru.b_r
     )
+    gated_h = jnp.where(r == 0.0, jnp.zeros_like(h), r * h)
     h_tilde = jnp.tanh(
-        _finite_product_matvec(gru.W_h, obs) + _finite_product_matvec(gru.U_h, r * h) + gru.b_h
+        _finite_product_matvec(gru.W_h, obs) + _finite_product_matvec(gru.U_h, gated_h) + gru.b_h
     )
-    new_h = (1.0 - z) * h + z * h_tilde
+    keep_term = jnp.where(z == 1.0, jnp.zeros_like(h), (1.0 - z) * h)
+    update_term = jnp.where(z == 0.0, jnp.zeros_like(h_tilde), z * h_tilde)
+    new_h = keep_term + update_term
     new_gru = cast(GRUPerceptionState, gru.replace(hidden=new_h))
     return new_gru, jnp.concatenate([obs, new_h], axis=0)
 
