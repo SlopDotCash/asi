@@ -36,6 +36,7 @@ from alberta_framework.core.interaction_features import (
     RELEVANCE_PROBE_MODE_CONDITIONAL_V1,
     RELEVANCE_PROBE_MODE_TARGET_ONLY_V1,
     InteractionCurationPriorityOverride,
+    _exact_json_equal,
     load_interaction_feature_checkpoint,
     save_interaction_feature_checkpoint,
 )
@@ -1421,6 +1422,61 @@ def test_probe_mode_config_and_checkpoint_round_trip_fail_closed(
     save_checkpoint(updated, invalid_path, metadata=invalid_metadata)
     with pytest.raises(ValueError, match="relevance_probe_mode"):
         load_interaction_feature_checkpoint(invalid_path)
+
+
+def test_interaction_feature_checkpoint_rejects_float_aliased_accounting(
+    tmp_path: Path,
+) -> None:
+    """The resource-contract check must reject a float-aliased accounting scalar."""
+    learner = FixedBudgetInteractionLearner(
+        n_features=2,
+        n_tasks=1,
+        candidate_count=1,
+        utility_retention_grace_steps=8,
+        utility_evidence_threshold=0.1,
+        evidence_gated_active_output_memory=True,
+        independent_relevance_probe=True,
+        relevance_probe_mode=RELEVANCE_PROBE_MODE_TARGET_ONLY_V1,
+        scale_robust=True,
+    )
+    state = learner.init(feature_dim=3, key=jr.key(706))
+    updated = learner.update(
+        state,
+        jnp.asarray((0.5, -1.0, 2.0), dtype=jnp.float32),
+        jnp.asarray((0.75,), dtype=jnp.float32),
+    ).state
+    original_path = tmp_path / "original"
+    save_interaction_feature_checkpoint(learner, updated, original_path, feature_dim=3)
+    # Negative control: the untampered checkpoint still loads.
+    loaded_learner, loaded_state = load_interaction_feature_checkpoint(original_path)
+    assert loaded_learner is not None and loaded_state is not None
+    metadata = load_checkpoint_metadata(original_path)
+
+    tampered_accounting = dict(metadata["memory_accounting"])
+    tampered_accounting["persistent_array_bytes"] = float(
+        tampered_accounting["persistent_array_bytes"]
+    )
+    tampered_metadata = dict(metadata)
+    tampered_metadata["memory_accounting"] = tampered_accounting
+    tampered_path = tmp_path / "tampered"
+    save_checkpoint(updated, tampered_path, metadata=tampered_metadata)
+
+    with pytest.raises(ValueError, match="resource contract"):
+        load_interaction_feature_checkpoint(tampered_path)
+
+
+def test_exact_json_equal_rejects_aliases_and_fails_closed() -> None:
+    """Exact JSON comparison rejects aliases and never raises on odd types."""
+    assert _exact_json_equal({"a": 1}, {"a": 1})
+    assert not _exact_json_equal({"a": 1}, {"a": 1.0})
+    assert not _exact_json_equal({"a": True}, {"a": 1})
+    assert not _exact_json_equal({"a": 1}, {"a": True})
+    # A tuple compares equal to the list a JSON round-trip turns it into.
+    assert _exact_json_equal({"a": (1, 2)}, {"a": [1, 2]})
+    assert not _exact_json_equal({"a": (1,)}, {"a": [1.0]})
+    # Non-JSON values fail closed instead of raising (ndarray == is an array).
+    assert not _exact_json_equal(jnp.asarray([1, 2]), jnp.asarray([1, 2]))
+    assert not _exact_json_equal({"a": jnp.asarray([1])}, {"a": jnp.asarray([1])})
 
 
 def test_target_only_probe_runs_under_jit_and_scan() -> None:
