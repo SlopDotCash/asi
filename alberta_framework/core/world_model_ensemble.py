@@ -2063,6 +2063,24 @@ def _migrate_v1_state(legacy: _WorldModelEnsembleStateV1) -> WorldModelEnsembleS
     )
 
 
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        right_dict = cast(dict[str, object], right)
+        return left.keys() == right_dict.keys() and all(
+            _exact_json_equal(value, right_dict[key]) for key, value in left.items()
+        )
+    if type(left) is list:
+        right_list = cast(list[object], right)
+        return len(left) == len(right_list) and all(
+            _exact_json_equal(item, other)
+            for item, other in zip(left, right_list, strict=True)
+        )
+    return left == right
+
+
 def save_world_model_ensemble_checkpoint(
     ensemble: WorldModelEnsemble,
     state: WorldModelEnsembleState,
@@ -2122,7 +2140,9 @@ def load_world_model_ensemble_checkpoint(
         expected_budget = _legacy_v1_resource_budget(ensemble, template)
         restore_template = _legacy_v1_template(template)
     resource_budget = metadata.get("resource_budget")
-    if type(resource_budget) is not dict or resource_budget != expected_budget:
+    if type(resource_budget) is not dict or not _exact_json_equal(
+        resource_budget, expected_budget
+    ):
         raise ValueError("ensemble checkpoint resource budget does not match config")
     if set(metadata) != {"schema", "ensemble_config", "config_sha256", "resource_budget"}:
         raise ValueError("ensemble checkpoint metadata fields do not match the schema")

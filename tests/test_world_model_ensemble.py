@@ -1051,3 +1051,25 @@ def test_capacity_available_and_replay_valid_do_not_wrap_signed_int32() -> None:
     assert not bool(rejected_replay.diagnostics.applied)
     assert not bool(jnp.any(rejected_update.bootstrap_mask))
     assert not bool(jnp.any(rejected_replay.bootstrap_mask))
+
+
+def test_checkpoint_rejects_float_aliased_resource_budget(tmp_path: Path) -> None:
+    ensemble = WorldModelEnsemble(_config())
+    state = ensemble.init(jr.key(0))
+    clean_path = tmp_path / "clean"
+    save_world_model_ensemble_checkpoint(ensemble, state, clean_path)
+    metadata = load_checkpoint_metadata(clean_path)
+    load_world_model_ensemble_checkpoint(clean_path)
+
+    tampered_budget = dict(metadata["resource_budget"])
+    tampered_budget["persistent_state_bytes"] = float(
+        tampered_budget["persistent_state_bytes"]
+    )
+    forged_path = tmp_path / "forged"
+    save_checkpoint(
+        state,
+        forged_path,
+        metadata={**metadata, "resource_budget": tampered_budget},
+    )
+    with pytest.raises(ValueError, match="resource budget"):
+        load_world_model_ensemble_checkpoint(forged_path)
