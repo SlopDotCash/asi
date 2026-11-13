@@ -923,6 +923,21 @@ def test_checkpoint_roundtrip_and_tamper_detection_are_strict() -> None:
         PartnerPolicyFusion.from_checkpoint_payload(changed)
 
 
+def test_checkpoint_rejects_float_aliased_resource_budget() -> None:
+    """An int budget scalar rewritten as a float must fail, as sibling loaders require.
+
+    The resource budget is stored outside both payload digests, so only the
+    budget comparison can catch the rewrite; plain ``!=`` accepts ``4 == 4.0``.
+    """
+    fusion = _fusion()
+    payload = fusion.checkpoint_payload(fusion.init())
+    tampered = copy.deepcopy(payload)
+    budget = cast(dict[str, Any], tampered["resource_budget"])
+    budget["persistent_state_bytes"] = float(budget["persistent_state_bytes"])
+    with pytest.raises(ValueError, match="resource budget"):
+        PartnerPolicyFusion.from_checkpoint_payload(tampered)
+
+
 @pytest.mark.parametrize(
     "field",
     [

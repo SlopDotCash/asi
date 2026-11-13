@@ -156,6 +156,25 @@ def _payload_digest(payload: object) -> str:
     return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
 
 
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases."""
+
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        right_dict = cast(dict[str, object], right)
+        return left.keys() == right_dict.keys() and all(
+            _exact_json_equal(value, right_dict[key]) for key, value in left.items()
+        )
+    if type(left) is list:
+        right_list = cast(list[object], right)
+        return len(left) == len(right_list) and all(
+            _exact_json_equal(item, other)
+            for item, other in zip(left, right_list, strict=True)
+        )
+    return left == right
+
+
 def _saturating_increment(value: Array, cap: int) -> Array:
     """Increment a non-negative int32 counter without overflow."""
 
@@ -1874,7 +1893,9 @@ class PartnerPolicyFusion:
         if checkpoint.get("state_digest") != _payload_digest(state_payload):
             raise ValueError("partner-fusion checkpoint state digest mismatch")
         fusion = cls.from_config(construction)
-        if checkpoint.get("resource_budget") != fusion.resource_budget.to_config():
+        if not _exact_json_equal(
+            checkpoint.get("resource_budget"), fusion.resource_budget.to_config()
+        ):
             raise ValueError("checkpoint resource budget differs from construction")
         expected_state = {
             "reliability_weights",
