@@ -7081,9 +7081,13 @@ class PrototypeAgent:
             # The learner keeps the demon's configured trace decay so a zero
             # bootstrap can still be separated from eligibility. A stored
             # zero-discount trace would otherwise enter the next episode.
+            # A truncation, or an explicit positive GVF discount at a
+            # terminal, keeps its bootstrap above but still restarts the
+            # episode at ``next_decision_observation``, so it ends the
+            # stored trace as well.
             new_horde_state = self._horde.drop_eligibility_after_zero_discount(
                 horde_result.state,
-                horde_discounts,
+                jnp.where(execution_boundary, 0.0, horde_discounts),
                 horde_result.update_applied,
             )
             horde_tderrs = horde_result.td_errors
