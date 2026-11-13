@@ -609,8 +609,16 @@ def test_feature_finite_one_steps_are_bitwise_unchanged() -> None:
         fixed_state, _OBSERVATION, jnp.array([0.4, -0.2], dtype=jnp.float32)
     )
     assert bool(fixed_result.update_applied)
+    assert type(fixed_result.state.birth_timestamp) is float
+    assert type(fixed_result.state.uptime_s) is float
+    # Host clocks now preserve Python precision. Project those two fields to
+    # their historical device dtype while retaining the original numeric digest.
+    fixed_numeric_state = fixed_result.state.replace(
+        birth_timestamp=jnp.float32(fixed_result.state.birth_timestamp),
+        uptime_s=jnp.float32(fixed_result.state.uptime_s),
+    )
     assert _digest(
-        fixed_result.state,
+        fixed_numeric_state,
         fixed_result.predictions,
         fixed_result.errors,
         fixed_result.metrics,
@@ -638,8 +646,14 @@ def test_feature_finite_one_steps_are_bitwise_unchanged() -> None:
     # the float32 consecutive-integer limit.  The golden digest includes dtype.
     assert compositional_result.state.candidate_selector_action_counts.dtype == jnp.int32
     assert compositional_result.state.generator_resource_state.action_counts.dtype == jnp.int32
+    assert type(compositional_result.state.birth_timestamp) is float
+    assert type(compositional_result.state.uptime_s) is float
+    compositional_numeric_state = compositional_result.state.replace(
+        birth_timestamp=jnp.float32(compositional_result.state.birth_timestamp),
+        uptime_s=jnp.float32(compositional_result.state.uptime_s),
+    )
     assert _digest(
-        compositional_result.state,
+        compositional_numeric_state,
         compositional_result.predictions,
         compositional_result.errors,
         compositional_result.metrics,

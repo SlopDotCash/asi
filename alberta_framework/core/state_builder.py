@@ -1566,7 +1566,29 @@ def _error_corrected_scaled_sum(
     shift = matrix_exponent + vector_exponent - row_exponent
     scaled_products = jnp.ldexp(product, shift)
     scaled_residuals = jnp.ldexp(residual, shift)
-    return jnp.sum(scaled_products, axis=-1) + jnp.sum(scaled_residuals, axis=-1)
+
+    def add_term(carry: tuple[Array, Array], term: Array) -> tuple[Array, Array]:
+        total, correction = carry
+        next_total = total + term
+        error = jnp.where(
+            jnp.abs(total) >= jnp.abs(term),
+            (total - next_total) + term,
+            (term - next_total) + total,
+        )
+        return next_total, correction + error
+
+    def add_product(
+        carry: tuple[Array, Array], terms: tuple[Array, Array]
+    ) -> tuple[tuple[Array, Array], None]:
+        return add_term(add_term(carry, terms[0]), terms[1]), None
+
+    zero = jnp.zeros(matrix.shape[:-1], dtype=matrix.dtype)
+    (total, correction), _ = jax.lax.scan(
+        add_product,
+        (zero, zero),
+        (jnp.moveaxis(scaled_products, -1, 0), jnp.moveaxis(scaled_residuals, -1, 0)),
+    )
+    return total + correction
 
 
 def _prefer_scaled_sum(scaled_direct: Array, scaled_sum: Array) -> Array:
