@@ -3251,3 +3251,96 @@ def test_nonlinear_qhorde_terminal_reward_credits_episode_trace() -> None:
         np.zeros_like(np.asarray(second.state.actor_head_trace_w)),
         atol=1e-7,
     )
+
+
+
+def test_horde_actor_critic_preserves_critic_host_clocks() -> None:
+    """start, update, and array scans keep exact Python-float critic clocks."""
+    birth = 1_700_000_000.125
+    uptime = float(2**24) + 0.25
+    obs = jnp.ones(OBS_DIM, dtype=jnp.float32)
+    obs_seq = jnp.ones((2, OBS_DIM), dtype=jnp.float32)
+    rew_seq = jnp.ones(2, dtype=jnp.float32)
+
+    hac = _make_agent(n_demons=1)
+    hac_state = hac.init(feature_dim=OBS_DIM, key=jr.key(0))
+    hac_state = hac_state.replace(  # type: ignore[attr-defined]
+        critic_state=hac_state.critic_state.replace(birth_timestamp=birth, uptime_s=uptime)  # type: ignore[attr-defined]
+    )
+    hac_started, _, _ = hac.start(hac_state, obs)
+    assert type(hac_started.critic_state.birth_timestamp) is float
+    assert type(hac_started.critic_state.uptime_s) is float
+    assert hac_started.critic_state.birth_timestamp == birth
+    assert hac_started.critic_state.uptime_s == uptime
+
+    hac_updated = hac.update(hac_started, jnp.array(1.0, dtype=jnp.float32), obs)
+    for critic_state in (hac_updated.state.critic_state, hac_updated.critic_result.state):
+        assert type(critic_state.birth_timestamp) is float
+        assert type(critic_state.uptime_s) is float
+        assert critic_state.birth_timestamp == birth
+        assert critic_state.uptime_s == uptime
+
+    hac_scanned = run_horde_actor_critic_from_arrays(hac, hac_state, obs_seq, rew_seq, obs_seq)
+    assert type(hac_scanned.state.critic_state.birth_timestamp) is float
+    assert type(hac_scanned.state.critic_state.uptime_s) is float
+    assert hac_scanned.state.critic_state.birth_timestamp == birth
+    assert hac_scanned.state.critic_state.uptime_s == uptime
+
+    qhac = _make_qhorde_agent(n_actions=N_ACTIONS, n_aux=0)
+    qhac_state = qhac.init(feature_dim=OBS_DIM, key=jr.key(1))
+    qhac_state = qhac_state.replace(  # type: ignore[attr-defined]
+        critic_state=qhac_state.critic_state.replace(birth_timestamp=birth, uptime_s=uptime)  # type: ignore[attr-defined]
+    )
+    qhac_started, _, _ = qhac.start(qhac_state, obs)
+    assert type(qhac_started.critic_state.birth_timestamp) is float
+    assert qhac_started.critic_state.birth_timestamp == birth
+    assert qhac_started.critic_state.uptime_s == uptime
+
+    qhac_updated = qhac.update(
+        qhac_started, jnp.array(1.0, dtype=jnp.float32), obs, jnp.array(False)
+    )
+    for critic_state in (qhac_updated.state.critic_state, qhac_updated.critic_result.state):
+        assert type(critic_state.birth_timestamp) is float
+        assert critic_state.birth_timestamp == birth
+        assert critic_state.uptime_s == uptime
+
+    nlhac = _make_nlhac_agent()
+    nlhac_state = nlhac.init(feature_dim=OBS_DIM, key=jr.key(2))
+    nlhac_state = nlhac_state.replace(  # type: ignore[attr-defined]
+        critic_state=nlhac_state.critic_state.replace(birth_timestamp=birth, uptime_s=uptime)  # type: ignore[attr-defined]
+    )
+    nlhac_started, _, _ = nlhac.start(nlhac_state, obs)
+    assert type(nlhac_started.critic_state.birth_timestamp) is float
+    assert nlhac_started.critic_state.birth_timestamp == birth
+    assert nlhac_started.critic_state.uptime_s == uptime
+
+    nlhac_updated = nlhac.update(nlhac_started, jnp.array(1.0, dtype=jnp.float32), obs)
+    for critic_state in (nlhac_updated.state.critic_state, nlhac_updated.critic_result.state):
+        assert type(critic_state.birth_timestamp) is float
+        assert critic_state.birth_timestamp == birth
+        assert critic_state.uptime_s == uptime
+
+    nlhac_scanned = run_nonlinear_horde_actor_critic_from_arrays(
+        nlhac, nlhac_state, obs_seq, rew_seq, obs_seq
+    )
+    assert type(nlhac_scanned.state.critic_state.birth_timestamp) is float
+    assert nlhac_scanned.state.critic_state.birth_timestamp == birth
+    assert nlhac_scanned.state.critic_state.uptime_s == uptime
+
+    nlqhac = _make_nlqhac_agent()
+    nlqhac_state = nlqhac.init(feature_dim=OBS_DIM, key=jr.key(3))
+    nlqhac_state = nlqhac_state.replace(  # type: ignore[attr-defined]
+        critic_state=nlqhac_state.critic_state.replace(birth_timestamp=birth, uptime_s=uptime)  # type: ignore[attr-defined]
+    )
+    nlqhac_started, _, _ = nlqhac.start(nlqhac_state, obs)
+    assert type(nlqhac_started.critic_state.birth_timestamp) is float
+    assert nlqhac_started.critic_state.birth_timestamp == birth
+    assert nlqhac_started.critic_state.uptime_s == uptime
+
+    nlqhac_updated = nlqhac.update(
+        nlqhac_started, jnp.array(1.0, dtype=jnp.float32), obs, jnp.array(False)
+    )
+    for critic_state in (nlqhac_updated.state.critic_state, nlqhac_updated.critic_result.state):
+        assert type(critic_state.birth_timestamp) is float
+        assert critic_state.birth_timestamp == birth
+        assert critic_state.uptime_s == uptime
