@@ -961,12 +961,7 @@ def wilcoxon_comparison(
             # The signed-rank test depends only on signs, zeros and ordering of
             # absolute differences. Preserve these exactly before SciPy casts
             # integer observations to float64, which can erase whole pairs.
-            magnitudes = sorted({abs(value) for value in integer_differences if value})
-            order = {value: index for index, value in enumerate(magnitudes, start=1)}
-            rank_input = np.asarray([
-                0.0 if value == 0 else float(order[abs(value)]) * (1 if value > 0 else -1)
-                for value in integer_differences
-            ])
+            rank_input = _rank_exact_differences(integer_differences)
             result = stats.wilcoxon(rank_input, alternative="two-sided")
         else:
             with np.errstate(over="ignore", invalid="ignore"):
@@ -977,8 +972,14 @@ def wilcoxon_comparison(
             with np.errstate(over="ignore"):
                 paired_deltas = float_a - float_b
             if not np.isfinite(paired_deltas).all():
-                float_a, float_b = _common_binary_scaled(float_a, float_b)
-            result = stats.wilcoxon(float_a, float_b, alternative="two-sided")
+                exact_differences = [
+                    Fraction.from_float(float(left)) - Fraction.from_float(float(right))
+                    for left, right in zip(float_a, float_b, strict=True)
+                ]
+                rank_input = _rank_exact_differences(exact_differences)
+                result = stats.wilcoxon(rank_input, alternative="two-sided")
+            else:
+                result = stats.wilcoxon(float_a, float_b, alternative="two-sided")
         # scipy returns (statistic, pvalue) tuple
         stat_val = float(result[0])
         p_val = _require_p_value(
@@ -999,6 +1000,18 @@ def wilcoxon_comparison(
         method_a=method_a,
         method_b=method_b,
     )
+
+
+def _rank_exact_differences[ExactDiffT: (int, Fraction)](
+    differences: Iterable[ExactDiffT],
+) -> NDArray[np.float64]:
+    """Map exact differences to signed ordinal ranks for Wilcoxon signed-rank."""
+    magnitudes = sorted({abs(value) for value in differences if value})
+    order = {value: index for index, value in enumerate(magnitudes, start=1)}
+    return np.asarray([
+        0.0 if value == 0 else float(order[abs(value)]) * (1 if value > 0 else -1)
+        for value in differences
+    ])
 
 
 def bonferroni_correction(

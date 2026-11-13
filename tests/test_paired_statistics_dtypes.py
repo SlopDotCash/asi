@@ -144,6 +144,38 @@ def test_wilcoxon_comparison_promotes_float32_and_scales_overflowing_float64_pai
     assert actual_f64.p_value == pytest.approx(expected_f64.p_value)
 
 
+def test_wilcoxon_comparison_preserves_tiny_differences_alongside_overflow() -> None:
+    # Single extreme overflowing pair plus 9 tiny positive pairs (all positive)
+    a_pos = np.array([1.0e308] + [1.0e-20 * k for k in range(1, 10)], dtype=np.float64)
+    b_pos = np.array([-1.0e308] + [0.0] * 9, dtype=np.float64)
+    ref_pos = wilcoxon_comparison(
+        np.array([10.0] + [float(k) for k in range(1, 10)]),
+        np.zeros(10),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual_pos = wilcoxon_comparison(a_pos, b_pos)
+    assert actual_pos.statistic == ref_pos.statistic
+    assert actual_pos.p_value == pytest.approx(ref_pos.p_value)
+    assert actual_pos.significant is True
+
+    # Mixed signs with overflowing pair and tiny nonzero differences
+    a_mix = np.array(
+        [1.0e308] + [(-1.0) ** k * 1.0e-20 * k for k in range(1, 10)],
+        dtype=np.float64,
+    )
+    b_mix = np.array([-1.0e308] + [0.0] * 9, dtype=np.float64)
+    ref_mix = wilcoxon_comparison(
+        np.array([10.0] + [(-1.0) ** k * float(k) for k in range(1, 10)]),
+        np.zeros(10),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual_mix = wilcoxon_comparison(a_mix, b_mix)
+    assert actual_mix.statistic == ref_mix.statistic
+    assert actual_mix.p_value == pytest.approx(ref_mix.p_value)
+
+
 def test_paired_cohens_d_is_scale_invariant_across_extreme_magnitudes() -> None:
     a = np.array([2.0, 4.0, 7.0], dtype=np.float64)
     b = np.array([1.0, 2.0, 4.0], dtype=np.float64)
