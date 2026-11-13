@@ -148,10 +148,19 @@ def trace_decay_from_half_life(half_life: float | Array) -> Float[Array, ""]:
     if not isinstance(half_life, Array):
         half_life = validated_float32_scalar("half_life", half_life, lower=0.0)
     half_life_arr = jnp.asarray(half_life, dtype=jnp.float32)
+    raw_decay = jnp.power(jnp.array(0.5, dtype=jnp.float32), 1.0 / half_life_arr)
+    max_decay = jnp.nextafter(
+        jnp.array(1.0, dtype=jnp.float32), jnp.array(0.0, dtype=jnp.float32)
+    )
+    bounded_decay = jnp.where(
+        jnp.isfinite(half_life_arr),
+        jnp.minimum(raw_decay, max_decay),
+        raw_decay,
+    )
     return jnp.where(
         half_life_arr <= 0.0,
         jnp.array(0.0, dtype=jnp.float32),
-        jnp.power(jnp.array(0.5, dtype=jnp.float32), 1.0 / half_life_arr),
+        bounded_decay,
     )
 
 
@@ -190,15 +199,16 @@ def one_step_output_loss_reduction_with_diagnostics(
     )
     step_size = jnp.asarray(step_size_output, dtype=jnp.float32)
     count = jnp.asarray(active_count, dtype=jnp.float32)
-    delta_prediction = (
-        step_size
-        * errors[:, None]
-        * (feature_values[None, :] ** 2)
+    active_errors = jnp.where(active_mask, errors, 0.0)
+    delta_weight = (
+        _skip_zero_scale(step_size, active_errors[:, None])
+        * feature_values[None, :]
         / jnp.maximum(count, 1.0)
     )
+    delta_prediction = _skip_zero_scale(delta_weight, feature_values[None, :])
     # Subtract before multiplying: both expanded products can overflow even
     # when their difference is a representable loss reduction.
-    reduction = delta_prediction * (errors[:, None] - 0.5 * delta_prediction)
+    reduction = delta_prediction * (active_errors[:, None] - 0.5 * delta_prediction)
     reduction = jnp.maximum(reduction, 0.0)
     proposed = jnp.where(active_mask[:, None], reduction, 0.0)
     inputs_valid = (
