@@ -158,3 +158,39 @@ def test_archive_add_replaces_actual_nearest_across_scales(scale: float) -> None
     )
     assert archive.add(improved).entries == (far, improved)
     assert archive.entries == (far, near)
+
+
+def test_archive_exact_distance_breaks_multiscale_ties_and_add_overflows() -> None:
+    far = _entry("far", (-1e308, 2e290), 1.0)
+    near = _entry("near", (-1e308, 1e290), 2.0)
+    archive = BoundedPolicyArchive(
+        byte_budget=1024, min_latent_distance=1.5e308, entries=(far, near)
+    )
+    assert archive.retrieve_nearest((1e308, 0.0)) is near
+
+    far_unit = _entry("far_unit", (1.0, 2e-200), 1.0)
+    near_unit = _entry("near_unit", (1.0, 1e-200), 2.0)
+    unit_archive = BoundedPolicyArchive(
+        byte_budget=1024, min_latent_distance=1.0, entries=(far_unit, near_unit)
+    )
+    assert unit_archive.retrieve_nearest((0.0, 0.0)) is near_unit
+    # Both distances are strictly > 1.0 (sqrt(1 + 1e-400) > 1.0), so (0.0, 0.0) appends!
+    added = unit_archive.add(_entry("origin", (0.0, 0.0), 3.0))
+    assert [e.identity for e in added.entries] == ["far_unit", "near_unit", "origin"]
+
+    # When float64 math.dist ties across multiscale coordinates, exact ordering picks near.
+    multiscale_archive = BoundedPolicyArchive(
+        byte_budget=1024,
+        min_latent_distance=1.5e308,
+        entries=(
+            _entry("far_ms", (1e308, 2e290), 1.0),
+            _entry("near_ms", (1e308, 1e290), 2.0),
+        ),
+    )
+    replaced = multiscale_archive.add(_entry("better", (0.0, 0.0), 5.0))
+    assert [e.identity for e in replaced.entries] == ["far_ms", "better"]
+
+    empty = BoundedPolicyArchive(byte_budget=1024, min_latent_distance=0.0)
+    with pytest.raises(ValueError, match="query latent"):
+        empty.retrieve_nearest((0.0,) * 65_537)
+
