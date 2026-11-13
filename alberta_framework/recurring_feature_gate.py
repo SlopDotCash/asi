@@ -421,6 +421,16 @@ class RecurringFeatureSeedEvidence:
         return TASK_PAIRS[TASK_NAMES.index("D")] not in set(self.active_pairs)
 
 
+def _heldout_nmse_or_unrecovered(nmse: tuple[float, ...], task_index: int) -> float:
+    """Return one head's NMSE, treating a missing entry as unrecovered.
+
+    Short ``final_heldout_nmse`` tuples are legal degenerate construction, so
+    median consumers must not index past the end or silently drop the head:
+    a missing head is ``inf``, never a passing number and never an IndexError.
+    """
+    return nmse[task_index] if task_index < len(nmse) else math.inf
+
+
 @dataclass(frozen=True, slots=True)
 class RecurringFeatureVariantEvidence:
     """Multi-seed evidence for one utility-retention setting."""
@@ -459,7 +469,11 @@ class RecurringFeatureVariantEvidence:
     @property
     def median_critical_heldout_nmse(self) -> float:
         """Median final NMSE over critical heads and seeds."""
-        values = [value for seed in self.seeds for value in seed.final_heldout_nmse[:3]]
+        values = [
+            _heldout_nmse_or_unrecovered(seed.final_heldout_nmse, task_index)
+            for seed in self.seeds
+            for task_index in range(3)
+        ]
         return float(statistics.median(values)) if values else math.inf
 
     @property
@@ -468,7 +482,12 @@ class RecurringFeatureVariantEvidence:
         if not self.seeds:
             return tuple(math.inf for _ in TASK_NAMES)
         return tuple(
-            float(statistics.median(seed.final_heldout_nmse[task_index] for seed in self.seeds))
+            float(
+                statistics.median(
+                    _heldout_nmse_or_unrecovered(seed.final_heldout_nmse, task_index)
+                    for seed in self.seeds
+                )
+            )
             for task_index in range(len(TASK_NAMES))
         )
 
@@ -484,7 +503,9 @@ class RecurringFeatureVariantEvidence:
     @property
     def median_obsolete_heldout_nmse(self) -> float:
         """Median final NMSE for one-off head D."""
-        values = [seed.final_heldout_nmse[3] for seed in self.seeds]
+        values = [
+            _heldout_nmse_or_unrecovered(seed.final_heldout_nmse, 3) for seed in self.seeds
+        ]
         return float(statistics.median(values)) if values else -math.inf
 
     @property
