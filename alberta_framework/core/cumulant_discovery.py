@@ -131,6 +131,64 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _finite_signed_sum(terms: Array) -> Array:
+    """Sum along the last axis without overflowing intermediate partial sums."""
+    max_abs = jnp.maximum(jnp.max(jnp.abs(terms), axis=-1), 1.0)
+    _, exp = jnp.frexp(max_abs)
+    scaled = jnp.ldexp(terms, -exp[..., None])
+    pos = jnp.sum(jnp.where(scaled > 0.0, scaled, 0.0), axis=-1)
+    neg = jnp.sum(jnp.where(scaled < 0.0, scaled, 0.0), axis=-1)
+    return jnp.ldexp(pos + neg, exp)
+
+
+def _finite_cancelling_matvec(matrix: Array, vector: Array) -> Array:
+    """Compute ``matrix @ vector`` without overflowing cancelling products or FMA residuals."""
+    direct = matrix @ vector
+    terms = jnp.where(
+        (matrix == 0.0) | (vector[None, :] == 0.0),
+        0.0,
+        matrix * vector[None, :],
+    )
+    pos_sum = jnp.sum(jnp.where(terms > 0.0, terms, 0.0), axis=-1)
+    neg_sum = jnp.sum(jnp.where(terms < 0.0, terms, 0.0), axis=-1)
+    signed_sum = pos_sum + neg_sum
+    max_scale = jnp.maximum(jnp.max(jnp.abs(matrix), axis=-1), 1.0)
+    _, exp_m = jnp.frexp(max_scale)
+    max_vec = jnp.maximum(jnp.max(jnp.abs(vector)), 1.0)
+    _, exp_v = jnp.frexp(max_vec)
+    scaled_m = jnp.ldexp(matrix, -exp_m[:, None])
+    scaled_v = jnp.ldexp(vector, -exp_v)
+    scaled_terms = jnp.where(
+        (scaled_m == 0.0) | (scaled_v[None, :] == 0.0),
+        0.0,
+        scaled_m * scaled_v[None, :],
+    )
+    scaled_pos = jnp.sum(jnp.where(scaled_terms > 0.0, scaled_terms, 0.0), axis=-1)
+    scaled_neg = jnp.sum(jnp.where(scaled_terms < 0.0, scaled_terms, 0.0), axis=-1)
+    rescaled = jnp.ldexp(scaled_pos + scaled_neg, exp_m + exp_v)
+    inputs_finite = jnp.all(jnp.isfinite(matrix), axis=-1) & jnp.all(jnp.isfinite(vector))
+    need_signed = inputs_finite & (
+        ~jnp.isfinite(direct)
+        | ~jnp.all(jnp.isfinite(terms), axis=-1)
+        | ((pos_sum > 0.0) & (neg_sum < 0.0))
+    )
+    chosen = jnp.where(need_signed, signed_sum, direct)
+    return jnp.where(inputs_finite & ~jnp.isfinite(chosen), rescaled, chosen)
+
+
+def _scaled_outer_step(alpha: Array, td: Array, observation: Array) -> Array:
+    """Compute ``alpha * td[:, None] * observation[None, :]`` without overflow or underflow."""
+    direct = (alpha * td[:, None]) * observation[None, :]
+    m_a, e_a = jnp.frexp(alpha)
+    m_td, e_td = jnp.frexp(td[:, None])
+    m_obs, e_obs = jnp.frexp(observation[None, :])
+    rescaled = jnp.ldexp((m_a * m_td) * m_obs, e_a + e_td + e_obs)
+    nonzero_factors = (alpha != 0.0) & (td[:, None] != 0.0) & (observation[None, :] != 0.0)
+    use_rescaled = ~jnp.isfinite(direct) | ((direct == 0.0) & nonzero_factors)
+    step = jnp.where(use_rescaled, rescaled, direct)
+    return jnp.where((td[:, None] == 0.0) | (observation[None, :] == 0.0), 0.0, step)
+
+
 # =============================================================================
 # State
 # =============================================================================
@@ -359,7 +417,7 @@ class CumulantDiscovery:
         """
         state = self._require_state_contract(state)
         observation = self._require_observation("observation", observation)
-        return state.projections @ observation
+        return _finite_cancelling_matvec(state.projections, observation)
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def step(
@@ -400,17 +458,50 @@ class CumulantDiscovery:
         decay = jnp.asarray(self._decay_rate, dtype=jnp.float32)
 
         # Per-candidate transition cumulant c_{t+1} and predictions.
-        cumulants = state.projections @ next_observation  # (n,)
-        v = state.weights @ observation + state.biases  # (n,)
-        v_next = state.weights @ next_observation + state.biases  # (n,)
+        cumulants = _finite_cancelling_matvec(state.projections, next_observation)  # (n,)
+        w_obs = _finite_cancelling_matvec(state.weights, observation)  # (n,)
+        w_next = _finite_cancelling_matvec(state.weights, next_observation)  # (n,)
+        v = w_obs + state.biases  # (n,)
+        v_next = w_next + state.biases  # (n,)
 
         # Default gamma=0 still hits IEEE 0*inf when V(s') overflows.
-        td = cumulants + _skip_zero_scale(gamma, v_next) - v  # (n,)
+        discounted_next = _skip_zero_scale(gamma, v_next)
+        direct_td = cumulants + discounted_next - v  # (n,)
+        value_diff = discounted_next - v
+        cancelling_values = jnp.isfinite(value_diff) & (
+            jnp.abs(value_diff) < jnp.maximum(jnp.abs(discounted_next), jnp.abs(v))
+        )
+        grouped_td = jnp.where(cancelling_values, cumulants + value_diff, direct_td)
+        td_terms = jnp.stack(
+            [
+                cumulants,
+                _skip_zero_scale(gamma, w_next),
+                _skip_zero_scale(gamma, state.biases),
+                -w_obs,
+                -state.biases,
+            ],
+            axis=-1,
+        )
+        td = jnp.where(jnp.isfinite(grouped_td), grouped_td, _finite_signed_sum(td_terms))
 
         # Predictor update (per-candidate semi-gradient TD step)
         # weights_i += alpha * td_i * obs
-        proposed_weights = state.weights + alpha * td[:, None] * observation[None, :]
-        proposed_biases = state.biases + alpha * td
+        weight_delta = _scaled_outer_step(alpha, td, observation)
+        direct_weights = state.weights + weight_delta
+        proposed_weights = jnp.where(
+            jnp.isfinite(direct_weights),
+            direct_weights,
+            _finite_signed_sum(jnp.stack([state.weights, weight_delta], axis=-1)),
+        )
+        bias_delta = _skip_zero_scale(alpha, td)
+        direct_biases = state.biases + bias_delta
+        half_bias_delta = (0.5 * alpha) * td
+        reassociated_biases = (state.biases + half_bias_delta) + half_bias_delta
+        proposed_biases = jnp.where(
+            jnp.isfinite(direct_biases),
+            direct_biases,
+            reassociated_biases,
+        )
         utility_weight = 1.0 - decay
         squared_td = td**2
         direct_surprise = utility_weight * squared_td
