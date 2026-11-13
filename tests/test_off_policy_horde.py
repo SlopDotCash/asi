@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from alberta_framework.core import off_policy_horde as off_policy_horde_module
+from alberta_framework.core.baseline_optimizers import Adam
 from alberta_framework.core.checkpoints import load_checkpoint, save_checkpoint
 from alberta_framework.core.multi_head_learner import (
     MultiHeadMLPState,
@@ -147,6 +148,38 @@ def test_ratio_zero_blocks_that_demon_update() -> None:
     assert float(jnp.linalg.norm(result.state.head_params.weights[1] - before_w1)) > 0.0
     assert float(result.clipped_rhos[0]) == pytest.approx(0.0)
     assert float(result.clipped_rhos[1]) == pytest.approx(2.0)
+
+
+def test_all_nan_cumulants_leave_trunk_unchanged_with_stateful_optimizer() -> None:
+    """A step with no active demon must not move the shared trunk under Adam.
+
+    MultiHeadMLPLearner freezes its trunk on all-NaN targets (#3725). The
+    off-policy Horde has its own update rule, so a stateful trunk optimizer
+    would otherwise step on stale momentum. LMS hides this because a zero
+    gradient gives a zero step, so one active update warms Adam up first.
+    """
+    learner = OffPolicyHordeLearner(
+        _spec(),
+        hidden_sizes=(16,),
+        sparsity=0.0,
+        optimizer=Adam(step_size=0.01),
+    )
+    state = learner.init(5, jax.random.key(42))
+    obs = jnp.ones(5, dtype=jnp.float32)
+    rhos = jnp.ones(2, dtype=jnp.float32)
+    warmed = learner.update_with_ratios(
+        state, obs, jnp.array([1.0, -1.0], dtype=jnp.float32), obs, rhos
+    ).state
+
+    result = learner.update_with_ratios(
+        warmed, obs, jnp.array([jnp.nan, jnp.nan], dtype=jnp.float32), obs, rhos
+    )
+
+    assert bool(result.update_applied)
+    assert not bool(jnp.any(result.head_updates_applied))
+    chex.assert_trees_all_equal(result.state.trunk_params, warmed.trunk_params)
+    chex.assert_trees_all_equal(result.state.trunk_optimizer_states, warmed.trunk_optimizer_states)
+    chex.assert_trees_all_equal(result.state.trunk_traces, warmed.trunk_traces)
 
 
 def test_infinite_cumulant_with_obgd_does_not_poison_head() -> None:
