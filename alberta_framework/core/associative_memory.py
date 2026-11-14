@@ -1026,13 +1026,19 @@ class AssociativeMemoryLearner:
         state: AssociativeMemoryState,
         prediction: AssociativeMemoryPrediction,
         loss: Array,
+        skipped_count: Array,
     ) -> AssociativeMemoryState:
         if not self._config.adaptive_budget:
             return next_state
         active_count = jnp.sum(prediction.feature_mask.astype(jnp.float32))
+        # A new key skipped because every eligible row was protected is a
+        # replacement the gate could not make. It is pressure just like a
+        # replacement it did make; leaving it out caps the signal at the
+        # eligible row count, so a gate at its floor could never reopen.
         replacement_delta = (
             next_state.replacements.astype(jnp.float32)
             - state.replacements.astype(jnp.float32)
+            + skipped_count
         )
         replacement_rate = jnp.clip(
             replacement_delta / jnp.maximum(active_count, 1.0),
@@ -1238,16 +1244,23 @@ class AssociativeMemoryLearner:
                 allocations=allocations,
                 replacements=replacements,
             )
-            return next_carry, jnp.asarray(0, dtype=jnp.int32)
+            skipped = (active > 0) & (~found_scalar) & (~has_victim)
+            return next_carry, skipped
 
-        next_state = jax.lax.scan(
+        next_state, skipped = jax.lax.scan(
             row_step,
             next_state,
             (prediction.feature_keys, prediction.feature_mask),
-        )[0]
+        )
         next_state = self._update_family_scope(next_state, state, prediction, label, loss)
         next_state = self._update_window_scope(next_state, state, prediction, label, loss)
-        next_state = self._update_budget_scope(next_state, state, prediction, loss)
+        next_state = self._update_budget_scope(
+            next_state,
+            state,
+            prediction,
+            loss,
+            jnp.sum(skipped.astype(jnp.float32)),
+        )
         next_state = next_state.replace(  # type: ignore[attr-defined]
             step_count=_saturating_increment(state.step_count)
         )

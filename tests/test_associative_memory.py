@@ -792,6 +792,72 @@ def test_associative_adaptive_budget_expands_under_replacement_pressure() -> Non
     assert float(final_budget) > float(initial_budget) + 10.0
 
 
+def test_associative_adaptive_budget_counts_new_keys_it_had_to_skip() -> None:
+    learner = AssociativeMemoryLearner(
+        AssociativeMemoryConfig(
+            vocab_size=8,
+            block_size=4,
+            suffix_length=3,
+            max_features=64,
+            adaptive_budget=True,
+            initial_budget_fraction=0.01,
+            budget_lr=0.5,
+        )
+    )
+    state = learner.init()
+    context = jnp.asarray([1, 2, 3, 4], dtype=jnp.int32)
+    before = learner.predict(state, context)
+    eligible_rows = math.ceil(float(before.effective_budget))
+    new_keys = int(jnp.sum((before.feature_mask > 0) & (before.found == 0)))
+    assert eligible_rows == 2
+    assert new_keys > eligible_rows
+
+    result = learner.update(state, context, jnp.asarray(5, dtype=jnp.int32))
+    after = learner.predict(result.state, context)
+
+    # The two exposed rows take two keys; every other new key is skipped,
+    # because the only rows it could evict were just written by this update.
+    assert bool(result.update_applied)
+    assert int(jnp.sum(after.found)) == eligible_rows
+    assert int(result.state.allocations) == eligible_rows
+    assert int(result.state.replacements) == 0
+    # Keys the gate could not store are the replacement pressure it learns
+    # from; skipping them must not leave the gate where it was.
+    assert float(result.state.budget_logit) > float(state.budget_logit)
+    assert float(after.effective_budget) > float(before.effective_budget)
+
+
+def _shifted_pattern_stream(
+    config: Step2AssociativeConfig, key: jax.Array, steps: int, shift: int
+) -> tuple[jax.Array, jax.Array]:
+    patterns = jax.random.randint(
+        key, (8, config.block_size), 0, config.vocab_size, dtype=jnp.int32
+    )
+    labels = (patterns[:, -1] + 3 * patterns[:, -2] + patterns[:, 0] + shift) % config.vocab_size
+    ids = jnp.arange(steps, dtype=jnp.int32) % 8
+    return patterns[ids], labels[ids].astype(jnp.int32)
+
+
+def test_step2_adaptive_budget_reopens_after_a_distribution_shift() -> None:
+    config = Step2AssociativeConfig(adaptive_budget=True)
+    learner = make_step2_associative_learner(config)
+    key_a, key_b = jax.random.split(jax.random.key(0))
+    contexts_a, labels_a = _shifted_pattern_stream(config, key_a, 1000, 0)
+    contexts_b, labels_b = _shifted_pattern_stream(config, key_b, 400, 5)
+
+    learned = run_associative_memory_arrays(learner, learner.init(), contexts_a, labels_a)
+    floor_budget = float(learner.predict(learned.state, contexts_b[0]).effective_budget)
+    shifted = run_associative_memory_arrays(learner, learned.state, contexts_b, labels_b)
+    final_budget = float(learner.predict(shifted.state, contexts_b[-1]).effective_budget)
+
+    # Eight repeated patterns are learned with almost no rows, so the gate
+    # shrinks toward its floor. Eight new patterns then bring more new keys
+    # than the gate exposes; the gate has to reopen for them to be stored.
+    assert floor_budget < 2.0
+    assert final_budget > floor_budget + 8.0
+    np.testing.assert_array_equal(np.asarray(shifted.metrics[-100:, 1]), 1.0)
+
+
 def test_step2_associative_facade_smoke_and_roundtrip() -> None:
     config = Step2AssociativeConfig(
         vocab_size=8,
