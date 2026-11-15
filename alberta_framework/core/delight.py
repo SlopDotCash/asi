@@ -47,6 +47,12 @@ def _skip_zero_product(left: Array, right: Array) -> Array:
         left * right,
     )
 
+
+def _unsigned_zero(value: Array) -> Array:
+    """Return +0.0 for either signed zero and ``value`` otherwise."""
+    return jnp.where(value == 0.0, jnp.zeros_like(value), value)
+
+
 PolicyGradientMode = Literal["ordinary_pg", "delightful_pg"]
 GradientCandidateSemantics = Literal["gradient", "update"]
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
@@ -888,8 +894,9 @@ def _learning_value_for_gradient_audit(
 
     The historical ``LearningValue.delight`` field is accepted only when its
     float32 bits exactly equal the declared paper-defined identity
-    ``advantage * action_surprisal``. It remains evidence supplied to the
-    separate candidate-update safety audit; it never performs Kondo selection.
+    ``advantage * action_surprisal``; either signed zero counts as zero. It
+    remains evidence supplied to the separate candidate-update safety audit;
+    it never performs Kondo selection.
     """
     channel_names = (
         "advantage",
@@ -934,12 +941,16 @@ def _learning_value_for_gradient_audit(
     expected_paper_dg_delight = _skip_zero_product(
         values["advantage"], values["action_surprisal"]
     )
+    # A zero delight has two float32 encodings. The plain product (what
+    # PrototypeAgent supplies) gives -0.0 for advantage -0.0, or for advantage
+    # +0.0 with surprisal -log(1) == -0.0, while the zero-skip product gives
+    # +0.0. Compare zero as zero; every nonzero value keeps its exact bits.
     expected_paper_dg_bits = jax.lax.bitcast_convert_type(
-        expected_paper_dg_delight,
+        _unsigned_zero(expected_paper_dg_delight),
         jnp.uint32,
     )
     supplied_paper_dg_bits = jax.lax.bitcast_convert_type(
-        values["delight"],
+        _unsigned_zero(values["delight"]),
         jnp.uint32,
     )
     paper_dg_identity_valid = (

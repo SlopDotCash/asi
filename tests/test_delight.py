@@ -1783,6 +1783,63 @@ def test_gradient_joy_requires_exact_paper_dg_delight_identity() -> None:
 
 
 @pytest.mark.parametrize(
+    ("advantage", "action_surprisal"),
+    (
+        # A selected action with probability 1 has surprisal -log(1) == -0.0.
+        (0.0, -0.0),
+        # A zero advantage that carries the negative sign.
+        (-0.0, 0.5),
+    ),
+)
+def test_gradient_joy_accepts_either_zero_sign_for_paper_dg_delight(
+    advantage: float,
+    action_surprisal: float,
+) -> None:
+    """A zero DG delight matches the identity whichever zero sign it carries."""
+    advantage_value = jnp.asarray(advantage, dtype=jnp.float32)
+    surprisal_value = jnp.asarray(action_surprisal, dtype=jnp.float32)
+    plain_product = advantage_value * surprisal_value
+    zero_skip_product = delight_module._skip_zero_product(
+        advantage_value,
+        surprisal_value,
+    )
+    # The two documented producers disagree only in the sign of zero.
+    assert float(plain_product) == float(zero_skip_product) == 0.0
+    assert bool(jnp.signbit(plain_product)) != bool(jnp.signbit(zero_skip_product))
+
+    candidate = {"weights": jnp.array([-1.0, 0.0], dtype=jnp.float32)}
+    config = GradientJoyConfig(candidate_semantics="update", max_update_norm=2.0)
+
+    def assess(value: LearningValue) -> GradientJoyAssessment:
+        return assess_gradient_joy(
+            candidate,
+            _gradient_joy_evidence(learning_value=value),
+            config,
+        )
+
+    for supplied in (plain_product, zero_skip_product):
+        learning_value = _scalar_learning_value(
+            advantage=advantage_value,
+            action_surprisal=surprisal_value,
+            delight=supplied,
+        )
+        for assessment in (assess(learning_value), jax.jit(assess)(learning_value)):
+            assert bool(assessment.channel_availability.delight)
+            assert bool(assessment.diagnostics.learning_value_complete)
+            assert bool(assessment.accepted)
+            assert float(assessment.weight) > 0.0
+
+    nonzero = _scalar_learning_value(
+        advantage=advantage_value,
+        action_surprisal=surprisal_value,
+        delight=jnp.asarray(1.0e-30, dtype=jnp.float32),
+    )
+    for assessment in (assess(nonzero), jax.jit(assess)(nonzero)):
+        assert not bool(assessment.channel_availability.delight)
+        assert not bool(assessment.accepted)
+
+
+@pytest.mark.parametrize(
     ("probe_field", "finite_diagnostic"),
     (
         ("objective_probe_gradient", "objective_probe_finite"),

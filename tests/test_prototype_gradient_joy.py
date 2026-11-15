@@ -572,6 +572,53 @@ def test_complete_matching_evidence_sparks_joy_and_applies_eager_jit_checkpoint(
     _assert_tree_equal(eager, resumed)
 
 
+@pytest.mark.parametrize(
+    ("advantage", "action_surprisal"),
+    (
+        # The actor chose its action with probability 1: -log(1) == -0.0.
+        (0.0, -0.0),
+        # A zero advantage that carries the negative sign.
+        (-0.0, 0.5),
+    ),
+)
+def test_zero_advantage_sparks_joy_whichever_zero_sign_it_carries(
+    advantage: float,
+    action_surprisal: float,
+) -> None:
+    agent = _agent(joy=True)
+    state = agent.start(agent.init(jr.key(4)), jnp.asarray([0.25], dtype=jnp.float32))
+    state = _warm_signals(agent, state)
+    transition = _transition(state, 0.9)
+    positive_zero = _complete_sidecar(state).replace(
+        advantage=jnp.asarray(0.0, dtype=jnp.float32),
+        action_surprisal=jnp.asarray(0.5, dtype=jnp.float32),
+    )
+    signed_zero = _complete_sidecar(state).replace(
+        advantage=jnp.asarray(advantage, dtype=jnp.float32),
+        action_surprisal=jnp.asarray(action_surprisal, dtype=jnp.float32),
+    )
+
+    reference = agent.update_transition(state, transition, positive_zero)
+    assert bool(reference.sparks_joy)
+    assert bool(reference.joyful_gradient_applied)
+
+    for result in (
+        agent.update_transition(state, transition, signed_zero),
+        jax.jit(agent.update_transition)(state, transition, signed_zero),
+    ):
+        assert result.gradient_joy_application is not None
+        assessment = result.gradient_joy_application.assessment
+        assert bool(assessment.channel_availability.delight)
+        assert bool(assessment.diagnostics.learning_value_complete)
+        assert bool(result.sparks_joy)
+        assert bool(result.joyful_gradient_applied)
+        assert bool(result.state_builder_learning_diagnostics.applied)
+        chex.assert_trees_all_close(
+            result.state.state_builder_state.parameters,
+            reference.state.state_builder_state.parameters,
+        )
+
+
 def test_candidate_sparks_joy_when_builder_capacity_vetoes_the_commit() -> None:
     agent = _agent(joy=True)
     state = agent.start(agent.init(jr.key(41)), jnp.asarray([0.25], dtype=jnp.float32))
