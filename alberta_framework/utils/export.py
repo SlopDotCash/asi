@@ -10,7 +10,7 @@ import io
 import json
 import math
 import os
-import tempfile
+import secrets
 from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -307,13 +307,17 @@ def _preflight_export_results(
 def _write_text_atomically(filepath: Path, payload: str) -> None:
     """Replace ``filepath`` only after complete text is staged beside it."""
     filepath.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{filepath.name}.",
-        suffix=".tmp",
-        dir=filepath.parent,
-        text=True,
-    )
-    temporary = Path(temporary_name)
+    # tempfile.mkstemp creates an owner-only 0600 file, and os.replace would
+    # publish that mode. Request 0666 instead so the process umask applies,
+    # as it does for a file written in place.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    while True:
+        temporary = filepath.parent / f".{filepath.name}.{secrets.token_hex(8)}.tmp"
+        try:
+            descriptor = os.open(temporary, flags, 0o666)
+        except FileExistsError:
+            continue
+        break
     open_descriptor: int | None = descriptor
     try:
         handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="")
