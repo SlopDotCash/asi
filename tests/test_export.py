@@ -7,6 +7,8 @@ import hashlib
 import json
 import math
 import os
+import stat
+from collections.abc import Iterator
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -1004,3 +1006,77 @@ def test_selected_metric_default_preserves_explicit_display_labels() -> None:
         {"learner": result}, metric="accuracy", metric_label="Custom accuracy"
     )
     assert markdown.splitlines()[0] == "| Method | Custom accuracy (mean \u00b1 std) | Seeds |"
+
+
+@pytest.fixture(params=[0o022, 0o027], ids=["umask022", "umask027"])
+def process_umask(request: pytest.FixtureRequest) -> Iterator[int]:
+    umask = int(request.param)
+    previous = os.umask(umask)
+    try:
+        yield umask
+    finally:
+        os.umask(previous)
+
+
+def _file_mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_report_artifacts_take_the_process_umask(tmp_path: Path, process_umask: int) -> None:
+    control = tmp_path / "control.txt"
+    control.write_text("plain write\n", encoding="utf-8")
+    expected = 0o666 & ~process_umask
+    assert _file_mode(control) == expected
+
+    results = {
+        "control": _constant_result("control", 0.75),
+        "learner": _constant_result("learner", 0.5),
+    }
+    comparison = SignificanceResult(
+        test_name="paired_t_test",
+        statistic=1.0,
+        p_value=0.01,
+        significant=True,
+        alpha=0.05,
+        effect_size=0.1,
+        method_a="learner",
+        method_b="control",
+    )
+    artifacts = save_experiment_report(
+        results,
+        tmp_path / "report",
+        "trial1",
+        metric=_METRIC,
+        significance_results={("learner", "control"): comparison},
+    )
+
+    assert set(artifacts) == {
+        "summary_csv",
+        "json",
+        "latex_table",
+        "markdown_table",
+        "significance_latex",
+        "significance_md",
+    }
+    assert {kind: oct(_file_mode(path)) for kind, path in artifacts.items()} == {
+        kind: oct(expected) for kind in artifacts
+    }
+    assert sorted(path.name for path in (tmp_path / "report").iterdir()) == sorted(
+        path.name for path in artifacts.values()
+    )
+
+
+@pytest.mark.parametrize("mode", ["summary_csv", "timeseries_csv", "json"])
+def test_export_replacing_a_readable_file_keeps_it_readable(
+    mode: str, tmp_path: Path, process_umask: int
+) -> None:
+    suffix = "json" if mode == "json" else "csv"
+    existing = tmp_path / f"existing.{suffix}"
+    existing.write_text("old\n", encoding="utf-8")
+    existing.chmod(0o644)
+
+    _export_mode(mode, {"trace": _timeseries_result()}, existing)
+
+    assert existing.read_text(encoding="utf-8") != "old\n"
+    assert _file_mode(existing) == 0o666 & ~process_umask
+    assert [path.name for path in tmp_path.iterdir()] == [existing.name]
