@@ -1318,17 +1318,20 @@ def test_latent_world_model_nonfinite_observation_fails_visible(
             latent_dim=3,
             hidden_sizes=(),
             sparsity=0.0,
+            reward_scale=2.0,
             predict_delta=predict_delta,
         )
     )
     state = model.init(jr.key(23))
     inf_obs = jnp.array([jnp.inf, 1.0], dtype=jnp.float32)
+    neg_inf_obs = jnp.array([-jnp.inf, 1.0], dtype=jnp.float32)
     valid_obs = jnp.array([0.25, -0.5], dtype=jnp.float32)
     action = jnp.int32(0)
     reward = jnp.float32(0.5)
     discount = jnp.float32(0.99)
 
     assert bool(jnp.all(jnp.isnan(model.encode(state, inf_obs))))
+    assert bool(jnp.all(jnp.isnan(model.encode(state, neg_inf_obs))))
     assert bool(jnp.all(jnp.isnan(model.input_features(state, inf_obs, action))))
 
     prediction = model.predict(state, inf_obs, action)
@@ -1338,6 +1341,77 @@ def test_latent_world_model_nonfinite_observation_fails_visible(
     assert bool(jnp.isnan(prediction.discount))
     assert bool(jnp.all(jnp.isnan(prediction.raw_predictions)))
 
-    for bad_obs, bad_next in ((inf_obs, valid_obs), (valid_obs, inf_obs)):
+    for bad_obs, bad_next in (
+        (inf_obs, valid_obs),
+        (valid_obs, inf_obs),
+        (inf_obs, inf_obs),
+        (neg_inf_obs, valid_obs),
+    ):
         built_targets = model.targets(state, bad_obs, reward, discount, bad_next)
         assert bool(jnp.all(jnp.isnan(built_targets[: model.config.latent_dim])))
+        chex.assert_trees_all_equal(
+            built_targets[model.config.latent_dim :],
+            jnp.array([0.25, 0.99], dtype=jnp.float32),
+        )
+
+
+def test_latent_world_model_update_traced_under_outer_jit_and_vmap() -> None:
+    """LatentWorldModel.update must trace cleanly under outer jax.jit and jax.vmap."""
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=3,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(31))
+    birth, uptime = 1_700_000_000.125, 16_777_216.25
+    state = dataclasses.replace(  # type: ignore[type-var]
+        state,
+        learner_state=dataclasses.replace(  # type: ignore[type-var]
+            state.learner_state,
+            birth_timestamp=birth,
+            uptime_s=uptime,
+        ),
+    )
+
+    jitted_update = jax.jit(model.update)
+    valid_obs = jnp.array([0.25, -0.5], dtype=jnp.float32)
+    next_obs = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    accepted = jitted_update(
+        state, valid_obs, jnp.int32(1), jnp.float32(0.5), jnp.float32(0.99), next_obs
+    )
+    assert bool(accepted.update_applied)
+    assert int(accepted.state.step_count) == 1
+
+    rejected = jitted_update(
+        state,
+        jnp.array([jnp.inf, 1.0], dtype=jnp.float32),
+        jnp.int32(1),
+        jnp.float32(0.5),
+        jnp.float32(0.99),
+        next_obs,
+    )
+    assert not bool(rejected.update_applied)
+    assert int(rejected.state.step_count) == 0
+
+    vmapped_update = jax.vmap(model.update, in_axes=(None, 0, 0, 0, 0, 0))
+    batch_obs = jnp.array(
+        [[0.25, -0.5], [jnp.nan, 0.1], [jnp.inf, 0.1]], dtype=jnp.float32
+    )
+    batch_actions = jnp.array([0, 1, 0], dtype=jnp.int32)
+    batch_rewards = jnp.array([0.5, 0.5, 0.5], dtype=jnp.float32)
+    batch_discounts = jnp.array([0.99, 0.99, 0.99], dtype=jnp.float32)
+    batch_next_obs = jnp.broadcast_to(next_obs, (3, 2))
+
+    batched = vmapped_update(
+        state, batch_obs, batch_actions, batch_rewards, batch_discounts, batch_next_obs
+    )
+    chex.assert_trees_all_equal(
+        batched.update_applied, jnp.array([True, False, False], dtype=jnp.bool_)
+    )
+    chex.assert_trees_all_equal(
+        batched.state.step_count, jnp.array([1, 0, 0], dtype=jnp.int32)
+    )

@@ -824,7 +824,19 @@ class LatentWorldModel:
         discount: Array,
         next_observation: Array,
     ) -> Float[Array, " model_heads"]:
-        """Build ``[next_latent_or_delta, reward, discount]`` targets."""
+        """Build ``[next_latent_or_delta, reward / reward_scale, discount]`` targets.
+
+        Observation or encoder non-finiteness sets ``targets[:latent_dim]`` to
+        all-``NaN`` without masking ``targets[latent_dim]``
+        (``reward / reward_scale``) or ``targets[latent_dim + 1]`` (unclipped
+        ``discount``), which stay finite whenever those ``float32`` quantities
+        are finite. Direct callers outside :meth:`update` must check
+        ``jnp.all(jnp.isfinite(targets))`` (specifically ``targets[:latent_dim]``
+        for observation/encoder validity, and all ``latent_dim + 2`` slots before
+        calling :class:`MultiHeadMLPLearner`, which treats ``NaN`` targets as
+        inactive heads rather than a rejected transition) alongside
+        ``0.0 <= discount <= 1.0``.
+        """
         latent = self.encode(state, observation)
         next_latent = self.encode(state, next_observation)
         latent_valid = jnp.all(jnp.isfinite(latent)) & jnp.all(jnp.isfinite(next_latent))
