@@ -652,7 +652,7 @@ class TestRiverSwim:
         assert env.policy_average_reward(
             [RIGHT_ACTION] * 5 + [LEFT_ACTION] + [RIGHT_ACTION] * 7
         ) == 0.0
-        assert env.uniform_random_average_reward() == 0.0016672949103085104
+        assert env.uniform_random_average_reward() == 0.0016672949361724297
 
     @pytest.mark.parametrize(
         ("invalid_kernel", "message"),
@@ -1062,3 +1062,50 @@ def test_riverswim_random_gain_preserves_subnormal_rewards(n_states, units):
     endpoint_mass = Fraction(3**(n_states - 1) + 1, sum(3**i for i in range(n_states)))
     expected = float(endpoint_mass * Fraction(reward) / 2)
     assert env.uniform_random_average_reward() == expected
+
+
+def _exact_uniform_random_gain(env: RiverSwimMDP) -> Fraction:
+    """Independent adjacent-balance gain of the uniform mixture of both actions."""
+    kernels = env.transition_tensor
+    rewards = env.reward_tensor
+    n_states = env.n_states
+    half = Fraction(1, 2)
+    up = [Fraction(0)] * n_states
+    down = [Fraction(0)] * n_states
+    for action in (LEFT_ACTION, RIGHT_ACTION):
+        for state in range(n_states):
+            row = [Fraction(float(value)) for value in kernels[action, state]]
+            total = sum(row, Fraction(0))
+            if state + 1 < n_states:
+                up[state] += half * row[state + 1] / total
+            if state > 0:
+                down[state] += half * row[state - 1] / total
+    masses = [Fraction(1)]
+    for state in range(n_states - 1):
+        masses.append(masses[-1] * up[state] / down[state + 1])
+    weighted = sum(
+        (
+            mass * half * (Fraction(float(reward[0])) + Fraction(float(reward[1])))
+            for mass, reward in zip(masses, rewards, strict=True)
+        ),
+        Fraction(0),
+    )
+    return weighted / sum(masses, Fraction(0))
+
+
+@pytest.mark.parametrize("n_states", [6, 13])
+@pytest.mark.parametrize(
+    ("p_right_up", "p_right_down"),
+    [(0.35, 0.05), (0.35, 2.0**-40), (1.0e-7, 2.0e-7)],
+)
+def test_riverswim_random_gain_mixes_action_kernels_exactly(
+    n_states: int, p_right_up: float, p_right_down: float
+) -> None:
+    """The random-policy kernel must not be rounded to float32 before the exact solve."""
+    env = RiverSwimMDP(
+        RiverSwimConfig(
+            n_states=n_states, p_right_up=p_right_up, p_right_down=p_right_down
+        )
+    )
+
+    assert env.uniform_random_average_reward() == float(_exact_uniform_random_gain(env))
