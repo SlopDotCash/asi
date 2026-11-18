@@ -297,14 +297,10 @@ def test_bounder_is_not_an_optimizer_and_owns_no_persistent_state() -> None:
     )
     assert _direct_state_bytes(1, (4,), 3) == 212
 
-    # Passing a bounder where an optimizer belongs fails closed with this
-    # module's own diagnostic rather than an AttributeError.
+    # A bounder has no shape-generic state, so the counting helper refuses it
+    # rather than charging a guessed shape.
     with pytest.raises(ValueError, match="no shape-generic state"):
-        MultiHeadMLPLearner(
-            n_heads=1,
-            hidden_sizes=(),
-            optimizer=ObGDBounding(),
-        )
+        _direct_state_bytes(1, (), 3, optimizer=ObGDBounding())
 
 
 def test_optimizer_without_a_known_shape_generic_state_fails_closed() -> None:
