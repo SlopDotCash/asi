@@ -31,9 +31,7 @@ from alberta_framework.core.optimizers import (
     Autostep,
     ObGD,
     ObGDBounding,
-    Optimizer,
 )
-from alberta_framework.core.types import LMSState
 
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
@@ -376,7 +374,9 @@ def test_head_optimizer_is_probed_once_however_many_heads() -> None:
 
     Counting per head made the preflight linear in the head count, and
     ``test_persist_bound_still_fires_before_working_set`` constructs a learner
-    with ``n_heads=134_217_728``. The probe count must not grow with it.
+    with ``n_heads=134_217_728``. One head contributes a weight state and a
+    bias state, so the probe runs twice, and that number must not grow with
+    the head count.
     """
     calls = 0
     original = multi_head_learner_module._affine_state_scalars
@@ -391,7 +391,31 @@ def test_head_optimizer_is_probed_once_however_many_heads() -> None:
         for n_heads in (1, 1_000, 134_217_728):
             calls = 0
             _direct_state_scalars(n_heads, (), 4, optimizer=Autostep())
-            assert calls == 1
+            assert calls == 2, n_heads
+    finally:
+        multi_head_learner_module._affine_state_scalars = original
+
+
+def test_lms_state_is_counted_without_a_probe() -> None:
+    """The default optimizer is answered directly instead of probed.
+
+    ``LMS.init_for_shape`` returns ``LMSState(step_size)``, one scalar with no
+    width term, so every LMS trunk and head costs no probe at all.
+    """
+    calls = 0
+    original = multi_head_learner_module._affine_state_scalars
+
+    def counting(build: Any, *, name: str) -> tuple[int, int]:
+        nonlocal calls
+        calls += 1
+        return original(build, name=name)
+
+    multi_head_learner_module._affine_state_scalars = counting
+    try:
+        for n_heads in (1, 8, 134_217_728):
+            calls = 0
+            _direct_state_scalars(n_heads, (16, 8), 32, optimizer=LMS(step_size=0.1))
+            assert calls == 0, n_heads
     finally:
         multi_head_learner_module._affine_state_scalars = original
 
@@ -404,13 +428,10 @@ def test_state_that_is_not_affine_in_width_fails_closed() -> None:
     dependent state shape cannot be silently miscounted.
     """
 
-    class RaggedOptimizer(Optimizer[LMSState]):
+    class RaggedOptimizer(Autostep):
         def init_for_shape(self, shape: tuple[int, ...]) -> Any:
             width = shape[0]
             return jnp.zeros(width + (width % 2), dtype=jnp.float32)
-
-        def update_from_gradient(self, state: Any, gradient: Any, error: Any = None) -> Any:
-            return gradient, state
 
     with pytest.raises(ValueError, match="not affine in the parameter width"):
         _direct_state_bytes(1, (), 3, optimizer=RaggedOptimizer())
