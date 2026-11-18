@@ -8,9 +8,11 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
+from alberta_framework.core.baseline_optimizers import Adam, RMSprop
 from alberta_framework.core.multi_head_learner import (
     MultiHeadMLPLearner,
     _direct_state_bytes,
+    _direct_state_scalars,
     _multi_head_update_working_set_bytes,
     _preflight_multi_head_update_working_set,
     _validate_direct_state_resources,
@@ -22,7 +24,15 @@ from alberta_framework.core.normalizers import (
     StreamingBatchNormalizer,
     WelfordNormalizer,
 )
-from alberta_framework.core.optimizers import IDBD, LMS, Autostep, ObGD, ObGDBounding
+from alberta_framework.core.optimizers import (
+    IDBD,
+    LMS,
+    Autostep,
+    ObGD,
+    ObGDBounding,
+    Optimizer,
+)
+from alberta_framework.core.types import LMSState
 
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
@@ -318,23 +328,87 @@ def test_optimizer_without_a_known_shape_generic_state_fails_closed() -> None:
         MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), optimizer=ObGD())
 
 
-def test_normalizer_with_an_unknown_state_shape_fails_closed() -> None:
-    """A normalizer that overrides ``init`` is refused, not charged a guess.
+def test_every_shape_generic_optimizer_is_counted_from_its_real_state() -> None:
+    """The count follows the state each optimizer builds, not a class table.
 
-    Charging the largest known normalizer shape would undercount any
-    estimator that keeps more per-feature arrays, so the count refuses an
-    unrecognized implementation instead.
+    ``init_for_shape`` exists on LMS, IDBD, Autostep, Adam, RMSprop and
+    AdamO, and the probe decomposition reproduces each one's fields. Adam and
+    RMSprop live in ``baseline_optimizers`` and were missed by an
+    implementation that enumerated only ``optimizers.py`` classes.
+    """
+    cases = [
+        (LMS(step_size=0.1), 0, 1),
+        (IDBD(), 2, 1),
+        (Autostep(), 3, 2),
+        (Adam(step_size=0.1), 2, 5),
+        (RMSprop(), 1, 3),
+    ]
+    for optimizer, per_element, fixed in cases:
+        for size in (1, 7, 64):
+            # One linear head of ``size`` weights plus a bias, two copies of
+            # params and traces, the optimizer state, and the three counters.
+            expected = 2 * (size + 1) + 3 + per_element * size + fixed
+            assert (
+                _direct_state_scalars(1, (), size, optimizer=optimizer) == expected
+            )
+
+    for optimizer in (Adam(step_size=0.2, beta1=0.0, beta2=0.0), RMSprop()):
+        learner = MultiHeadMLPLearner(
+            n_heads=2,
+            hidden_sizes=(4,),
+            optimizer=LMS(step_size=0.1),
+            head_optimizer=optimizer,
+            sparsity=0.0,
+            use_layer_norm=False,
+        )
+        state = learner.init(feature_dim=3, key=jr.key(0))
+        assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+            2, (4,), 3, optimizer=LMS(step_size=0.1), head_optimizer=optimizer
+        )
+
+
+def test_state_that_is_not_affine_in_width_fails_closed() -> None:
+    """A state builder that is not affine cannot be extrapolated.
+
+    The probe decomposition fits a line through three widths and refuses a
+    builder that does not lie on it, so a future optimizer with a width
+    dependent state shape cannot be silently miscounted.
     """
 
-    class WiderNormalizer(EMANormalizer):
+    class RaggedOptimizer(Optimizer[LMSState]):
+        def init_for_shape(self, shape: tuple[int, ...]) -> Any:
+            width = shape[0]
+            return jnp.zeros(width + (width % 2), dtype=jnp.float32)
+
+        def update_from_gradient(self, state: Any, gradient: Any, error: Any = None) -> Any:
+            return gradient, state
+
+    with pytest.raises(ValueError, match="not affine in the parameter width"):
+        _direct_state_bytes(1, (), 3, optimizer=RaggedOptimizer())
+
+
+def test_normalizer_that_keeps_its_parent_state_keeps_its_parent_count() -> None:
+    """A normalizer subclass that returns the parent state is counted exactly.
+
+    The count is derived from the state ``init`` returns, so a subclass that
+    only changes configuration keeps the parent's field count instead of
+    falling into an unknown branch.
+    """
+
+    class RenamedEMA(EMANormalizer):
         def init(self, feature_dim: int) -> EMANormalizerState:
             return super().init(feature_dim)
 
-    with pytest.raises(ValueError, match="normalizer.*count exactly"):
-        _direct_state_bytes(1, (), 3, normalizer=WiderNormalizer())
-
-    with pytest.raises(ValueError, match="no persistent state this"):
-        MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), normalizer=WiderNormalizer())
+    assert _direct_state_bytes(1, (), 3, normalizer=RenamedEMA()) == (
+        _direct_state_bytes(1, (), 3, normalizer=EMANormalizer())
+    )
+    learner = MultiHeadMLPLearner(
+        n_heads=1, hidden_sizes=(), normalizer=RenamedEMA(), sparsity=0.0
+    )
+    state = learner.init(feature_dim=3, key=jr.key(0))
+    assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+        1, (), 3, normalizer=RenamedEMA()
+    )
 
 
 def test_inherited_shape_generic_hooks_keep_their_parent_count() -> None:

@@ -20,7 +20,7 @@ import functools
 import math
 import operator
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -38,19 +38,14 @@ from alberta_framework.core.learners import (
 )
 from alberta_framework.core.normalizers import (
     AnyNormalizerState,
-    EMANormalizer,
     Normalizer,
-    StreamingBatchNormalizer,
-    WelfordNormalizer,
     _checked_lifetime_words_increment,
     _lifetime_counter_valid,
     _saturating_int32_counter_increment,
     migrate_legacy_normalizer_state,
 )
 from alberta_framework.core.optimizers import (
-    IDBD,
     LMS,
-    Autostep,
     Bounder,
     Optimizer,
 )
@@ -149,31 +144,72 @@ def _require_int32_product(name: str, left: int, right: int) -> int:
     return left * right
 
 
+_PROBE_SIZES = (1, 2, 3)
+
+
+def _state_leaf_scalars(state: object, *, name: str) -> int:
+    """Count the persistent four-byte scalars in one built optimizer state."""
+    total = 0
+    for leaf in jax.tree.leaves(state):
+        if not isinstance(leaf, Array):
+            continue
+        if int(leaf.dtype.itemsize) != 4:
+            raise ValueError(
+                f"{name} state leaf has {leaf.dtype.itemsize}-byte elements, "
+                "so its scalar count is not defined"
+            )
+        total += int(leaf.size)
+    return total
+
+
+def _affine_state_scalars(
+    build: Callable[[int], object],
+    *,
+    name: str,
+) -> tuple[int, int]:
+    """Split a state builder's persistent size into per-element and fixed parts.
+
+    The builder is probed at three widths so a state that is not affine in the
+    parameter width fails closed instead of being extrapolated from a guess.
+    Every shape-generic optimizer and every feature normalizer in this tree
+    builds an affine state, so this is exact by construction rather than by a
+    maintained table.
+    """
+    probes = [_state_leaf_scalars(build(size), name=name) for size in _PROBE_SIZES]
+    first, second, third = probes
+    per_element = second - first
+    fixed = 2 * first - second
+    if per_element < 0 or fixed < 0 or per_element * 3 + fixed != third:
+        raise ValueError(
+            f"{name} persistent state is not affine in the parameter width "
+            f"(probes {probes} at widths {_PROBE_SIZES})"
+        )
+    return per_element, fixed
+
+
 def _optimizer_state_scalars(optimizer: "AnyOptimizer | None", size: int) -> int:
     """Exact persistent scalars in one optimizer state for ``size`` elements.
 
-    LMS keeps a single scalar step size. IDBD keeps two per-element arrays
-    plus a meta step size, and Autostep keeps three per-element arrays plus two
-    scalars. The shape is selected by the ``init_for_shape`` implementation
-    the class actually uses, the same structural rule ``supported_for_mlp``
-    applies, so a subclass that only changes scalars keeps its parent shape
-    while one that defines a different state fails closed instead of being
-    charged a guessed size.
+    The count comes from the state ``init_for_shape`` actually builds, probed
+    at three widths, so LMS, IDBD, Autostep, Adam, AdamO and RMSprop are all
+    counted from their real fields rather than from a per-class table. A
+    subclass that only changes scalars keeps its parent count, and an object
+    with no shape-generic state fails closed instead of being charged a
+    guessed size.
     """
     if optimizer is None:
         return 1
     init_for_shape = getattr(type(optimizer), "init_for_shape", None)
-    if init_for_shape is LMS.init_for_shape:
-        return 1
-    if init_for_shape is IDBD.init_for_shape:
-        return 2 * size + 1
-    if init_for_shape is Autostep.init_for_shape:
-        return 3 * size + 2
-    raise ValueError(
-        f"optimizer {type(optimizer).__name__} has no shape-generic state this "
-        "module can count exactly. Only the LMS, IDBD and Autostep "
-        "init_for_shape implementations are supported"
+    if init_for_shape is None or init_for_shape is Optimizer.init_for_shape:
+        raise ValueError(
+            f"optimizer {type(optimizer).__name__} has no shape-generic state, "
+            "so this module cannot count its persistent bytes"
+        )
+    per_element, fixed = _affine_state_scalars(
+        lambda width: optimizer.init_for_shape((width,)),
+        name=f"optimizer {type(optimizer).__name__}",
     )
+    return per_element * size + fixed
 
 
 def _normalizer_state_scalars(
@@ -181,24 +217,24 @@ def _normalizer_state_scalars(
 ) -> int:
     """Exact persistent scalars in one feature normalizer state.
 
-    EMA and streaming-batch normalizers keep two feature-width arrays plus
-    four scalars, and Welford keeps three feature-width arrays plus three
-    scalars. The shape is selected by the ``init`` implementation the class
-    actually uses, so an unknown estimator fails closed instead of being
-    charged a guessed size.
+    As for optimizers, the count comes from the state ``init`` actually
+    builds, probed at three widths, so EMA, Welford, streaming-batch and any
+    compatible estimator are counted from their real fields. An object with no
+    estimator state fails closed instead of being charged a guessed size.
     """
     if normalizer is None:
         return 0
     init = getattr(type(normalizer), "init", None)
-    if init is WelfordNormalizer.init:
-        return 3 * feature_dim + 3
-    if init is EMANormalizer.init or init is StreamingBatchNormalizer.init:
-        return 2 * feature_dim + 4
-    raise ValueError(
-        f"normalizer {type(normalizer).__name__} has no persistent state this "
-        "module can count exactly. Only EMANormalizer, WelfordNormalizer and "
-        "StreamingBatchNormalizer are supported"
+    if init is None or init is Normalizer.init:
+        raise ValueError(
+            f"normalizer {type(normalizer).__name__} has no estimator state, "
+            "so this module cannot count its persistent bytes"
+        )
+    per_element, fixed = _affine_state_scalars(
+        lambda width: normalizer.init(width),
+        name=f"normalizer {type(normalizer).__name__}",
     )
+    return per_element * feature_dim + fixed
 
 
 def _direct_state_scalars(
@@ -254,8 +290,9 @@ def _validate_direct_state_resources(
 
     The count must match the state ``init`` actually builds, including the
     configured optimizer and normalizer. Charging one scalar per optimizer
-    state is only true for LMS, so Autostep, IDBD, and a normalizer previously
-    admitted configurations whose true bytes exceed the signed-int32 bound.
+    state is only true for LMS, so Autostep, IDBD, Adam, RMSprop and a
+    normalizer previously admitted configurations whose true bytes exceed the
+    signed-int32 bound.
     """
     layer_sizes = (feature_dim, *hidden_sizes)
     trunk_parameter_count = sum(
