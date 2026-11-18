@@ -2088,8 +2088,24 @@ class DiscountedSARSAReferenceAdapter(_BaseReferenceControlAdapter):
                 shape=(1,),
             )
 
+        # MultiHeadMLPState keeps trunk optimizer states interleaved as
+        # (w0, b0, w1, b1, ...), unlike the per-head (w, b) pairs below.
+        trunk_optimizer_states = inner.trunk_optimizer_states
+        if (
+            type(trunk_optimizer_states) is not tuple
+            or len(trunk_optimizer_states) != 2 * len(hidden_sizes)
+        ):
+            raise DecisionOwnershipError(
+                "discounted-SARSA trunk optimizer state violates its LMS group structure"
+            )
         _require_lms_optimizer_tree(
-            inner.trunk_optimizer_states,
+            tuple(
+                zip(
+                    trunk_optimizer_states[0::2],
+                    trunk_optimizer_states[1::2],
+                    strict=True,
+                )
+            ),
             name="discounted-SARSA trunk optimizer state",
             group_count=len(hidden_sizes),
             step_size=self.config.step_size,

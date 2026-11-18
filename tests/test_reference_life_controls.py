@@ -917,6 +917,68 @@ def test_discounted_sarsa_optimistic_initial_q_requires_tabular_control() -> Non
         )
 
 
+@pytest.mark.parametrize(
+    ("hidden_sizes", "use_layer_norm"),
+    [((4,), False), ((4, 3), True)],
+)
+def test_discounted_sarsa_runs_with_hidden_layers(
+    hidden_sizes: tuple[int, ...],
+    use_layer_norm: bool,
+) -> None:
+    environment = SwitchingTwoStateConfig(phase_length=2)  # type: ignore[call-arg]
+    adapter = DiscountedSARSAReferenceAdapter(
+        DiscountedSARSAReferenceConfig.for_switching(
+            environment,
+            hidden_sizes=hidden_sizes,
+            use_layer_norm=use_layer_norm,
+            lamda=0.8,
+        )
+    )
+    runner = _switching_runner(
+        adapter,
+        environment,
+        lifecycle_id="control.discounted.hidden",
+        horizon=5,
+    )
+
+    initial = runner.init()
+    run = runner.run_to_completion(initial)
+
+    assert run.state.phase is LifePhase.COMPLETED
+    assert run.state.accepted_events == 5
+    assert all(event.step_result.parameters_changed for event in run.events)
+    start_control = initial.agent_state
+    final_control = run.state.agent_state
+    assert isinstance(start_control, ReferenceLifeControlState)
+    assert isinstance(final_control, ReferenceLifeControlState)
+    start_learner = start_control.agent_state
+    learner = final_control.agent_state
+    assert isinstance(start_learner, SARSAState)
+    assert isinstance(learner, SARSAState)
+    start_trunk = start_learner.learner_state.trunk_params.weights
+    final_trunk = learner.learner_state.trunk_params.weights
+    assert any(
+        not np.array_equal(start, final)
+        for start, final in zip(start_trunk, final_trunk, strict=True)
+    )
+
+    # The interleaved (w0, b0, w1, b1, ...) trunk layout stays exact: a
+    # nested per-layer pair layout is still rejected.
+    states = learner.learner_state.trunk_optimizer_states
+    nested = learner.learner_state.replace(  # type: ignore[attr-defined]
+        trunk_optimizer_states=tuple(zip(states[0::2], states[1::2], strict=True))
+    )
+    with pytest.raises(DecisionOwnershipError, match="trunk optimizer state"):
+        adapter.validate_state(
+            dataclasses.replace(
+                final_control,
+                agent_state=learner.replace(  # type: ignore[attr-defined]
+                    learner_state=nested
+                ),
+            )
+        )
+
+
 def test_learning_control_state_validation_requires_exact_persistent_dtypes() -> None:
     differential = _differential_switching()
     differential_runner = _switching_runner(
