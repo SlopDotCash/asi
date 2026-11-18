@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -11,8 +13,15 @@ from alberta_framework.core.multi_head_learner import (
     _direct_state_bytes,
     _multi_head_update_working_set_bytes,
     _preflight_multi_head_update_working_set,
+    _validate_direct_state_resources,
     measure_multi_head_mlp_state_nbytes,
 )
+from alberta_framework.core.normalizers import (
+    EMANormalizer,
+    StreamingBatchNormalizer,
+    WelfordNormalizer,
+)
+from alberta_framework.core.optimizers import IDBD, Autostep
 
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
@@ -161,3 +170,98 @@ def test_named_persist_matches_measured_state_bytes() -> None:
         assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
             n_heads, hidden_sizes, feature_dim
         )
+
+
+@pytest.mark.parametrize(
+    ("optimizer", "head_optimizer", "normalizer"),
+    [
+        (None, None, None),
+        (Autostep(), None, None),
+        (IDBD(), None, None),
+        (None, Autostep(), None),
+        (Autostep(), IDBD(), None),
+        (None, None, EMANormalizer()),
+        (None, None, WelfordNormalizer()),
+        (None, None, StreamingBatchNormalizer()),
+        (Autostep(), None, EMANormalizer()),
+    ],
+)
+def test_named_persist_matches_measured_state_for_configured_optimizer(
+    optimizer: Any,
+    head_optimizer: Any,
+    normalizer: Any,
+) -> None:
+    """The named persist count must cover the configured optimizer and normalizer.
+
+    Charging one scalar per optimizer state is only true for LMS: Autostep
+    keeps three per-element arrays and two scalars per parameter, IDBD two
+    per-element arrays and one scalar, and a feature normalizer adds two or
+    three feature-width arrays of its own. Before the fix the named count
+    undercounted every non-default configuration, so the int32 persist and
+    working-set preflights admitted states larger than the bound.
+    """
+    n_heads, hidden_sizes, feature_dim = 2, (4, 5), 6
+    learner = MultiHeadMLPLearner(
+        n_heads=n_heads,
+        hidden_sizes=hidden_sizes,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
+        sparsity=0.0,
+        use_layer_norm=False,
+    )
+    state = learner.init(feature_dim=feature_dim, key=jr.key(0))
+    assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
+    )
+
+
+def test_preflight_counts_configured_optimizer_and_normalizer() -> None:
+    """A configuration the LMS-only formula admitted must now be rejected.
+
+    At feature_dim 40,000,000 the LMS working set is 960,000,129 bytes, but
+    an Autostep trunk names 2,400,000,189 and overflows signed int32.
+    """
+    feature_dim = 40_000_000
+    assert _multi_head_update_working_set_bytes(1, (), feature_dim) <= _INT32_MAX
+    assert (
+        _multi_head_update_working_set_bytes(1, (), feature_dim, optimizer=Autostep())
+        > _INT32_MAX
+    )
+    with pytest.raises(ValueError, match="update working set byte count"):
+        _preflight_multi_head_update_working_set(
+            1, (), feature_dim, optimizer=Autostep()
+        )
+
+    learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), optimizer=Autostep())
+    with pytest.raises(ValueError, match="update working set byte count"):
+        learner.init(feature_dim, jr.key(0))
+
+
+def test_direct_state_bound_counts_configured_optimizer_and_normalizer() -> None:
+    """The persist bound itself must count the configured optimizer state.
+
+    At feature_dim 110,000,000 the LMS persist count is 880,000,028 bytes
+    while an Autostep trunk names 2,200,000,048. IDBD and an EMA normalizer
+    fit at 134,217,725 and overflow at 134,217,726, where LMS still names
+    1,073,741,836.
+    """
+    _validate_direct_state_resources(1, (), 110_000_000)
+    assert _direct_state_bytes(1, (), 110_000_000) <= _INT32_MAX
+    with pytest.raises(ValueError, match="direct_state_bytes"):
+        _validate_direct_state_resources(1, (), 110_000_000, optimizer=Autostep())
+
+    for configured in (
+        {"optimizer": IDBD()},
+        {"normalizer": EMANormalizer()},
+    ):
+        _validate_direct_state_resources(1, (), 134_217_725, **configured)
+        assert _direct_state_bytes(1, (), 134_217_726) <= _INT32_MAX
+        with pytest.raises(ValueError, match="direct_state_bytes"):
+            _validate_direct_state_resources(1, (), 134_217_726, **configured)
+

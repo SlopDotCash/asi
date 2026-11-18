@@ -508,7 +508,14 @@ class OffPolicyHordeLearner:
         # the three simultaneously live copies of the new float32 vector
         # before the wrapped learner allocates anything.
         if (
-            _multi_head_update_working_set_bytes(self.n_demons, self._hidden_sizes, feature_dim)
+            _multi_head_update_working_set_bytes(
+                self.n_demons,
+                self._hidden_sizes,
+                feature_dim,
+                optimizer=self._optimizer,
+                head_optimizer=self._head_optimizer,
+                normalizer=self._normalizer,
+            )
             + 12 * self.n_demons
             > _INT32_MAX
         ):

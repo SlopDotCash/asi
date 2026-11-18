@@ -38,14 +38,19 @@ from alberta_framework.core.learners import (
 )
 from alberta_framework.core.normalizers import (
     AnyNormalizerState,
+    EMANormalizer,
     Normalizer,
+    StreamingBatchNormalizer,
+    WelfordNormalizer,
     _checked_lifetime_words_increment,
     _lifetime_counter_valid,
     _saturating_int32_counter_increment,
     migrate_legacy_normalizer_state,
 )
 from alberta_framework.core.optimizers import (
+    IDBD,
     LMS,
+    Autostep,
     Bounder,
     Optimizer,
 )
@@ -144,12 +149,98 @@ def _require_int32_product(name: str, left: int, right: int) -> int:
     return left * right
 
 
+def _optimizer_state_scalars(optimizer: "AnyOptimizer | None", size: int) -> int:
+    """Exact persistent scalars in one optimizer state for ``size`` elements.
+
+    LMS keeps a single scalar step size. IDBD keeps two per-element arrays
+    plus a meta step size; Autostep keeps three per-element arrays plus two
+    scalars. An unknown optimizer is charged the largest known shape
+    (Autostep) so the guard stays conservative instead of undercounting.
+    """
+    if optimizer is None or type(optimizer) is LMS:
+        return 1
+    if type(optimizer) is IDBD:
+        return 2 * size + 1
+    if type(optimizer) is Autostep:
+        return 3 * size + 2
+    return 3 * size + 2
+
+
+def _normalizer_state_scalars(
+    normalizer: Normalizer[Any] | None, feature_dim: int
+) -> int:
+    """Exact persistent scalars in one feature normalizer state.
+
+    EMA and streaming-batch normalizers keep two feature-width arrays plus
+    four scalars; Welford keeps three feature-width arrays plus three
+    scalars. An unknown normalizer is charged the largest known shape
+    (Welford) so the guard stays conservative instead of undercounting.
+    """
+    if normalizer is None:
+        return 0
+    if type(normalizer) is WelfordNormalizer:
+        return 3 * feature_dim + 3
+    if type(normalizer) is EMANormalizer or type(normalizer) is StreamingBatchNormalizer:
+        return 2 * feature_dim + 4
+    return 3 * feature_dim + 3
+
+
+def _direct_state_scalars(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
+) -> int:
+    """Exact persistent scalars ``init`` allocates for one configuration.
+
+    Params and traces are one copy each (2x). Each (weight, bias) pair also
+    owns one optimizer state sized by the configured trunk or head optimizer,
+    and a configured normalizer adds its own feature-width state. The +3
+    covers step_count plus the two step_words.
+    """
+    layer_sizes = (feature_dim, *hidden_sizes)
+    trunk_parameter_count = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
+    head_parameter_count = n_heads * (final_width + 1)
+    head_opt = head_optimizer if head_optimizer is not None else optimizer
+    optimizer_scalars = 0
+    for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False):
+        optimizer_scalars += _optimizer_state_scalars(optimizer, fan_out * fan_in)
+        optimizer_scalars += _optimizer_state_scalars(optimizer, fan_out)
+    for _ in range(n_heads):
+        optimizer_scalars += _optimizer_state_scalars(head_opt, final_width)
+        optimizer_scalars += _optimizer_state_scalars(head_opt, 1)
+    return (
+        2 * (trunk_parameter_count + head_parameter_count)
+        + sum(hidden_sizes)
+        + optimizer_scalars
+        + _normalizer_state_scalars(normalizer, feature_dim)
+        + 3
+    )
+
+
 def _validate_direct_state_resources(
     n_heads: int,
     hidden_sizes: tuple[int, ...],
     feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
 ) -> None:
-    """Preflight aggregate arrays allocated directly by ``init``."""
+    """Preflight aggregate arrays allocated directly by ``init``.
+
+    The count must match the state ``init`` actually builds, including the
+    configured optimizer and normalizer. Charging one scalar per optimizer
+    state is only true for LMS, so Autostep, IDBD, and a normalizer previously
+    admitted configurations whose true bytes exceed the signed-int32 bound.
+    """
     layer_sizes = (feature_dim, *hidden_sizes)
     trunk_parameter_count = sum(
         fan_out * (fan_in + 1)
@@ -158,15 +249,13 @@ def _validate_direct_state_resources(
     final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
     head_parameter_count = n_heads * (final_width + 1)
     parameter_count = trunk_parameter_count + head_parameter_count
-    # Params and traces are one copy each (2x); the LMS optimizer state adds
-    # one scalar step size per (weight, bias) pair: two per trunk layer and
-    # two per head. The +3 covers step_count plus the two step_words.
-    direct_state_scalars = (
-        2 * parameter_count
-        + sum(hidden_sizes)
-        + 2 * len(hidden_sizes)
-        + 2 * n_heads
-        + 3
+    direct_state_scalars = _direct_state_scalars(
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
     )
     for name, value in (
         ("parameter_count", parameter_count),
@@ -181,24 +270,19 @@ def _direct_state_bytes(
     n_heads: int,
     hidden_sizes: tuple[int, ...],
     feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
 ) -> int:
     """Named persist already preflighted by ``_validate_direct_state_resources``."""
-    layer_sizes = (feature_dim, *hidden_sizes)
-    trunk_parameter_count = sum(
-        fan_out * (fan_in + 1)
-        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
-    )
-    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
-    head_parameter_count = n_heads * (final_width + 1)
-    # See _validate_direct_state_resources: params and traces are 2x, plus
-    # the LMS step-size scalars (two per trunk layer, two per head) and the
-    # three counter scalars (step_count plus two step_words).
-    return 4 * (
-        2 * (trunk_parameter_count + head_parameter_count)
-        + sum(hidden_sizes)
-        + 2 * len(hidden_sizes)
-        + 2 * n_heads
-        + 3
+    return 4 * _direct_state_scalars(
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
     )
 
 
@@ -216,10 +300,19 @@ def _multi_head_update_working_set_bytes(
     n_heads: int,
     hidden_sizes: tuple[int, ...],
     feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
 ) -> int:
     """Source persist, proposed persist, committed persist, and returned extras."""
     return 3 * _direct_state_bytes(
-        n_heads, hidden_sizes, feature_dim
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
     ) + _multi_head_update_result_extras_bytes(n_heads)
 
 
@@ -227,10 +320,19 @@ def _preflight_multi_head_update_working_set(
     n_heads: int,
     hidden_sizes: tuple[int, ...],
     feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
 ) -> None:
     """Reject an update envelope the host cannot name in signed int32."""
     working_set_bytes = _multi_head_update_working_set_bytes(
-        n_heads, hidden_sizes, feature_dim
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
     )
     if working_set_bytes > _INT32_MAX:
         raise ValueError(
@@ -590,8 +692,22 @@ class MultiHeadMLPLearner:
         _require_int32_product("per_head_metrics_scalars", n_heads, 3)
         if hidden_sizes:
             _require_int32_product("head_weight_scalars", n_heads, hidden_sizes[-1])
-        _validate_direct_state_resources(n_heads, hidden_sizes, feature_dim=1)
-        _preflight_multi_head_update_working_set(n_heads, hidden_sizes, feature_dim=1)
+        _validate_direct_state_resources(
+            n_heads,
+            hidden_sizes,
+            feature_dim=1,
+            optimizer=optimizer,
+            head_optimizer=head_optimizer,
+            normalizer=normalizer,
+        )
+        _preflight_multi_head_update_working_set(
+            n_heads,
+            hidden_sizes,
+            feature_dim=1,
+            optimizer=optimizer,
+            head_optimizer=head_optimizer,
+            normalizer=normalizer,
+        )
         if per_head_gamma_lamda is not None and type(per_head_gamma_lamda) is not tuple:
             raise ValueError(
                 "per_head_gamma_lamda must be an actual tuple when constructed directly"
@@ -833,9 +949,21 @@ class MultiHeadMLPLearner:
             )
         else:
             _require_int32_product("linear_head_weight_scalars", self._n_heads, feature_dim)
-        _validate_direct_state_resources(self._n_heads, self._hidden_sizes, feature_dim)
+        _validate_direct_state_resources(
+            self._n_heads,
+            self._hidden_sizes,
+            feature_dim,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
+        )
         _preflight_multi_head_update_working_set(
-            self._n_heads, self._hidden_sizes, feature_dim
+            self._n_heads,
+            self._hidden_sizes,
+            feature_dim,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
         )
         # Trunk: [feature_dim, *hidden_sizes] — all hidden layers
         trunk_layer_sizes = [feature_dim, *self._hidden_sizes]
