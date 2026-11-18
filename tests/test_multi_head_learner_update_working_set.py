@@ -18,10 +18,11 @@ from alberta_framework.core.multi_head_learner import (
 )
 from alberta_framework.core.normalizers import (
     EMANormalizer,
+    EMANormalizerState,
     StreamingBatchNormalizer,
     WelfordNormalizer,
 )
-from alberta_framework.core.optimizers import IDBD, Autostep
+from alberta_framework.core.optimizers import IDBD, LMS, Autostep, ObGD, ObGDBounding
 
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
@@ -264,4 +265,113 @@ def test_direct_state_bound_counts_configured_optimizer_and_normalizer() -> None
         assert _direct_state_bytes(1, (), 134_217_726) <= _INT32_MAX
         with pytest.raises(ValueError, match="direct_state_bytes"):
             _validate_direct_state_resources(1, (), 134_217_726, **configured)
+
+
+def test_bounder_is_not_an_optimizer_and_owns_no_persistent_state() -> None:
+    """A bounder is a separate ``bounder=`` argument, not optimizer state.
+
+    ``Bounder`` is an abstract base with only ``bound()`` and ``to_config()``.
+    It has no ``init_for_shape`` and no ``supported_for_mlp``, it takes a
+    ``kappa`` rather than an optimizer, and its concrete subclasses keep only
+    Python floats, so nothing of it reaches the JAX state the persist count
+    measures.
+    """
+    bounder = ObGDBounding()
+    assert not hasattr(bounder, "init_for_shape")
+    assert not hasattr(bounder, "supported_for_mlp")
+
+    plain = MultiHeadMLPLearner(
+        n_heads=1, hidden_sizes=(4,), sparsity=0.0, use_layer_norm=False
+    )
+    bounded = MultiHeadMLPLearner(
+        n_heads=1,
+        hidden_sizes=(4,),
+        bounder=ObGDBounding(),
+        sparsity=0.0,
+        use_layer_norm=False,
+    )
+    plain_state = plain.init(feature_dim=3, key=jr.key(0))
+    bounded_state = bounded.init(feature_dim=3, key=jr.key(0))
+    assert measure_multi_head_mlp_state_nbytes(bounded_state) == (
+        measure_multi_head_mlp_state_nbytes(plain_state)
+    )
+    assert _direct_state_bytes(1, (4,), 3) == 212
+
+    # Passing a bounder where an optimizer belongs fails closed with this
+    # module's own diagnostic rather than an AttributeError.
+    with pytest.raises(ValueError, match="no shape-generic state"):
+        MultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(),
+            optimizer=ObGDBounding(),
+        )
+
+
+def test_optimizer_without_a_known_shape_generic_state_fails_closed() -> None:
+    """An optimizer whose state this module cannot size must be refused.
+
+    ``ObGD`` keeps its own state but does not override ``init_for_shape``, so
+    it is rejected at construction by the capability gate. The counting
+    helper refuses it too, so a future caller cannot reach the persist count
+    with an optimizer it would otherwise charge a guessed shape.
+    """
+    with pytest.raises(ValueError, match="optimizer.*shape-generic"):
+        _direct_state_bytes(1, (), 3, optimizer=ObGD())
+
+    with pytest.raises(ValueError, match="does not support the MLP"):
+        MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), optimizer=ObGD())
+
+
+def test_normalizer_with_an_unknown_state_shape_fails_closed() -> None:
+    """A normalizer that overrides ``init`` is refused, not charged a guess.
+
+    Charging the largest known normalizer shape would undercount any
+    estimator that keeps more per-feature arrays, so the count refuses an
+    unrecognized implementation instead.
+    """
+
+    class WiderNormalizer(EMANormalizer):
+        def init(self, feature_dim: int) -> EMANormalizerState:
+            return super().init(feature_dim)
+
+    with pytest.raises(ValueError, match="normalizer.*count exactly"):
+        _direct_state_bytes(1, (), 3, normalizer=WiderNormalizer())
+
+    with pytest.raises(ValueError, match="no persistent state this"):
+        MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), normalizer=WiderNormalizer())
+
+
+def test_inherited_shape_generic_hooks_keep_their_parent_count() -> None:
+    """A subclass that only changes scalars keeps its parent state shape.
+
+    The dispatch follows the ``init_for_shape`` implementation the class
+    actually uses, which is the same structural rule ``supported_for_mlp``
+    applies. An LMS subclass therefore keeps the LMS count instead of
+    falling into an unknown branch.
+    """
+
+    class ScaledLMS(LMS):
+        pass
+
+    class ScaledAutostep(Autostep):
+        pass
+
+    assert _direct_state_bytes(1, (4,), 3, optimizer=ScaledLMS(step_size=0.5)) == (
+        _direct_state_bytes(1, (4,), 3, optimizer=LMS(step_size=0.5))
+    )
+    assert _direct_state_bytes(
+        2, (4, 5), 6, optimizer=ScaledAutostep()
+    ) == _direct_state_bytes(2, (4, 5), 6, optimizer=Autostep())
+
+    learner = MultiHeadMLPLearner(
+        n_heads=2,
+        hidden_sizes=(4,),
+        optimizer=ScaledLMS(step_size=0.5),
+        sparsity=0.0,
+        use_layer_norm=False,
+    )
+    state = learner.init(feature_dim=3, key=jr.key(0))
+    assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+        2, (4,), 3, optimizer=LMS(step_size=0.5)
+    )
 

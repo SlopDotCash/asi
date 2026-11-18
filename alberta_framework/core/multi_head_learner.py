@@ -154,16 +154,26 @@ def _optimizer_state_scalars(optimizer: "AnyOptimizer | None", size: int) -> int
 
     LMS keeps a single scalar step size. IDBD keeps two per-element arrays
     plus a meta step size; Autostep keeps three per-element arrays plus two
-    scalars. An unknown optimizer is charged the largest known shape
-    (Autostep) so the guard stays conservative instead of undercounting.
+    scalars. The shape is selected by the ``init_for_shape`` implementation
+    the class actually uses, the same structural rule ``supported_for_mlp``
+    applies, so a subclass that only changes scalars keeps its parent shape
+    while one that defines a different state fails closed instead of being
+    charged a guessed size.
     """
-    if optimizer is None or type(optimizer) is LMS:
+    if optimizer is None:
         return 1
-    if type(optimizer) is IDBD:
+    init_for_shape = getattr(type(optimizer), "init_for_shape", None)
+    if init_for_shape is LMS.init_for_shape:
+        return 1
+    if init_for_shape is IDBD.init_for_shape:
         return 2 * size + 1
-    if type(optimizer) is Autostep:
+    if init_for_shape is Autostep.init_for_shape:
         return 3 * size + 2
-    return 3 * size + 2
+    raise ValueError(
+        f"optimizer {type(optimizer).__name__} has no shape-generic state this "
+        "module can count exactly; only the LMS, IDBD and Autostep "
+        "init_for_shape implementations are supported"
+    )
 
 
 def _normalizer_state_scalars(
@@ -173,16 +183,22 @@ def _normalizer_state_scalars(
 
     EMA and streaming-batch normalizers keep two feature-width arrays plus
     four scalars; Welford keeps three feature-width arrays plus three
-    scalars. An unknown normalizer is charged the largest known shape
-    (Welford) so the guard stays conservative instead of undercounting.
+    scalars. The shape is selected by the ``init`` implementation the class
+    actually uses, so an unknown estimator fails closed instead of being
+    charged a guessed size.
     """
     if normalizer is None:
         return 0
-    if type(normalizer) is WelfordNormalizer:
+    init = getattr(type(normalizer), "init", None)
+    if init is WelfordNormalizer.init:
         return 3 * feature_dim + 3
-    if type(normalizer) is EMANormalizer or type(normalizer) is StreamingBatchNormalizer:
+    if init is EMANormalizer.init or init is StreamingBatchNormalizer.init:
         return 2 * feature_dim + 4
-    return 3 * feature_dim + 3
+    raise ValueError(
+        f"normalizer {type(normalizer).__name__} has no persistent state this "
+        "module can count exactly; only EMANormalizer, WelfordNormalizer and "
+        "StreamingBatchNormalizer are supported"
+    )
 
 
 def _direct_state_scalars(
@@ -692,22 +708,6 @@ class MultiHeadMLPLearner:
         _require_int32_product("per_head_metrics_scalars", n_heads, 3)
         if hidden_sizes:
             _require_int32_product("head_weight_scalars", n_heads, hidden_sizes[-1])
-        _validate_direct_state_resources(
-            n_heads,
-            hidden_sizes,
-            feature_dim=1,
-            optimizer=optimizer,
-            head_optimizer=head_optimizer,
-            normalizer=normalizer,
-        )
-        _preflight_multi_head_update_working_set(
-            n_heads,
-            hidden_sizes,
-            feature_dim=1,
-            optimizer=optimizer,
-            head_optimizer=head_optimizer,
-            normalizer=normalizer,
-        )
         if per_head_gamma_lamda is not None and type(per_head_gamma_lamda) is not tuple:
             raise ValueError(
                 "per_head_gamma_lamda must be an actual tuple when constructed directly"
@@ -760,6 +760,27 @@ class MultiHeadMLPLearner:
         self._per_head_gl: tuple[float, ...] | None = per_head_gamma_lamda
         self._trace_mode = trace_mode
         self._utility_decay = utility_decay
+
+        # Bound the state this learner owns before any allocation. The check
+        # runs after the capability gates above so an unsupported optimizer
+        # keeps its own diagnostic, and it is sized from the resolved
+        # optimizers rather than the raw arguments.
+        _validate_direct_state_resources(
+            n_heads,
+            hidden_sizes,
+            feature_dim=1,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
+        )
+        _preflight_multi_head_update_working_set(
+            n_heads,
+            hidden_sizes,
+            feature_dim=1,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
+        )
 
         # Validate trunk trace constraint: gamma*lamda > 0 is only safe
         # when there is no trunk (linear baseline). With a trunk, the VJP
