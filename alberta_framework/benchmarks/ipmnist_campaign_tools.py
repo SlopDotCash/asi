@@ -113,12 +113,12 @@ def _json_object(path: Path) -> dict[str, Any]:
 def _seed_measurements(
     root: Path,
     config_name: str,
-) -> tuple[dict[int, float], tuple[str, str, str, int | None] | None]:
+) -> tuple[dict[int, float], tuple[str, str, str, int | None, str | None] | None]:
     """Read one arm and retain the protocol identity its means came from."""
     config_name = _safe_identifier(config_name, name="config_name")
     result: dict[int, float] = {}
-    protocol_signature: tuple[str, str, str, int | None] | None = None
-    # The protocol signature above covers schema, config and noise only.
+    protocol_signature: tuple[str, str, str, int | None, str | None] | None = None
+    # The protocol signature covers schema, config, noise and v2 run bindings.
     # base_learner and hyperparameters live at the top level of a shard,
     # not inside config, so they need their own consistency check, matching
     # _validate_screening_arm_contract in ipmnist_screening.py. Without it,
@@ -161,11 +161,25 @@ def _seed_measurements(
                 f"{path} noise_pool_steps must be a built-in integer >= 2 "
                 "when noise_mode='pool'"
             )
+        run_binding = None
+        if schema == "alberta.ipmnist_screening.shard.v2":
+            fields = ("source_provenance", "dataset_provenance", "environment")
+            for field in fields:
+                value = payload.get(field)
+                if type(value) is not dict or not value:
+                    raise ValueError(f"{path} lacks a valid v2 {field} binding")
+            run_binding = json.dumps(
+                {field: payload[field] for field in fields},
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
         signature = (
             schema,
             json.dumps(config, sort_keys=True, separators=(",", ":"), allow_nan=False),
             noise_mode,
             noise_pool_steps,
+            run_binding,
         )
         if protocol_signature is None:
             protocol_signature = signature
