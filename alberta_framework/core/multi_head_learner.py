@@ -153,7 +153,7 @@ def _optimizer_state_scalars(optimizer: "AnyOptimizer | None", size: int) -> int
     """Exact persistent scalars in one optimizer state for ``size`` elements.
 
     LMS keeps a single scalar step size. IDBD keeps two per-element arrays
-    plus a meta step size; Autostep keeps three per-element arrays plus two
+    plus a meta step size, and Autostep keeps three per-element arrays plus two
     scalars. The shape is selected by the ``init_for_shape`` implementation
     the class actually uses, the same structural rule ``supported_for_mlp``
     applies, so a subclass that only changes scalars keeps its parent shape
@@ -171,7 +171,7 @@ def _optimizer_state_scalars(optimizer: "AnyOptimizer | None", size: int) -> int
         return 3 * size + 2
     raise ValueError(
         f"optimizer {type(optimizer).__name__} has no shape-generic state this "
-        "module can count exactly; only the LMS, IDBD and Autostep "
+        "module can count exactly. Only the LMS, IDBD and Autostep "
         "init_for_shape implementations are supported"
     )
 
@@ -182,7 +182,7 @@ def _normalizer_state_scalars(
     """Exact persistent scalars in one feature normalizer state.
 
     EMA and streaming-batch normalizers keep two feature-width arrays plus
-    four scalars; Welford keeps three feature-width arrays plus three
+    four scalars, and Welford keeps three feature-width arrays plus three
     scalars. The shape is selected by the ``init`` implementation the class
     actually uses, so an unknown estimator fails closed instead of being
     charged a guessed size.
@@ -196,7 +196,7 @@ def _normalizer_state_scalars(
         return 2 * feature_dim + 4
     raise ValueError(
         f"normalizer {type(normalizer).__name__} has no persistent state this "
-        "module can count exactly; only EMANormalizer, WelfordNormalizer and "
+        "module can count exactly. Only EMANormalizer, WelfordNormalizer and "
         "StreamingBatchNormalizer are supported"
     )
 
