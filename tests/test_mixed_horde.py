@@ -30,6 +30,7 @@ from alberta_framework import (
     run_horde_learning_loop,
     run_mixed_horde_learning_loop,
 )
+from alberta_framework.core.horde import MixedHordeState
 from alberta_framework.core.independent_demon_horde import (
     IndependentDemonHorde,
     run_independent_horde_learning_loop,
@@ -688,3 +689,317 @@ class TestStep3RoutingDispatch:
         cfg = Step3HordeConfig(routing="mixed")
         restored = Step3HordeConfig.from_dict(cfg.to_dict())
         assert restored.routing == "mixed"
+
+
+def _seed_mixed_host_clocks(
+    state: MixedHordeState,
+    birth: float,
+    uptime: float,
+) -> MixedHordeState:
+    """Seed Python-float lifecycle clocks on a MixedHordeState and its sub-states."""
+    from typing import Any, cast
+
+    assert state.shared_state is not None
+    assert state.independent_state is not None
+    demon_states = tuple(
+        demon.replace(birth_timestamp=birth, uptime_s=uptime)
+        for demon in state.independent_state.demon_states
+    )
+    return cast(
+        MixedHordeState,
+        cast(Any, state).replace(
+            birth_timestamp=birth,
+            uptime_s=uptime,
+            shared_state=cast(Any, state.shared_state).replace(
+                birth_timestamp=birth,
+                uptime_s=uptime,
+            ),
+            independent_state=state.independent_state.replace(
+                birth_timestamp=birth,
+                uptime_s=uptime,
+                demon_states=demon_states,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("obs_value", [0.25, float("nan")], ids=["accepted", "rejected"])
+def test_mixed_horde_update_preserves_host_clocks(obs_value: float) -> None:
+    """Single-step MixedHorde.update must retain Python-float lifecycle clocks."""
+    horde = MixedHorde(
+        horde_spec=create_horde_spec(
+            [
+                _gamma0_demon("d0", 0),
+                _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+            ]
+        ),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+    )
+    birth = 1_700_000_000.125
+    uptime = float(2**24) + 0.25
+    state = _seed_mixed_host_clocks(horde.init(3, jr.key(0)), birth, uptime)
+    obs = jnp.full((3,), obs_value, dtype=jnp.float32)
+    cumulants = jnp.array([1.0, 0.5], dtype=jnp.float32)
+    next_obs = jnp.zeros((3,), dtype=jnp.float32)
+
+    result = horde.update(state, obs, cumulants, next_obs)
+    assert bool(result.update_applied) is bool(jnp.all(jnp.isfinite(obs)))
+    restored = result.state
+    assert restored.shared_state is not None
+    assert restored.independent_state is not None
+    for clock in (
+        restored,
+        restored.shared_state,
+        restored.independent_state,
+        restored.independent_state.demon_states[0],
+    ):
+        assert type(clock.birth_timestamp) is float
+        assert type(clock.uptime_s) is float
+        assert clock.birth_timestamp == birth
+        assert clock.uptime_s == uptime
+
+
+@pytest.mark.parametrize(
+    "bad_cumulants",
+    [
+        jnp.array([jnp.nan, jnp.inf], dtype=jnp.float32),
+        jnp.array([jnp.inf, jnp.nan], dtype=jnp.float32),
+    ],
+    ids=["shared_inactive_indep_inf", "shared_inf_indep_inactive"],
+)
+def test_mixed_horde_rejects_when_only_requested_partition_fails(
+    bad_cumulants: jax.Array,
+) -> None:
+    """An all-NaN partition must not mask a rejected active partition."""
+    horde = MixedHorde(
+        horde_spec=create_horde_spec(
+            [
+                _gamma0_demon("d0", 0),
+                _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+            ]
+        ),
+        hidden_sizes=(4,),
+        step_size=0.05,
+        sparsity=0.0,
+    )
+    state = horde.init(3, jr.key(17))
+    obs = jnp.ones((3,), dtype=jnp.float32)
+    next_obs = jnp.zeros((3,), dtype=jnp.float32)
+
+    rejected = horde.update(state, obs, bad_cumulants, next_obs)
+    assert not bool(rejected.update_applied)
+    assert not bool(jnp.any(rejected.head_updates_applied))
+    assert float(rejected.trunk_bounding_metric) == 0.0
+    chex.assert_trees_all_equal(
+        rejected.predictions, jnp.zeros((2,), dtype=jnp.float32)
+    )
+    chex.assert_trees_all_equal(rejected.state, state)
+
+
+@pytest.mark.parametrize(
+    ("cumulants", "expected_heads"),
+    [
+        (
+            jnp.array([1.0, jnp.inf], dtype=jnp.float32),
+            jnp.array([True, False], dtype=jnp.bool_),
+        ),
+        (
+            jnp.array([jnp.inf, 1.0], dtype=jnp.float32),
+            jnp.array([False, True], dtype=jnp.bool_),
+        ),
+    ],
+    ids=["shared_commits_indep_rejects", "shared_rejects_indep_commits"],
+)
+def test_mixed_horde_partial_commit_when_one_active_partition_rejects(
+    cumulants: jax.Array,
+    expected_heads: jax.Array,
+) -> None:
+    """A valid active partition commits while a rejecting sibling partition stays unchanged."""
+    horde = MixedHorde(
+        horde_spec=create_horde_spec(
+            [
+                _gamma0_demon("d0", 0),
+                _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+            ]
+        ),
+        hidden_sizes=(4,),
+        step_size=0.05,
+        sparsity=0.0,
+    )
+    state = horde.init(3, jr.key(19))
+    assert state.shared_state is not None
+    assert state.independent_state is not None
+    obs = jnp.ones((3,), dtype=jnp.float32)
+    next_obs = jnp.zeros((3,), dtype=jnp.float32)
+
+    result = horde.update(state, obs, cumulants, next_obs)
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    chex.assert_trees_all_equal(result.head_updates_applied, expected_heads)
+    assert result.state.shared_state is not None
+    assert result.state.independent_state is not None
+
+    if bool(expected_heads[0]):
+        assert horde.shared_horde is not None
+        expected_shared = horde.shared_horde.update(
+            state.shared_state, obs, cumulants[:1], next_obs
+        )
+        assert int(result.state.shared_state.step_count) == 1
+        chex.assert_trees_all_equal(
+            result.state.shared_state.step_words,
+            jnp.array([0, 1], dtype=jnp.uint32),
+        )
+        chex.assert_trees_all_close(result.state.shared_state, expected_shared.state)
+        assert int(result.state.independent_state.step_count) == 0
+        assert int(result.state.independent_state.demon_states[0].step_count) == 0
+        chex.assert_trees_all_equal(
+            result.state.independent_state, state.independent_state
+        )
+        assert float(result.predictions[1]) == 0.0
+        assert float(result.td_errors[1]) == 0.0
+        assert bool(jnp.isfinite(result.td_errors[0])) and float(result.td_errors[0]) != 0.0
+    else:
+        assert horde.independent_horde is not None
+        expected_indep = horde.independent_horde.update(
+            state.independent_state, obs, cumulants[1:], next_obs
+        )
+        assert int(result.state.shared_state.step_count) == 0
+        chex.assert_trees_all_equal(
+            result.state.shared_state.step_words,
+            jnp.array([0, 0], dtype=jnp.uint32),
+        )
+        chex.assert_trees_all_equal(result.state.shared_state, state.shared_state)
+        assert float(result.trunk_bounding_metric) == 0.0
+        assert int(result.state.independent_state.step_count) == 1
+        assert int(result.state.independent_state.demon_states[0].step_count) == 1
+        chex.assert_trees_all_close(result.state.independent_state, expected_indep.state)
+        assert float(result.predictions[0]) == 0.0
+        assert float(result.td_errors[0]) == 0.0
+        assert bool(jnp.isfinite(result.td_errors[1])) and float(result.td_errors[1]) != 0.0
+
+
+def test_mixed_horde_loop_partial_commit_and_traced_jit_vmap() -> None:
+    """Loop head_updates_applied tracks partial drops and MixedHorde.update traces cleanly."""
+    horde = MixedHorde(
+        horde_spec=create_horde_spec(
+            [
+                _gamma0_demon("d0", 0),
+                _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+            ]
+        ),
+        hidden_sizes=(4,),
+        step_size=0.05,
+        sparsity=0.0,
+    )
+    state = _seed_mixed_host_clocks(
+        horde.init(3, jr.key(29)), 1_700_000_000.125, float(2**24) + 0.25
+    )
+    observations = jnp.ones((2, 3), dtype=jnp.float32)
+    next_observations = jnp.zeros((2, 3), dtype=jnp.float32)
+    cumulants = jnp.array([[1.0, jnp.inf], [jnp.inf, 1.0]], dtype=jnp.float32)
+
+    loop_result = run_mixed_horde_learning_loop(
+        horde, state, observations, cumulants, next_observations
+    )
+    chex.assert_trees_all_equal(
+        loop_result.updates_applied, jnp.array([True, True], dtype=jnp.bool_)
+    )
+    chex.assert_trees_all_equal(
+        loop_result.head_updates_applied,
+        jnp.array([[True, False], [False, True]], dtype=jnp.bool_),
+    )
+    assert int(loop_result.state.step_count) == 2
+    assert loop_result.state.shared_state is not None
+    assert loop_result.state.independent_state is not None
+    assert int(loop_result.state.shared_state.step_count) == 1
+    chex.assert_trees_all_equal(
+        loop_result.state.shared_state.step_words,
+        jnp.array([0, 1], dtype=jnp.uint32),
+    )
+    assert int(loop_result.state.independent_state.step_count) == 1
+
+    jitted = jax.jit(horde.update)(
+        state, observations[0], cumulants[0], next_observations[0]
+    )
+    assert bool(jitted.update_applied)
+    chex.assert_trees_all_equal(
+        jitted.head_updates_applied, jnp.array([True, False], dtype=jnp.bool_)
+    )
+
+    batched_cumulants = jnp.array(
+        [[1.0, 0.5], [jnp.nan, jnp.inf], [1.0, jnp.inf]], dtype=jnp.float32
+    )
+    batched = jax.vmap(horde.update, in_axes=(None, None, 0, None))(
+        state, observations[0], batched_cumulants, next_observations[0]
+    )
+    chex.assert_trees_all_equal(
+        batched.update_applied, jnp.array([True, False, True], dtype=jnp.bool_)
+    )
+
+
+def test_mixed_horde_loop_finishes_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_mixed_horde_learning_loop must synchronize device outputs before timing."""
+    from types import SimpleNamespace
+
+    import alberta_framework.core.horde as module
+
+    horde = MixedHorde(
+        horde_spec=create_horde_spec(
+            [
+                _gamma0_demon("d0", 0),
+                _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+            ]
+        ),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+        step_size=0.05,
+    )
+    birth = 1_700_000_000.125
+    nested_uptime = float(2**24) + 0.25
+    state = _seed_mixed_host_clocks(horde.init(3, jr.key(0)), birth, nested_uptime)
+    observations = jnp.full((32, 3), 0.1, dtype=jnp.float32)
+    cumulants = jnp.full((32, 2), 0.2, dtype=jnp.float32)
+    scan_outputs: list[object] = []
+    real_scan = jax.lax.scan
+    ticks = iter((100.0, 101.5))
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        result = real_scan(*args, **kwargs)
+        scan_outputs.extend(jax.tree.leaves(result))
+        return result
+
+    def clock() -> float:
+        if scan_outputs:
+            assert all(
+                leaf.is_ready()
+                for leaf in scan_outputs
+                if isinstance(leaf, jax.Array)
+            )
+        return next(ticks)
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+    result = run_mixed_horde_learning_loop(
+        horde,
+        state,
+        observations,
+        cumulants,
+        observations,
+    )
+    assert scan_outputs
+    assert int(result.state.step_count) == 32
+    assert bool(jnp.all(result.updates_applied))
+    assert type(result.state.uptime_s) is float
+    assert result.state.uptime_s == nested_uptime + 1.5
+    assert result.state.shared_state is not None
+    assert result.state.independent_state is not None
+    for nested in (
+        result.state.shared_state,
+        result.state.independent_state,
+        result.state.independent_state.demon_states[0],
+    ):
+        assert type(nested.uptime_s) is float
+        assert nested.uptime_s == nested_uptime
