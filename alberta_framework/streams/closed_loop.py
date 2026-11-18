@@ -250,21 +250,26 @@ def _birth_death_stationary_average_reward(
     Detailed balance gives ``d[i+1] / d[i] = P[i,i+1] / P[i+1,i]``. Keeping
     unnormalized rational masses makes the work linear in the state count,
     unlike a dense rational elimination of an otherwise valid large chain.
+
+    ``kernel`` has shape ``(k, n, n)``: the chain is the uniform mixture of its
+    ``k`` row-normalized components. The common ``1 / k`` cancels in the ratio.
     """
-    n = int(kernel.shape[0])
-    upward: list[Fraction] = []
-    downward: list[Fraction] = []
-    for index, row in enumerate(kernel):
-        if np.any(row[: max(index - 1, 0)]) or np.any(row[index + 2 :]):
-            raise ValueError("large exact stationary gain requires a birth-death kernel")
-        left = Fraction(float(row[index - 1])) if index > 0 else Fraction(0)
-        stay = Fraction(float(row[index]))
-        right = Fraction(float(row[index + 1])) if index + 1 < n else Fraction(0)
-        total = left + stay + right
-        if total <= 0 or min(left, stay, right) < 0:
-            raise ValueError("transition rows must carry nonnegative mass")
-        downward.append(left / total)
-        upward.append(right / total)
+    n = int(kernel.shape[1])
+    zero = Fraction(0)
+    upward = [zero] * n
+    downward = [zero] * n
+    for component in kernel:
+        for index, row in enumerate(component):
+            if np.any(row[: max(index - 1, 0)]) or np.any(row[index + 2 :]):
+                raise ValueError("large exact stationary gain requires a birth-death kernel")
+            left = Fraction(float(row[index - 1])) if index > 0 else zero
+            stay = Fraction(float(row[index]))
+            right = Fraction(float(row[index + 1])) if index + 1 < n else zero
+            total = left + stay + right
+            if total <= 0 or min(left, stay, right) < 0:
+                raise ValueError("transition rows must carry nonnegative mass")
+            downward[index] += left / total
+            upward[index] += right / total
 
     weights = [Fraction(1)]
     for index in range(n - 1):
@@ -301,7 +306,11 @@ def _stationary_average_reward(
     nonsingular system exactly when the chain is unichain.
 
     Args:
-        transition: Row-stochastic kernel, shape ``(n, n)``.
+        transition: Row-stochastic kernel, shape ``(n, n)``, or a stack of
+            ``k`` such kernels, shape ``(k, n, n)``, whose uniform mixture is
+            the chain. Each component row is normalized and the mixture is
+            formed in rational arithmetic, so a stacked float32 kernel is
+            never averaged in floating point first.
         step_rewards: Expected one-step reward per state, shape ``(n,)``.
 
     Returns:
@@ -313,22 +322,31 @@ def _stationary_average_reward(
     """
     kernel = np.asarray(transition, dtype=np.float64)
     rewards = np.asarray(step_rewards, dtype=np.float64)
-    if kernel.ndim != 2 or kernel.shape[0] != kernel.shape[1]:
+    if kernel.ndim == 2:
+        kernel = kernel[np.newaxis]
+    if kernel.ndim != 3 or kernel.shape[0] < 1 or kernel.shape[1] != kernel.shape[2]:
         raise ValueError("transition kernel must be square")
-    n = int(kernel.shape[0])
+    n = int(kernel.shape[1])
     if rewards.shape != (n,):
         raise ValueError("step_rewards must have one entry per state")
 
     if n > _MAX_EXACT_POLICY_STATES:
         return _birth_death_stationary_average_reward(kernel, rewards)
 
-    rows: list[list[Fraction]] = []
-    for row in kernel:
-        exact_row = [Fraction(float(value)) for value in row]
-        total = sum(exact_row, Fraction(0))
-        if total <= 0 or any(value < 0 for value in exact_row):
-            raise ValueError("transition rows must carry nonnegative mass")
-        rows.append([value / total for value in exact_row])
+    components = int(kernel.shape[0])
+    rows: list[list[Fraction]] = [[Fraction(0)] * n for _ in range(n)]
+    for component in kernel:
+        for mixed_row, row in zip(rows, component, strict=True):
+            exact_row = [Fraction(float(value)) for value in row]
+            total = sum(exact_row, Fraction(0))
+            if total <= 0 or any(value < 0 for value in exact_row):
+                raise ValueError("transition rows must carry nonnegative mass")
+            mixed_row[:] = [
+                mixed + value / total
+                for mixed, value in zip(mixed_row, exact_row, strict=True)
+            ]
+    if components > 1:
+        rows = [[value / components for value in row] for row in rows]
 
     # Unknown column d; equation j: sum_i d_i (P[i][j] - [i == j]) == 0 for
     # j < n - 1, then sum_i d_i == 1. Augmented matrix, last column is the RHS.
@@ -936,9 +954,10 @@ class RiverSwimMDP:
     def uniform_random_average_reward(self) -> float:
         """Exact average reward of the uniform-random policy."""
 
-        kernel = self._transitions_np.mean(axis=0)
+        # Averaging the two float32 action kernels in floating point rounds
+        # entries such as ``1 + p_right_down``; mix them in exact rationals.
         step_rewards = self._rewards_np.mean(axis=1, dtype=np.float64)
-        return _stationary_average_reward(kernel, step_rewards)
+        return _stationary_average_reward(self._transitions_np, step_rewards)
 
     def _enumerate_optimal(self) -> tuple[tuple[int, ...], float]:
         if self._n_states > _MAX_EXACT_POLICY_STATES:
