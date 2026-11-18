@@ -1130,11 +1130,13 @@ def test_horde_update_and_update_with_discounts_preserve_host_clocks(
         uptime_s=uptime_s,
     )
     obs = jnp.full((5,), obs_value, dtype=jnp.float32)
+    expected_applied = bool(jnp.all(jnp.isfinite(obs)))
     cumulants = jnp.array([1.0, 0.5, -0.25], dtype=jnp.float32)
     next_obs = jnp.zeros((5,), dtype=jnp.float32)
     discounts = jnp.array([0.0, 0.9, 0.5], dtype=jnp.float32)
 
     direct = horde.update(state, obs, cumulants, next_obs)
+    assert bool(direct.update_applied) is expected_applied
     assert type(direct.state.birth_timestamp) is float
     assert type(direct.state.uptime_s) is float
     assert direct.state.birth_timestamp == birth_timestamp
@@ -1143,10 +1145,50 @@ def test_horde_update_and_update_with_discounts_preserve_host_clocks(
     discounted = horde.update_with_discounts(
         state, obs, cumulants, next_obs, discounts
     )
+    assert bool(discounted.update_applied) is expected_applied
     assert type(discounted.state.birth_timestamp) is float
     assert type(discounted.state.uptime_s) is float
     assert discounted.state.birth_timestamp == birth_timestamp
     assert discounted.state.uptime_s == uptime_s
+
+
+def test_horde_update_and_update_with_discounts_traced_under_jit_and_vmap() -> None:
+    """HordeLearner update wrappers must trace cleanly under outer jit and vmap."""
+    import jax
+
+    horde, state = _shape_contract_horde()
+    state = state.replace(
+        birth_timestamp=1_700_000_000.125,
+        uptime_s=float(2**24) + 0.25,
+    )
+    cumulants = jnp.array([1.0, 0.5, -0.25], dtype=jnp.float32)
+    next_obs = jnp.zeros((5,), dtype=jnp.float32)
+    discounts = jnp.array([0.0, 0.9, 0.5], dtype=jnp.float32)
+
+    jitted_direct = jax.jit(horde.update)(
+        state, jnp.full((5,), 0.25, dtype=jnp.float32), cumulants, next_obs
+    )
+    assert bool(jitted_direct.update_applied)
+    assert int(jitted_direct.state.step_count) == 1
+
+    jitted_disc = jax.jit(horde.update_with_discounts)(
+        state, jnp.full((5,), jnp.nan, dtype=jnp.float32), cumulants, next_obs, discounts
+    )
+    assert not bool(jitted_disc.update_applied)
+    assert int(jitted_disc.state.step_count) == 0
+
+    batch_obs = jnp.stack(
+        [jnp.full((5,), 0.25, dtype=jnp.float32), jnp.full((5,), jnp.nan, dtype=jnp.float32)]
+    )
+    batched = jax.vmap(
+        horde.update_with_discounts, in_axes=(None, 0, None, None, None)
+    )(state, batch_obs, cumulants, next_obs, discounts)
+    chex.assert_trees_all_equal(
+        batched.update_applied, jnp.array([True, False], dtype=jnp.bool_)
+    )
+    chex.assert_trees_all_equal(
+        batched.state.step_count, jnp.array([1, 0], dtype=jnp.int32)
+    )
 
 
 def test_horde_final_state_and_batched_loops_finish_device_work_before_stopping_clock(
@@ -1207,10 +1249,18 @@ def test_horde_final_state_and_batched_loops_finish_device_work_before_stopping_
     final_state = run_horde_learning_loop_final_state(
         horde, state, observations, cumulants, observations
     )
+    assert any(
+        isinstance(leaf, jax.Array) and not isinstance(leaf, jax.core.Tracer)
+        for leaf in tracked_outputs
+    )
     assert int(final_state.step_count) == 64
 
     tracked_outputs.clear()
     batched = run_horde_learning_loop_batched(
         horde, observations, cumulants, observations, jr.split(jr.key(1), 2)
+    )
+    assert any(
+        isinstance(leaf, jax.Array) and not isinstance(leaf, jax.core.Tracer)
+        for leaf in tracked_outputs
     )
     assert batched.per_demon_metrics.shape == (2, 64, 2, 3)

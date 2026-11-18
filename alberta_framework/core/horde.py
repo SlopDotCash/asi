@@ -149,6 +149,14 @@ class HordeUpdateResult:
             Columns: ``[squared_error, raw_error, mean_step_size]``.
             NaN for inactive demons.
         trunk_bounding_metric: Scalar trunk bounding metric
+        head_updates_applied: Per-demon commit mask, shape ``(n_demons,)``.
+            ``False`` for inactive (``NaN``) or rejected demons.
+        update_applied: Step-level commit flag. ``True`` when at least one
+            requested demon commits (or all demons are inactive ``NaN`` and
+            every routed learner accepts the no-op); individual demons or
+            routed ``MixedHorde`` partitions may still reject, retain their
+            own ``step_count`` / ``step_words``, and report ``False`` in
+            ``head_updates_applied``.
     """
 
     state: MultiHeadMLPState
@@ -219,7 +227,19 @@ class BatchedHordeResult:
 
 @chex.dataclass(frozen=True)
 class MixedHordeState:
-    """State for a mixed shared/independent Horde."""
+    """State for a mixed shared/independent Horde.
+
+    Attributes:
+        shared_state: State for ``gamma * lambda == 0`` demons, or ``None``.
+        independent_state: State for ``gamma * lambda != 0`` demons, or ``None``.
+        step_count: Mixed transition counter; advances on partial-commit steps
+            and can therefore lead a rejecting partition's ``step_count`` and
+            ``step_words``.
+        birth_timestamp: Host initialization wall-clock timestamp (seconds).
+        uptime_s: Aggregate host loop wall-clock time (seconds); nested
+            ``shared_state``, ``independent_state``, and ``demon_states`` keep
+            their incoming ``uptime_s`` unchanged.
+    """
 
     shared_state: MultiHeadMLPState | None
     independent_state: Any | None
@@ -230,7 +250,21 @@ class MixedHordeState:
 
 @chex.dataclass(frozen=True)
 class MixedHordeLearningResult:
-    """Result from a mixed Horde scan-based learning loop."""
+    """Result from a mixed Horde scan-based learning loop.
+
+    Attributes:
+        state: Final ``MixedHordeState`` with restored Python-``float`` clocks.
+        per_demon_metrics: Per-demon ``[squared_error, raw_error, mean_step_size]``
+            over time, shape ``(num_steps, n_demons, 3)``.
+        td_errors: Per-demon TD errors, shape ``(num_steps, n_demons)``.
+        head_updates_applied: Per-step, per-demon commit mask,
+            shape ``(num_steps, n_demons)``. Inspect this mask to detect
+            dropped demons or partitions on partial-commit steps.
+        updates_applied: Step-level commit mask, shape ``(num_steps,)``.
+            ``True`` whenever at least one requested demon commits (or all
+            demons are inactive ``NaN`` and every routed partition accepts
+            the no-op).
+    """
 
     state: MixedHordeState
     per_demon_metrics: Float[Array, "num_steps n_demons 3"]
@@ -263,7 +297,13 @@ def _restore_mixed_horde_host_clocks(
     *,
     elapsed: float = 0.0,
 ) -> MixedHordeState:
-    """Restore mixed and nested learner host clocks narrowed by JAX tracing."""
+    """Restore mixed and nested learner host clocks narrowed by JAX tracing.
+
+    Nested ``shared_state``, ``independent_state``, and ``demon_states`` keep
+    their incoming Python-``float`` clocks unchanged; only the top-level
+    ``MixedHordeState.uptime_s`` advances by ``elapsed`` because the mixed scan
+    fuses both partitions into one device execution window.
+    """
     if isinstance(state.step_count, jax.core.Tracer):
         return state
     shared_state = state.shared_state
@@ -1050,7 +1090,17 @@ class MixedHorde:
         cumulants: Array,
         next_observation: Array,
     ) -> HordeUpdateResult:
-        """Update routed demons and return outputs in original demon order."""
+        """Update routed demons and return outputs in original demon order.
+
+        Uses per-demon partial commit matching :class:`HordeLearner` and
+        ``IndependentDemonHorde``: ``update_applied`` is ``True`` (and advances
+        ``MixedHordeState.step_count``) whenever at least one requested demon
+        commits across either partition, or when all cumulants are inactive
+        ``NaN`` and every routed partition accepts the no-op. A rejecting
+        partition retains its incoming sub-state (including ``step_count`` and
+        ``step_words``) while ``head_updates_applied`` marks the dropped
+        demon(s) ``False``.
+        """
         cumulants = jnp.asarray(cumulants)
         expected_shape = (self.n_demons,)
         if cumulants.shape != expected_shape:
