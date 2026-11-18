@@ -205,6 +205,11 @@ def _optimizer_state_scalars(optimizer: "AnyOptimizer | None", size: int) -> int
             f"optimizer {type(optimizer).__name__} has no shape-generic state, "
             "so this module cannot count its persistent bytes"
         )
+    if type(optimizer) is LMS:
+        # LMS.init_for_shape returns LMSState(step_size): one scalar, no
+        # width term. This is the default optimizer on every hot path, so it
+        # is answered without probing.
+        return 1
     per_element, fixed = _affine_state_scalars(
         lambda width: optimizer.init_for_shape((width,)),
         name=f"optimizer {type(optimizer).__name__}",
@@ -265,9 +270,14 @@ def _direct_state_scalars(
     for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False):
         optimizer_scalars += _optimizer_state_scalars(optimizer, fan_out * fan_in)
         optimizer_scalars += _optimizer_state_scalars(optimizer, fan_out)
-    for _ in range(n_heads):
-        optimizer_scalars += _optimizer_state_scalars(head_opt, final_width)
-        optimizer_scalars += _optimizer_state_scalars(head_opt, 1)
+    # Every head holds the same (weight, bias) pair, so its optimizer state is
+    # counted once and multiplied. Counting per head would make the preflight
+    # linear in ``n_heads``, and the bound has to be answerable for head counts
+    # that are themselves near the int32 limit.
+    per_head_optimizer_scalars = _optimizer_state_scalars(
+        head_opt, final_width
+    ) + _optimizer_state_scalars(head_opt, 1)
+    optimizer_scalars += n_heads * per_head_optimizer_scalars
     return (
         2 * (trunk_parameter_count + head_parameter_count)
         + sum(hidden_sizes)

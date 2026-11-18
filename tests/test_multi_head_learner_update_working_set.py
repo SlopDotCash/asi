@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
+import alberta_framework.core.multi_head_learner as multi_head_learner_module
 from alberta_framework.core.baseline_optimizers import Adam, RMSprop
 from alberta_framework.core.multi_head_learner import (
     MultiHeadMLPLearner,
@@ -346,8 +347,11 @@ def test_every_shape_generic_optimizer_is_counted_from_its_real_state() -> None:
     for optimizer, per_element, fixed in cases:
         for size in (1, 7, 64):
             # One linear head of ``size`` weights plus a bias, two copies of
-            # params and traces, the optimizer state, and the three counters.
-            expected = 2 * (size + 1) + 3 + per_element * size + fixed
+            # params and traces, the head's (weight, bias) optimizer states,
+            # and the three counters.
+            expected = (
+                2 * (size + 1) + per_element * (size + 1) + 2 * fixed + 3
+            )
             assert (
                 _direct_state_scalars(1, (), size, optimizer=optimizer) == expected
             )
@@ -365,6 +369,31 @@ def test_every_shape_generic_optimizer_is_counted_from_its_real_state() -> None:
         assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
             2, (4,), 3, optimizer=LMS(step_size=0.1), head_optimizer=optimizer
         )
+
+
+def test_head_optimizer_is_probed_once_however_many_heads() -> None:
+    """The head optimizer state is counted once and multiplied by ``n_heads``.
+
+    Counting per head made the preflight linear in the head count, and
+    ``test_persist_bound_still_fires_before_working_set`` constructs a learner
+    with ``n_heads=134_217_728``. The probe count must not grow with it.
+    """
+    calls = 0
+    original = multi_head_learner_module._affine_state_scalars
+
+    def counting(build: Any, *, name: str) -> tuple[int, int]:
+        nonlocal calls
+        calls += 1
+        return original(build, name=name)
+
+    multi_head_learner_module._affine_state_scalars = counting
+    try:
+        for n_heads in (1, 1_000, 134_217_728):
+            calls = 0
+            _direct_state_scalars(n_heads, (), 4, optimizer=Autostep())
+            assert calls == 1
+    finally:
+        multi_head_learner_module._affine_state_scalars = original
 
 
 def test_state_that_is_not_affine_in_width_fails_closed() -> None:
