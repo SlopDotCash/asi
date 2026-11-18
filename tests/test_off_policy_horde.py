@@ -649,7 +649,7 @@ def test_history_bytes_are_preflighted_before_wrapped_initialization(
     monkeypatch.setattr(
         off_policy_horde_module,
         "_multi_head_update_working_set_bytes",
-        lambda *args: 2**31 - 20,
+        lambda *args, **kwargs: 2**31 - 20,
     )
 
     def forbidden(*args: object) -> None:

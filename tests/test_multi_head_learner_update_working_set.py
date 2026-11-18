@@ -2,16 +2,35 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
+import alberta_framework.core.multi_head_learner as multi_head_learner_module
+from alberta_framework.core.baseline_optimizers import Adam, RMSprop
 from alberta_framework.core.multi_head_learner import (
     MultiHeadMLPLearner,
     _direct_state_bytes,
+    _direct_state_scalars,
     _multi_head_update_working_set_bytes,
     _preflight_multi_head_update_working_set,
+    _validate_direct_state_resources,
     measure_multi_head_mlp_state_nbytes,
+)
+from alberta_framework.core.normalizers import (
+    EMANormalizer,
+    EMANormalizerState,
+    StreamingBatchNormalizer,
+    WelfordNormalizer,
+)
+from alberta_framework.core.optimizers import (
+    IDBD,
+    LMS,
+    Autostep,
+    ObGD,
+    ObGDBounding,
 )
 
 _INT32_MAX = 2**31 - 1
@@ -161,3 +180,318 @@ def test_named_persist_matches_measured_state_bytes() -> None:
         assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
             n_heads, hidden_sizes, feature_dim
         )
+
+
+@pytest.mark.parametrize(
+    ("optimizer", "head_optimizer", "normalizer"),
+    [
+        (None, None, None),
+        (Autostep(), None, None),
+        (IDBD(), None, None),
+        (None, Autostep(), None),
+        (Autostep(), IDBD(), None),
+        (None, None, EMANormalizer()),
+        (None, None, WelfordNormalizer()),
+        (None, None, StreamingBatchNormalizer()),
+        (Autostep(), None, EMANormalizer()),
+    ],
+)
+def test_named_persist_matches_measured_state_for_configured_optimizer(
+    optimizer: Any,
+    head_optimizer: Any,
+    normalizer: Any,
+) -> None:
+    """The named persist count must cover the configured optimizer and normalizer.
+
+    Charging one scalar per optimizer state is only true for LMS: Autostep
+    keeps three per-element arrays and two scalars per parameter, IDBD two
+    per-element arrays and one scalar, and a feature normalizer adds two or
+    three feature-width arrays of its own. Before the fix the named count
+    undercounted every non-default configuration, so the int32 persist and
+    working-set preflights admitted states larger than the bound.
+    """
+    n_heads, hidden_sizes, feature_dim = 2, (4, 5), 6
+    learner = MultiHeadMLPLearner(
+        n_heads=n_heads,
+        hidden_sizes=hidden_sizes,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
+        sparsity=0.0,
+        use_layer_norm=False,
+    )
+    state = learner.init(feature_dim=feature_dim, key=jr.key(0))
+    assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
+    )
+
+
+def test_preflight_counts_configured_optimizer_and_normalizer() -> None:
+    """A configuration the LMS-only formula admitted must now be rejected.
+
+    At feature_dim 40,000,000 the LMS working set is 960,000,129 bytes, but
+    an Autostep trunk names 2,400,000,189 and overflows signed int32.
+    """
+    feature_dim = 40_000_000
+    assert _multi_head_update_working_set_bytes(1, (), feature_dim) <= _INT32_MAX
+    assert (
+        _multi_head_update_working_set_bytes(1, (), feature_dim, optimizer=Autostep())
+        > _INT32_MAX
+    )
+    with pytest.raises(ValueError, match="update working set byte count"):
+        _preflight_multi_head_update_working_set(
+            1, (), feature_dim, optimizer=Autostep()
+        )
+
+    learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), optimizer=Autostep())
+    with pytest.raises(ValueError, match="update working set byte count"):
+        learner.init(feature_dim, jr.key(0))
+
+
+def test_direct_state_bound_counts_configured_optimizer_and_normalizer() -> None:
+    """The persist bound itself must count the configured optimizer state.
+
+    At feature_dim 110,000,000 the LMS persist count is 880,000,028 bytes
+    while an Autostep trunk names 2,200,000,048. IDBD and an EMA normalizer
+    fit at 134,217,725 and overflow at 134,217,726, where LMS still names
+    1,073,741,836.
+    """
+    _validate_direct_state_resources(1, (), 110_000_000)
+    assert _direct_state_bytes(1, (), 110_000_000) <= _INT32_MAX
+    with pytest.raises(ValueError, match="direct_state_bytes"):
+        _validate_direct_state_resources(1, (), 110_000_000, optimizer=Autostep())
+
+    for configured in (
+        {"optimizer": IDBD()},
+        {"normalizer": EMANormalizer()},
+    ):
+        _validate_direct_state_resources(1, (), 134_217_725, **configured)
+        assert _direct_state_bytes(1, (), 134_217_726) <= _INT32_MAX
+        with pytest.raises(ValueError, match="direct_state_bytes"):
+            _validate_direct_state_resources(1, (), 134_217_726, **configured)
+
+
+def test_bounder_is_not_an_optimizer_and_owns_no_persistent_state() -> None:
+    """A bounder is a separate ``bounder=`` argument, not optimizer state.
+
+    ``Bounder`` is an abstract base with only ``bound()`` and ``to_config()``.
+    It has no ``init_for_shape`` and no ``supported_for_mlp``, it takes a
+    ``kappa`` rather than an optimizer, and its concrete subclasses keep only
+    Python floats, so nothing of it reaches the JAX state the persist count
+    measures.
+    """
+    bounder = ObGDBounding()
+    assert not hasattr(bounder, "init_for_shape")
+    assert not hasattr(bounder, "supported_for_mlp")
+
+    plain = MultiHeadMLPLearner(
+        n_heads=1, hidden_sizes=(4,), sparsity=0.0, use_layer_norm=False
+    )
+    bounded = MultiHeadMLPLearner(
+        n_heads=1,
+        hidden_sizes=(4,),
+        bounder=ObGDBounding(),
+        sparsity=0.0,
+        use_layer_norm=False,
+    )
+    plain_state = plain.init(feature_dim=3, key=jr.key(0))
+    bounded_state = bounded.init(feature_dim=3, key=jr.key(0))
+    assert measure_multi_head_mlp_state_nbytes(bounded_state) == (
+        measure_multi_head_mlp_state_nbytes(plain_state)
+    )
+    assert _direct_state_bytes(1, (4,), 3) == 212
+
+    # A bounder has no shape-generic state, so the counting helper refuses it
+    # rather than charging a guessed shape.
+    with pytest.raises(ValueError, match="no shape-generic state"):
+        _direct_state_bytes(1, (), 3, optimizer=ObGDBounding())
+
+
+def test_optimizer_without_a_known_shape_generic_state_fails_closed() -> None:
+    """An optimizer whose state this module cannot size must be refused.
+
+    ``ObGD`` keeps its own state but does not override ``init_for_shape``, so
+    it is rejected at construction by the capability gate. The counting
+    helper refuses it too, so a future caller cannot reach the persist count
+    with an optimizer it would otherwise charge a guessed shape.
+    """
+    with pytest.raises(ValueError, match="optimizer.*shape-generic"):
+        _direct_state_bytes(1, (), 3, optimizer=ObGD())
+
+    with pytest.raises(ValueError, match="does not support the MLP"):
+        MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), optimizer=ObGD())
+
+
+def test_every_shape_generic_optimizer_is_counted_from_its_real_state() -> None:
+    """The count follows the state each optimizer builds, not a class table.
+
+    ``init_for_shape`` exists on LMS, IDBD, Autostep, Adam, RMSprop and
+    AdamO, and the probe decomposition reproduces each one's fields. Adam and
+    RMSprop live in ``baseline_optimizers`` and were missed by an
+    implementation that enumerated only ``optimizers.py`` classes.
+    """
+    cases = [
+        (LMS(step_size=0.1), 0, 1),
+        (IDBD(), 2, 1),
+        (Autostep(), 3, 2),
+        (Adam(step_size=0.1), 2, 5),
+        (RMSprop(), 1, 3),
+    ]
+    for optimizer, per_element, fixed in cases:
+        for size in (1, 7, 64):
+            # One linear head of ``size`` weights plus a bias, two copies of
+            # params and traces, the head's (weight, bias) optimizer states,
+            # and the three counters.
+            expected = (
+                2 * (size + 1) + per_element * (size + 1) + 2 * fixed + 3
+            )
+            assert (
+                _direct_state_scalars(1, (), size, optimizer=optimizer) == expected
+            )
+
+    for optimizer in (Adam(step_size=0.2, beta1=0.0, beta2=0.0), RMSprop()):
+        learner = MultiHeadMLPLearner(
+            n_heads=2,
+            hidden_sizes=(4,),
+            optimizer=LMS(step_size=0.1),
+            head_optimizer=optimizer,
+            sparsity=0.0,
+            use_layer_norm=False,
+        )
+        state = learner.init(feature_dim=3, key=jr.key(0))
+        assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+            2, (4,), 3, optimizer=LMS(step_size=0.1), head_optimizer=optimizer
+        )
+
+
+def test_head_optimizer_is_probed_once_however_many_heads() -> None:
+    """The head optimizer state is counted once and multiplied by ``n_heads``.
+
+    Counting per head made the preflight linear in the head count, and
+    ``test_persist_bound_still_fires_before_working_set`` constructs a learner
+    with ``n_heads=134_217_728``. One head contributes a weight state and a
+    bias state, so the probe runs twice, and that number must not grow with
+    the head count.
+    """
+    calls = 0
+    original = multi_head_learner_module._affine_state_scalars
+
+    def counting(build: Any, *, name: str) -> tuple[int, int]:
+        nonlocal calls
+        calls += 1
+        return original(build, name=name)
+
+    multi_head_learner_module._affine_state_scalars = counting
+    try:
+        for n_heads in (1, 1_000, 134_217_728):
+            calls = 0
+            _direct_state_scalars(n_heads, (), 4, optimizer=Autostep())
+            assert calls == 2, n_heads
+    finally:
+        multi_head_learner_module._affine_state_scalars = original
+
+
+def test_lms_state_is_counted_without_a_probe() -> None:
+    """The default optimizer is answered directly instead of probed.
+
+    ``LMS.init_for_shape`` returns ``LMSState(step_size)``, one scalar with no
+    width term, so every LMS trunk and head costs no probe at all.
+    """
+    calls = 0
+    original = multi_head_learner_module._affine_state_scalars
+
+    def counting(build: Any, *, name: str) -> tuple[int, int]:
+        nonlocal calls
+        calls += 1
+        return original(build, name=name)
+
+    multi_head_learner_module._affine_state_scalars = counting
+    try:
+        for n_heads in (1, 8, 134_217_728):
+            calls = 0
+            _direct_state_scalars(n_heads, (16, 8), 32, optimizer=LMS(step_size=0.1))
+            assert calls == 0, n_heads
+    finally:
+        multi_head_learner_module._affine_state_scalars = original
+
+
+def test_state_that_is_not_affine_in_width_fails_closed() -> None:
+    """A state builder that is not affine cannot be extrapolated.
+
+    The probe decomposition fits a line through three widths and refuses a
+    builder that does not lie on it, so a future optimizer with a width
+    dependent state shape cannot be silently miscounted.
+    """
+
+    class RaggedOptimizer(Autostep):
+        def init_for_shape(self, shape: tuple[int, ...]) -> Any:
+            width = shape[0]
+            return jnp.zeros(width + (width % 2), dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="not affine in the parameter width"):
+        _direct_state_bytes(1, (), 3, optimizer=RaggedOptimizer())
+
+
+def test_normalizer_that_keeps_its_parent_state_keeps_its_parent_count() -> None:
+    """A normalizer subclass that returns the parent state is counted exactly.
+
+    The count is derived from the state ``init`` returns, so a subclass that
+    only changes configuration keeps the parent's field count instead of
+    falling into an unknown branch.
+    """
+
+    class RenamedEMA(EMANormalizer):
+        def init(self, feature_dim: int) -> EMANormalizerState:
+            return super().init(feature_dim)
+
+    assert _direct_state_bytes(1, (), 3, normalizer=RenamedEMA()) == (
+        _direct_state_bytes(1, (), 3, normalizer=EMANormalizer())
+    )
+    learner = MultiHeadMLPLearner(
+        n_heads=1, hidden_sizes=(), normalizer=RenamedEMA(), sparsity=0.0
+    )
+    state = learner.init(feature_dim=3, key=jr.key(0))
+    assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+        1, (), 3, normalizer=RenamedEMA()
+    )
+
+
+def test_inherited_shape_generic_hooks_keep_their_parent_count() -> None:
+    """A subclass that only changes scalars keeps its parent state shape.
+
+    The dispatch follows the ``init_for_shape`` implementation the class
+    actually uses, which is the same structural rule ``supported_for_mlp``
+    applies. An LMS subclass therefore keeps the LMS count instead of
+    falling into an unknown branch.
+    """
+
+    class ScaledLMS(LMS):
+        pass
+
+    class ScaledAutostep(Autostep):
+        pass
+
+    assert _direct_state_bytes(1, (4,), 3, optimizer=ScaledLMS(step_size=0.5)) == (
+        _direct_state_bytes(1, (4,), 3, optimizer=LMS(step_size=0.5))
+    )
+    assert _direct_state_bytes(
+        2, (4, 5), 6, optimizer=ScaledAutostep()
+    ) == _direct_state_bytes(2, (4, 5), 6, optimizer=Autostep())
+
+    learner = MultiHeadMLPLearner(
+        n_heads=2,
+        hidden_sizes=(4,),
+        optimizer=ScaledLMS(step_size=0.5),
+        sparsity=0.0,
+        use_layer_norm=False,
+    )
+    state = learner.init(feature_dim=3, key=jr.key(0))
+    assert measure_multi_head_mlp_state_nbytes(state) == _direct_state_bytes(
+        2, (4,), 3, optimizer=LMS(step_size=0.5)
+    )
+

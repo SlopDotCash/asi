@@ -20,7 +20,7 @@ import functools
 import math
 import operator
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -144,12 +144,166 @@ def _require_int32_product(name: str, left: int, right: int) -> int:
     return left * right
 
 
+_PROBE_SIZES = (1, 2, 3)
+
+
+def _state_leaf_scalars(state: object, *, name: str) -> int:
+    """Count the persistent four-byte scalars in one built optimizer state."""
+    total = 0
+    for leaf in jax.tree.leaves(state):
+        if not isinstance(leaf, Array):
+            continue
+        if int(leaf.dtype.itemsize) != 4:
+            raise ValueError(
+                f"{name} state leaf has {leaf.dtype.itemsize}-byte elements, "
+                "so its scalar count is not defined"
+            )
+        total += int(leaf.size)
+    return total
+
+
+def _affine_state_scalars(
+    build: Callable[[int], object],
+    *,
+    name: str,
+) -> tuple[int, int]:
+    """Split a state builder's persistent size into per-element and fixed parts.
+
+    The builder is probed at three widths so a state that is not affine in the
+    parameter width fails closed instead of being extrapolated from a guess.
+    Every shape-generic optimizer and every feature normalizer in this tree
+    builds an affine state, so this is exact by construction rather than by a
+    maintained table.
+    """
+    probes = [_state_leaf_scalars(build(size), name=name) for size in _PROBE_SIZES]
+    first, second, third = probes
+    per_element = second - first
+    fixed = 2 * first - second
+    if per_element < 0 or fixed < 0 or per_element * 3 + fixed != third:
+        raise ValueError(
+            f"{name} persistent state is not affine in the parameter width "
+            f"(probes {probes} at widths {_PROBE_SIZES})"
+        )
+    return per_element, fixed
+
+
+def _optimizer_state_scalars(optimizer: "AnyOptimizer | None", size: int) -> int:
+    """Exact persistent scalars in one optimizer state for ``size`` elements.
+
+    The count comes from the state ``init_for_shape`` actually builds, probed
+    at three widths, so LMS, IDBD, Autostep, Adam, AdamO and RMSprop are all
+    counted from their real fields rather than from a per-class table. A
+    subclass that only changes scalars keeps its parent count, and an object
+    with no shape-generic state fails closed instead of being charged a
+    guessed size.
+    """
+    if optimizer is None:
+        return 1
+    init_for_shape = getattr(type(optimizer), "init_for_shape", None)
+    if init_for_shape is None or init_for_shape is Optimizer.init_for_shape:
+        raise ValueError(
+            f"optimizer {type(optimizer).__name__} has no shape-generic state, "
+            "so this module cannot count its persistent bytes"
+        )
+    if type(optimizer) is LMS:
+        # LMS.init_for_shape returns LMSState(step_size): one scalar, no
+        # width term. This is the default optimizer on every hot path, so it
+        # is answered without probing.
+        return 1
+    per_element, fixed = _affine_state_scalars(
+        lambda width: optimizer.init_for_shape((width,)),
+        name=f"optimizer {type(optimizer).__name__}",
+    )
+    return per_element * size + fixed
+
+
+def _normalizer_state_scalars(
+    normalizer: Normalizer[Any] | None, feature_dim: int
+) -> int:
+    """Exact persistent scalars in one feature normalizer state.
+
+    As for optimizers, the count comes from the state ``init`` actually
+    builds, probed at three widths, so EMA, Welford, streaming-batch and any
+    compatible estimator are counted from their real fields. An object with no
+    estimator state fails closed instead of being charged a guessed size.
+    """
+    if normalizer is None:
+        return 0
+    init = getattr(type(normalizer), "init", None)
+    if init is None or init is Normalizer.init:
+        raise ValueError(
+            f"normalizer {type(normalizer).__name__} has no estimator state, "
+            "so this module cannot count its persistent bytes"
+        )
+    per_element, fixed = _affine_state_scalars(
+        lambda width: normalizer.init(width),
+        name=f"normalizer {type(normalizer).__name__}",
+    )
+    return per_element * feature_dim + fixed
+
+
+def _direct_state_scalars(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
+) -> int:
+    """Exact persistent scalars ``init`` allocates for one configuration.
+
+    Params and traces are one copy each (2x). Each (weight, bias) pair also
+    owns one optimizer state sized by the configured trunk or head optimizer,
+    and a configured normalizer adds its own feature-width state. The +3
+    covers step_count plus the two step_words.
+    """
+    layer_sizes = (feature_dim, *hidden_sizes)
+    trunk_parameter_count = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
+    head_parameter_count = n_heads * (final_width + 1)
+    head_opt = head_optimizer if head_optimizer is not None else optimizer
+    optimizer_scalars = 0
+    for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False):
+        optimizer_scalars += _optimizer_state_scalars(optimizer, fan_out * fan_in)
+        optimizer_scalars += _optimizer_state_scalars(optimizer, fan_out)
+    # Every head holds the same (weight, bias) pair, so its optimizer state is
+    # counted once and multiplied. Counting per head would make the preflight
+    # linear in ``n_heads``, and the bound has to be answerable for head counts
+    # that are themselves near the int32 limit.
+    per_head_optimizer_scalars = _optimizer_state_scalars(
+        head_opt, final_width
+    ) + _optimizer_state_scalars(head_opt, 1)
+    optimizer_scalars += n_heads * per_head_optimizer_scalars
+    return (
+        2 * (trunk_parameter_count + head_parameter_count)
+        + sum(hidden_sizes)
+        + optimizer_scalars
+        + _normalizer_state_scalars(normalizer, feature_dim)
+        + 3
+    )
+
+
 def _validate_direct_state_resources(
     n_heads: int,
     hidden_sizes: tuple[int, ...],
     feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
 ) -> None:
-    """Preflight aggregate arrays allocated directly by ``init``."""
+    """Preflight aggregate arrays allocated directly by ``init``.
+
+    The count must match the state ``init`` actually builds, including the
+    configured optimizer and normalizer. Charging one scalar per optimizer
+    state is only true for LMS, so Autostep, IDBD, Adam, RMSprop and a
+    normalizer previously admitted configurations whose true bytes exceed the
+    signed-int32 bound.
+    """
     layer_sizes = (feature_dim, *hidden_sizes)
     trunk_parameter_count = sum(
         fan_out * (fan_in + 1)
@@ -158,15 +312,13 @@ def _validate_direct_state_resources(
     final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
     head_parameter_count = n_heads * (final_width + 1)
     parameter_count = trunk_parameter_count + head_parameter_count
-    # Params and traces are one copy each (2x); the LMS optimizer state adds
-    # one scalar step size per (weight, bias) pair: two per trunk layer and
-    # two per head. The +3 covers step_count plus the two step_words.
-    direct_state_scalars = (
-        2 * parameter_count
-        + sum(hidden_sizes)
-        + 2 * len(hidden_sizes)
-        + 2 * n_heads
-        + 3
+    direct_state_scalars = _direct_state_scalars(
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
     )
     for name, value in (
         ("parameter_count", parameter_count),
@@ -181,24 +333,19 @@ def _direct_state_bytes(
     n_heads: int,
     hidden_sizes: tuple[int, ...],
     feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
 ) -> int:
     """Named persist already preflighted by ``_validate_direct_state_resources``."""
-    layer_sizes = (feature_dim, *hidden_sizes)
-    trunk_parameter_count = sum(
-        fan_out * (fan_in + 1)
-        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
-    )
-    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
-    head_parameter_count = n_heads * (final_width + 1)
-    # See _validate_direct_state_resources: params and traces are 2x, plus
-    # the LMS step-size scalars (two per trunk layer, two per head) and the
-    # three counter scalars (step_count plus two step_words).
-    return 4 * (
-        2 * (trunk_parameter_count + head_parameter_count)
-        + sum(hidden_sizes)
-        + 2 * len(hidden_sizes)
-        + 2 * n_heads
-        + 3
+    return 4 * _direct_state_scalars(
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
     )
 
 
@@ -216,10 +363,19 @@ def _multi_head_update_working_set_bytes(
     n_heads: int,
     hidden_sizes: tuple[int, ...],
     feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
 ) -> int:
     """Source persist, proposed persist, committed persist, and returned extras."""
     return 3 * _direct_state_bytes(
-        n_heads, hidden_sizes, feature_dim
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
     ) + _multi_head_update_result_extras_bytes(n_heads)
 
 
@@ -227,10 +383,19 @@ def _preflight_multi_head_update_working_set(
     n_heads: int,
     hidden_sizes: tuple[int, ...],
     feature_dim: int,
+    *,
+    optimizer: "AnyOptimizer | None" = None,
+    head_optimizer: "AnyOptimizer | None" = None,
+    normalizer: Normalizer[Any] | None = None,
 ) -> None:
     """Reject an update envelope the host cannot name in signed int32."""
     working_set_bytes = _multi_head_update_working_set_bytes(
-        n_heads, hidden_sizes, feature_dim
+        n_heads,
+        hidden_sizes,
+        feature_dim,
+        optimizer=optimizer,
+        head_optimizer=head_optimizer,
+        normalizer=normalizer,
     )
     if working_set_bytes > _INT32_MAX:
         raise ValueError(
@@ -590,8 +755,6 @@ class MultiHeadMLPLearner:
         _require_int32_product("per_head_metrics_scalars", n_heads, 3)
         if hidden_sizes:
             _require_int32_product("head_weight_scalars", n_heads, hidden_sizes[-1])
-        _validate_direct_state_resources(n_heads, hidden_sizes, feature_dim=1)
-        _preflight_multi_head_update_working_set(n_heads, hidden_sizes, feature_dim=1)
         if per_head_gamma_lamda is not None and type(per_head_gamma_lamda) is not tuple:
             raise ValueError(
                 "per_head_gamma_lamda must be an actual tuple when constructed directly"
@@ -644,6 +807,27 @@ class MultiHeadMLPLearner:
         self._per_head_gl: tuple[float, ...] | None = per_head_gamma_lamda
         self._trace_mode = trace_mode
         self._utility_decay = utility_decay
+
+        # Bound the state this learner owns before any allocation. The check
+        # runs after the capability gates above so an unsupported optimizer
+        # keeps its own diagnostic, and it is sized from the resolved
+        # optimizers rather than the raw arguments.
+        _validate_direct_state_resources(
+            n_heads,
+            hidden_sizes,
+            feature_dim=1,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
+        )
+        _preflight_multi_head_update_working_set(
+            n_heads,
+            hidden_sizes,
+            feature_dim=1,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
+        )
 
         # Validate trunk trace constraint: gamma*lamda > 0 is only safe
         # when there is no trunk (linear baseline). With a trunk, the VJP
@@ -833,9 +1017,21 @@ class MultiHeadMLPLearner:
             )
         else:
             _require_int32_product("linear_head_weight_scalars", self._n_heads, feature_dim)
-        _validate_direct_state_resources(self._n_heads, self._hidden_sizes, feature_dim)
+        _validate_direct_state_resources(
+            self._n_heads,
+            self._hidden_sizes,
+            feature_dim,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
+        )
         _preflight_multi_head_update_working_set(
-            self._n_heads, self._hidden_sizes, feature_dim
+            self._n_heads,
+            self._hidden_sizes,
+            feature_dim,
+            optimizer=self._optimizer,
+            head_optimizer=self._head_optimizer,
+            normalizer=self._normalizer,
         )
         # Trunk: [feature_dim, *hidden_sizes] — all hidden layers
         trunk_layer_sizes = [feature_dim, *self._hidden_sizes]
