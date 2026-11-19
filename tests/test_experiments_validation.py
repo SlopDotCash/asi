@@ -1172,3 +1172,15 @@ def test_experiment_spread_keeps_finite_opposite_extremes() -> None:
         [result.summary["squared_error"].std, performance[1]],
         stdev(values), rtol=2e-15, atol=0.0,
     )
+
+
+def test_experiment_spread_keeps_integer_timeseries_bands() -> None:
+    magnitude = 2**62
+    traces = np.array(
+        [[-magnitude, -magnitude], [0, magnitude], [magnitude, 0]], dtype=np.int64,
+    )
+    result = AggregatedResults("candidate", [0, 1, 2], {"squared_error": traces}, {})
+    mean, lower, upper = get_metric_timeseries(result)
+    np.testing.assert_array_equal(mean, [0.0, 0.0])
+    np.testing.assert_allclose(lower, -float(magnitude), rtol=2e-15, atol=0.0)
+    np.testing.assert_allclose(upper, float(magnitude), rtol=2e-15, atol=0.0)
