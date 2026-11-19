@@ -7,6 +7,7 @@ from collections.abc import Callable
 from decimal import Decimal
 from fractions import Fraction
 from importlib import import_module
+from statistics import stdev
 from typing import Any, Never
 
 import jax
@@ -1130,3 +1131,44 @@ def test_finite_aggregate_reductions_preserve_scale(
     np.testing.assert_allclose(mean, expected_mean, rtol=1e-14, atol=0.0)
     np.testing.assert_allclose(lower, expected_mean - expected_std, rtol=1e-14, atol=0.0)
     np.testing.assert_allclose(upper, expected_mean + expected_std, rtol=1e-14, atol=0.0)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    "values",
+    [
+        [1e16, 1e16 + 2.0, 1e16 + 4.0],
+        [-1e16, -1e16 - 2.0, -1e16 - 4.0],
+        [3.0, 3.0 + 2.0**-51, 3.0 + 2.0**-50],
+        [1e-200, float(np.nextafter(1e-200, np.inf)),
+         float(np.nextafter(np.nextafter(1e-200, np.inf), np.inf))],
+        [1e308, float(np.nextafter(1e308, 0.0)),
+         float(np.nextafter(np.nextafter(1e308, 0.0), 0.0))],
+    ],
+)
+def test_experiment_spread_preserves_small_representable_differences(
+    values: list[float], reverse: bool,
+) -> None:
+    ordered = values[::-1] if reverse else values
+    expected_std = stdev(ordered)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        result = aggregate_metrics([_single_run(i, [value]) for i, value in enumerate(ordered)])
+        performance = get_final_performance({"candidate": result}, window=1)["candidate"]
+    np.testing.assert_array_equal(result.summary["squared_error"].values, ordered)
+    np.testing.assert_allclose(
+        [result.summary["squared_error"].std, performance[1]],
+        expected_std, rtol=2e-15, atol=0.0,
+    )
+
+
+def test_experiment_spread_keeps_finite_opposite_extremes() -> None:
+    values = [1e308, -1e308, 0.0, 0.0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        result = aggregate_metrics([_single_run(i, [value]) for i, value in enumerate(values)])
+        performance = get_final_performance({"candidate": result}, window=1)["candidate"]
+    np.testing.assert_allclose(
+        [result.summary["squared_error"].std, performance[1]],
+        stdev(values), rtol=2e-15, atol=0.0,
+    )
