@@ -296,6 +296,109 @@ def small_data():
     return np.asarray(x), np.asarray(y)
 
 
+class TestSourceBoundFrontier:
+    """Frontier comparisons must retain the bindings of valid v2 shards."""
+
+    @staticmethod
+    def _write_shard(
+        directory: Path,
+        name: str,
+        seed: int,
+        *,
+        drift: str | None = None,
+    ) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        spec = screening_spec(name)
+        accuracy = 0.8 if name == "upgd_ema_norm_sigma0" else 0.9
+        payload = _bound_shard_payload(
+            ipmnist_screening.ScreeningRunResult(
+                config_name=name,
+                base_learner=spec.base_learner,
+                hyperparameters=dict(spec.hyperparameters),
+                seed=seed,
+                config=IPMNISTConfig(n_tasks=2),
+                per_task_accuracy=np.full(2, accuracy, dtype=np.float64),
+                per_task_loss=np.ones(2, dtype=np.float64),
+                per_task_plasticity=np.ones(2, dtype=np.float64),
+                wall_clock_seconds=1.0,
+            )
+        )
+        if drift == "source_provenance":
+            payload[drift]["relevant_source_sha256"] = "a" * 64
+        elif drift == "dataset_provenance":
+            payload[drift]["x"]["sha256"] = "a" * 64
+        elif drift == "environment":
+            payload[drift]["packages"]["jax"] = "different-test-version"
+        path = directory / f"{name}_seed{seed}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        # Drift changes identity, not the validity of the individual shard.
+        assert load_shard(path)["schema"] == SHARD_SCHEMA
+        return path
+
+    @pytest.mark.parametrize("field", ("source_provenance", "dataset_provenance", "environment"))
+    @pytest.mark.parametrize("phase", ("screen", "confirm"))
+    @pytest.mark.parametrize("within_arm", (False, True), ids=("across-arms", "across-seeds"))
+    def test_frontier_rejects_mismatched_bindings(
+        self, tmp_path: Path, field: str, phase: str, within_arm: bool,
+    ) -> None:
+        from alberta_framework.benchmarks.ipmnist_campaign_tools import build_frontier
+
+        base, arm = "upgd_ema_norm_sigma0", "sigma0_hidden_norm"
+        for directory in ("screen", "confirm"):
+            for name in (base, arm):
+                for seed in (0, 1):
+                    drift = (
+                        field if directory == phase and name == arm
+                        and (not within_arm or seed == 1) else None
+                    )
+                    self._write_shard(tmp_path / directory, name, seed, drift=drift)
+        with pytest.raises(ValueError, match="protocol signatures"):
+            build_frontier(
+                tmp_path / "screen", tmp_path / "confirm", base=base, arms=[arm],
+            )
+
+    @pytest.mark.parametrize("field", ("source_provenance", "dataset_provenance", "environment"))
+    def test_frontier_rejects_missing_v2_bindings(self, tmp_path: Path, field: str) -> None:
+        from alberta_framework.benchmarks.ipmnist_campaign_tools import build_frontier
+
+        base, arm = "upgd_ema_norm_sigma0", "sigma0_hidden_norm"
+        for name in (base, arm):
+            for seed in (0, 1):
+                path = self._write_shard(tmp_path / "screen", name, seed)
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                del payload[field]
+                path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match=field):
+            build_frontier(
+                tmp_path / "screen", tmp_path / "confirm", base=base, arms=[arm],
+            )
+
+    def test_frontier_keeps_bindings_independent_between_phases(self, tmp_path: Path) -> None:
+        from alberta_framework.benchmarks.ipmnist_campaign_tools import build_frontier
+
+        base, arm = "upgd_ema_norm_sigma0", "sigma0_hidden_norm"
+        for directory in ("screen", "confirm"):
+            for name in (base, arm):
+                for seed in (0, 1):
+                    path = self._write_shard(
+                        tmp_path / directory, name, seed,
+                        drift="source_provenance" if directory == "confirm" else None,
+                    )
+                    # Object key order must not change a matching binding.
+                    if name == arm:
+                        payload = json.loads(path.read_text(encoding="utf-8"))
+                        payload["environment"] = dict(reversed(payload["environment"].items()))
+                        path.write_text(json.dumps(payload), encoding="utf-8")
+        frontier = build_frontier(
+            tmp_path / "screen", tmp_path / "confirm", base=base, arms=[arm],
+        )
+        row = frontier["results"][0]
+        assert row["confirmation_candidate"] is True
+        assert row["screen_paired_delta_vs_base"] == pytest.approx(0.1)
+        assert row["confirm_paired_delta_vs_base"] == pytest.approx(0.1)
+        assert frontier["evidence_policy"]["scientific_promotion_allowed"] is False
+
+
 class TestRegistry:
     def test_expected_configs_present(self):
         expected = {
