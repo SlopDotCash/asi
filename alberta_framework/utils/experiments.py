@@ -408,10 +408,22 @@ def _scaled_mean(values: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
 
 
 def _scaled_std(values: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
-    """Compute sample spread without squaring values in their original scale."""
-    scale = np.max(np.abs(values), axis=axis, keepdims=True)
+    """Preserve nearby differences before scaling the sample spread."""
+    # Prevent integer subtraction from wrapping while preserving floating dtypes.
+    if values.dtype.kind in "biu":
+        values = values.astype(np.float64)
+    # Scaling the original values can round away a small, representable spread.
+    # A sample offset removes that common magnitude without rounding its mean.
+    # Opposite extreme values can overflow the subtraction; retain the original
+    # scaling for those slices, whose spread is not small relative to the data.
+    with np.errstate(over="ignore"):
+        shifted = values - np.take(values, [0], axis=axis)
+    centered = np.where(
+        np.all(np.isfinite(shifted), axis=axis, keepdims=True), shifted, values,
+    )
+    scale = np.max(np.abs(centered), axis=axis, keepdims=True)
     scale = np.where(scale == 0.0, 1.0, scale)
-    return np.asarray(np.std(values / scale, axis=axis, ddof=1) * np.squeeze(scale, axis=axis))
+    return np.asarray(np.std(centered / scale, axis=axis, ddof=1) * np.squeeze(scale, axis=axis))
 
 
 def aggregate_metrics(results: list[SingleRunResult]) -> AggregatedResults:
