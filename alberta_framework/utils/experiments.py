@@ -409,7 +409,9 @@ def _scaled_mean(values: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
 
 def _scaled_std(values: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
     """Preserve nearby differences before scaling the sample spread."""
-    values = np.asarray(values, dtype=np.float64)
+    # Prevent integer subtraction from wrapping while preserving floating dtypes.
+    if values.dtype.kind in "biu":
+        values = values.astype(np.float64)
     # Scaling the original values can round away a small, representable spread.
     # A sample offset removes that common magnitude without rounding its mean.
     # Opposite extreme values can overflow the subtraction; retain the original

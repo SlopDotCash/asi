@@ -1184,3 +1184,18 @@ def test_experiment_spread_keeps_integer_timeseries_bands() -> None:
     np.testing.assert_array_equal(mean, [0.0, 0.0])
     np.testing.assert_allclose(lower, -float(magnitude), rtol=2e-15, atol=0.0)
     np.testing.assert_allclose(upper, float(magnitude), rtol=2e-15, atol=0.0)
+
+
+def test_experiment_spread_preserves_wide_float_timeseries_bands() -> None:
+    if np.finfo(np.longdouble).maxexp <= np.finfo(np.float64).maxexp:
+        pytest.skip("longdouble has no wider exponent range on this platform")
+    unit = np.longdouble("1e400")
+    traces = np.array([[unit], [2 * unit], [3 * unit]], dtype=np.longdouble)
+    result = AggregatedResults("candidate", [0, 1, 2], {"squared_error": traces}, {})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        mean, lower, upper = get_metric_timeseries(result)
+    np.testing.assert_allclose(
+        np.array([mean[0], lower[0], upper[0]]) / unit, [2.0, 1.0, 3.0],
+        rtol=1e-14, atol=0.0,
+    )
