@@ -616,3 +616,19 @@ def test_running_mean_keeps_small_windows_outside_large_observations(
 ) -> None:
     actual = compute_running_mean(values, window)
     np.testing.assert_allclose(actual, expected, rtol=1e-14, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize("large, residual", [(1e16, 1.0), (1e308, 1e-100)])
+def test_running_mean_retains_a_residual_inside_the_window(large: float, residual: float) -> None:
+    for window in permutations([large, residual, -large]):
+        trace = [*window, np.nan, large, residual, -large]
+        expected = [np.nan, np.nan, residual / 3, np.nan, np.nan, np.nan, residual / 3]
+        np.testing.assert_array_equal(compute_running_mean(trace, window_size=3), expected)
+
+
+def test_running_mean_averages_finite_values_even_if_the_sum_would_overflow() -> None:
+    large = 1e308
+    np.testing.assert_array_equal(
+        compute_running_mean([large, large, large, -large], window_size=3),
+        [np.nan, np.nan, large, large / 3],
+    )
