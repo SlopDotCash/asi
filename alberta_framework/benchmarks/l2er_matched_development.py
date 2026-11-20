@@ -449,14 +449,19 @@ def build_report(
     if set(by_identity) != expected:
         raise ValueError("results must contain every frozen seed-by-arm identity")
 
+    # Pair on the value the records carry: the receipt's exact correct-count
+    # mean, not the mean of the runner's float32 per-task means.
+    accuracy = {
+        identity: cast(
+            dict[str, float],
+            l2er_development_result_payload(result, outcome="inconclusive")["metrics"],
+        )["mean_online_accuracy"]
+        for identity, result in by_identity.items()
+    }
     paired: dict[str, dict[str, object]] = {}
     outcomes = {ARMS[0]: "inconclusive"}
     for arm in ARMS[1:]:
-        deltas = tuple(
-            float(by_identity[(seed, arm)].per_task_accuracy.mean())
-            - float(by_identity[(seed, ARMS[0])].per_task_accuracy.mean())
-            for seed in SEEDS
-        )
+        deltas = tuple(accuracy[(seed, arm)] - accuracy[(seed, ARMS[0])] for seed in SEEDS)
         mean, lower, upper, outcome = _outcome(deltas)
         outcomes[arm] = outcome
         paired[arm] = {

@@ -5,8 +5,9 @@ import hashlib
 import os
 from copy import deepcopy
 from pathlib import Path
-from typing import Never
+from typing import Any, Never, cast
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -204,6 +205,50 @@ def test_builder_revalidates_forged_result_before_field_dispatch() -> None:
             results, source_provenance={}, dataset_provenance={}, environment={}
         )
     assert HostileInt.calls == 0
+
+
+# Per-task correct counts (task_length=500) from a real run_screening_config
+# matrix of the frozen CONFIG on synthetic inputs, keyed by seed then arm.
+_RUNNER_COUNTS = {
+    1711: ((95, 124), (95, 124), (97, 125), (97, 126)),
+    1712: ((133, 127), (133, 127), (127, 131), (127, 131)),
+    1713: ((80, 122), (80, 122), (81, 126), (81, 126)),
+}
+
+
+def test_report_pairs_the_receipt_accuracy_of_float32_task_means(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(matched, "_validated_source_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_dataset_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_runtime_environment", lambda value, **_: value)
+    task_length = matched.CONFIG.task_length
+    results = []
+    for result in _results():
+        counts = _RUNNER_COUNTS[result.seed][matched.ARMS.index(result.config_name)]
+        # The runner reports float(jnp.mean(float32 correct flags)) per task.
+        means = [
+            float(jnp.mean((jnp.arange(task_length) < count).astype(jnp.float32)))
+            for count in counts
+        ]
+        results.append(dataclasses.replace(result, per_task_accuracy=np.asarray(means)))
+
+    report = matched.build_report(
+        results, source_provenance={}, dataset_provenance={}, environment={}
+    )
+
+    records = cast(list[dict[str, Any]], report["records"])
+    accuracy = {
+        (record["seed"], record["arm"]): record["metrics"]["mean_online_accuracy"]
+        for record in records
+    }
+    paired = cast(dict[str, dict[str, object]], report["paired_comparisons"])
+    assert accuracy[(1711, "l2er_er_only")] == 222 / 1000
+    for arm in matched.ARMS[1:]:
+        assert paired[arm]["deltas"] == [
+            accuracy[(seed, arm)] - accuracy[(seed, matched.ARMS[0])]
+            for seed in matched.SEEDS
+        ]
 
 
 def test_validator_recomputes_paired_arithmetic(
