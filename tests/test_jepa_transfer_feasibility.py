@@ -42,6 +42,7 @@ def test_end_to_end_receipt_is_matched_strict_and_nonpromoting(
     assert all(arm.negative_outcome_retained for arm in result.arms)
     assert all(arm.resources.imported_pretraining_bytes == 0 for arm in result.arms)
     assert all(arm.resources.online_replay_bytes == 0 for arm in result.arms)
+    assert len({arm.resources.persistent_mechanism_bytes for arm in result.arms[:5]}) == 1
     assert result.arms[0].resources.pretraining_encoder_updates == 4
 
 

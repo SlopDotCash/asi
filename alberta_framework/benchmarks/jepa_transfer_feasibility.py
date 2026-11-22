@@ -333,24 +333,12 @@ class JEPATransferResult:
             if resources.persistent_environment_bytes != expected_environment_bytes:
                 raise ValueError("environment bytes differ from the derived state")
             if index < 5:
-                # Model and optimizer array shapes are fixed across updates.
-                # JIT canonicalizes the learner's two process-local Python
-                # float telemetry leaves to scalar float32 arrays on its first
-                # update. The full-warm-start arm arrives in that structural
-                # state; other arms retain a larger fresh state at their peak.
+                # Model and optimizer array shapes are fixed across updates,
+                # and host updates preserve the learner's Python-float
+                # telemetry leaves across both pretraining and deployment.
                 structural_state = _model(encoder_learning=False).init(
                     jr.fold_in(jr.key(arm.seed, impl="threefry2x32"), 2)
                 )
-                if index == 3:
-                    learner_state = cast(Any, structural_state).learner_state
-                    structural_state = cast(Any, structural_state).replace(
-                        learner_state=learner_state.replace(
-                            birth_timestamp=jnp.asarray(
-                                learner_state.birth_timestamp, dtype=jnp.float32
-                            ),
-                            uptime_s=jnp.asarray(learner_state.uptime_s, dtype=jnp.float32),
-                        )
-                    )
                 expected_mechanism_bytes = _tree_nbytes(structural_state)
             elif index == 5:
                 expected_mechanism_bytes = 0
