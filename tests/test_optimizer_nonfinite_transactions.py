@@ -555,8 +555,14 @@ def test_feature_finite_one_steps_are_bitwise_unchanged() -> None:
     # the float32 consecutive-integer limit.  The golden digest includes dtype.
     assert compositional_result.state.candidate_selector_action_counts.dtype == jnp.int32
     assert compositional_result.state.generator_resource_state.action_counts.dtype == jnp.int32
+    assert type(compositional_result.state.birth_timestamp) is float
+    assert type(compositional_result.state.uptime_s) is float
+    compositional_numeric_state = compositional_result.state.replace(
+        birth_timestamp=jnp.float32(compositional_result.state.birth_timestamp),
+        uptime_s=jnp.float32(compositional_result.state.uptime_s),
+    )
     assert _digest(
-        compositional_result.state,
+        compositional_numeric_state,
         compositional_result.predictions,
         compositional_result.errors,
         compositional_result.metrics,
