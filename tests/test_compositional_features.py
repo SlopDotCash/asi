@@ -1876,7 +1876,11 @@ def test_compositional_exact_observation_width_still_updates() -> None:
     assert bool(jnp.all(jnp.isfinite(learner.predict(result.state, observation))))
 
 
-@pytest.mark.parametrize("obs_value", [0.25, float("nan")], ids=["accepted", "rejected"])
+@pytest.mark.parametrize(
+    "obs_value",
+    [0.25, float("nan"), float("inf")],
+    ids=["accepted", "rejected_nan", "rejected_inf"],
+)
 def test_compositional_update_preserves_host_clocks(obs_value: float) -> None:
     """Single-step CompositionalFeatureLearner.update must retain Python-float clocks."""
     learner = CompositionalFeatureLearner(
@@ -1896,10 +1900,51 @@ def test_compositional_update_preserves_host_clocks(obs_value: float) -> None:
     targets = jnp.zeros((1,), dtype=jnp.float32)
 
     result = learner.update(state, obs, targets)
+    accepted = bool(np.isfinite(obs_value))
     assert type(result.state.birth_timestamp) is float
     assert type(result.state.uptime_s) is float
     assert result.state.birth_timestamp == birth
     assert result.state.uptime_s == uptime
+    assert bool(result.update_applied) is accepted
+    assert int(result.state.step_count) == (1 if accepted else 0)
+
+
+def test_compositional_update_traced_under_outer_jit_and_vmap() -> None:
+    """CompositionalFeatureLearner.update must trace cleanly under outer jit and vmap."""
+    learner = CompositionalFeatureLearner(
+        n_features=4,
+        n_tasks=1,
+        candidate_count=0,
+        replacement_interval=100_000,
+        min_feature_age=100_000,
+    )
+    state = learner.init(feature_dim=2, key=jr.key(7)).replace(
+        birth_timestamp=1_700_000_000.125,
+        uptime_s=float(2**24) + 0.25,
+    )
+    targets = jnp.zeros((1,), dtype=jnp.float32)
+
+    jitted_update = jax.jit(learner.update)
+    accepted = jitted_update(state, jnp.array([0.25, -0.5], dtype=jnp.float32), targets)
+    assert bool(accepted.update_applied)
+    assert int(accepted.state.step_count) == 1
+
+    rejected = jitted_update(state, jnp.array([jnp.inf, 0.5], dtype=jnp.float32), targets)
+    assert not bool(rejected.update_applied)
+    assert int(rejected.state.step_count) == 0
+
+    vmapped_update = jax.vmap(learner.update, in_axes=(None, 0, 0))
+    batch_obs = jnp.array([[0.25, -0.5], [jnp.nan, 0.5], [jnp.inf, 0.5]], dtype=jnp.float32)
+    batch_targets = jnp.zeros((3, 1), dtype=jnp.float32)
+    batch_res = vmapped_update(state, batch_obs, batch_targets)
+    np.testing.assert_array_equal(
+        np.asarray(batch_res.update_applied),
+        np.array([True, False, False]),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(batch_res.state.step_count),
+        np.array([1, 0, 0], dtype=np.int32),
+    )
 
 
 @pytest.mark.parametrize("bad_value", [float("inf"), float("-inf"), float("nan")])

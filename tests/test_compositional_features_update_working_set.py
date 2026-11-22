@@ -43,7 +43,7 @@ def _update_working_set_bytes(
     candidate_count: int = 0,
     generator_resource_contexts: int = 1,
 ) -> int:
-    extras = 243 + 31 * n_features + 8 * n_tasks + 32 * candidate_count
+    extras = 227 + 31 * n_features + 8 * n_tasks + 32 * candidate_count
     return 2 * _persist_bytes(
         n_features, n_tasks, candidate_count, generator_resource_contexts
     ) + extras
@@ -72,8 +72,8 @@ def test_compositional_persist_fits_while_update_working_set_does_not() -> None:
     assert persist <= _INT32_MAX
     assert _update_working_set_bytes(_FIRST_WORKING_SET_OVERFLOW - 1) <= _INT32_MAX
     assert working > _INT32_MAX
-    assert _update_working_set_bytes(_FIRST_WORKING_SET_OVERFLOW - 1) == 2_147_483_638
-    assert working == 2_147_483_805
+    assert _update_working_set_bytes(_FIRST_WORKING_SET_OVERFLOW - 1) == 2_147_483_622
+    assert working == 2_147_483_789
     learner = CompositionalFeatureLearner(_FIRST_WORKING_SET_OVERFLOW, 1)
     with pytest.raises(ValueError, match="update working set byte count"):
         learner.init(1, jr.key(0))
