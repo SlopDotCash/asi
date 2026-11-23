@@ -162,6 +162,16 @@ def isometry_penalty(weight: Array) -> Array:
     return candidate
 
 
+def _isometry_gradient_raw(matrix: Array) -> Array:
+    """Compute the unchecked equation-16 Gram gradient for a validated 2D weight."""
+    rows, columns = matrix.shape
+    if rows >= columns:
+        identity = jnp.eye(columns, dtype=matrix.dtype)
+        return 4.0 * matrix @ (matrix.T @ matrix - identity)
+    identity = jnp.eye(rows, dtype=matrix.dtype)
+    return 4.0 * (matrix @ matrix.T - identity) @ matrix
+
+
 def isometry_gradient(weight: Array) -> Array:
     """Return the closed-form gradient of :func:`isometry_penalty`."""
 
@@ -170,12 +180,7 @@ def isometry_gradient(weight: Array) -> Array:
         raise ValueError("isometry_gradient requires a rank-two weight matrix")
     rows, columns = matrix.shape
     _gram_bytes(rows, columns, matrix.dtype.itemsize)
-    if rows >= columns:
-        identity = jnp.eye(columns, dtype=matrix.dtype)
-        candidate = 4.0 * matrix @ (matrix.T @ matrix - identity)
-    else:
-        identity = jnp.eye(rows, dtype=matrix.dtype)
-        candidate = 4.0 * (matrix @ matrix.T - identity) @ matrix
+    candidate = _isometry_gradient_raw(matrix)
     valid = jnp.all(jnp.isfinite(candidate))
     if isinstance(valid, jax.core.Tracer):
         return jnp.where(valid, candidate, jnp.full_like(candidate, jnp.nan))
@@ -286,9 +291,9 @@ class AdamO:
         task_step = task_update.step
         if regularize and config.isometry_strength != 0.0:
             scale = cast(float, config.isometry_step_size) * config.isometry_strength
-            iso_gradient = isometry_gradient(parameter)
+            iso_gradient = _isometry_gradient_raw(parameter)
             limits = np.finfo(parameter.dtype)
-            if limits.tiny <= scale <= limits.max:
+            if float(limits.tiny) <= scale <= float(limits.max):
                 isometry_step = scale * iso_gradient
             else:
                 # The combined scalar can leave the storage range even when
@@ -311,6 +316,7 @@ class AdamO:
             & jnp.all(jnp.isfinite(parameter))
             & jnp.all(jnp.isfinite(gradient))
             & floating_tree_is_finite(candidate_state)
+            & jnp.all(jnp.isfinite(isometry_step))
             & jnp.all(jnp.isfinite(step))
         )
         return AdamOUpdate(  # type: ignore[call-arg]

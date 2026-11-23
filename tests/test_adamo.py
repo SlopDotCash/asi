@@ -9,6 +9,8 @@ from alberta_framework.core.adamo import (
     ADAMO_PROTOCOL,
     AdamO,
     AdamOConfig,
+    AdamOState,
+    AdamOUpdate,
     gram_working_bytes,
     isometry_gradient,
     isometry_penalty,
@@ -110,16 +112,53 @@ def test_bias_leaf_is_never_regularized() -> None:
     np.testing.assert_array_equal(result.isometry_step, jnp.zeros_like(bias))
 
 
-def test_nonfinite_candidate_fails_closed() -> None:
-    optimizer = AdamO(AdamOConfig(isometry_strength=1.0))
-    weight = jnp.full((2, 2), jnp.finfo(jnp.float32).max)
-    state = optimizer.init_for_shape(weight.shape)
-    result = jax.jit(optimizer.update_from_gradient_checked, static_argnames="regularize")(
-        state, jnp.ones_like(weight), weight, regularize=True
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize(
+    "weight",
+    [
+        jnp.full((2, 2), jnp.finfo(jnp.float32).max),
+        jnp.full((2, 2), 1e14, dtype=jnp.float32),
+        jnp.asarray([[jnp.nan, 0.0], [0.0, 1.0]], dtype=jnp.float32),
+        jnp.asarray([[jnp.inf, 0.0], [0.0, 1.0]], dtype=jnp.float32),
+    ],
+)
+@pytest.mark.parametrize(
+    ("isometry_step_size", "isometry_strength"),
+    [
+        (1e-4, 1.0),
+        (1e-30, 1e-20),
+        (1e20, 1e20),
+    ],
+)
+def test_nonfinite_candidate_fails_closed(
+    compiled: bool,
+    weight: jax.Array,
+    isometry_step_size: float,
+    isometry_strength: float,
+) -> None:
+    optimizer = AdamO(
+        AdamOConfig(
+            isometry_step_size=isometry_step_size,
+            isometry_strength=isometry_strength,
+        )
     )
+    state = optimizer.init_for_shape(weight.shape)
+
+    def update(s: AdamOState, g: jax.Array, w: jax.Array) -> AdamOUpdate:
+        return optimizer.update_from_gradient_checked(s, g, w, regularize=True)
+
+    if compiled:
+        update = jax.jit(update)
+    with jax.disable_jit(not compiled):
+        result = update(state, jnp.ones_like(weight), weight)
+
     assert not bool(result.update_applied)
     np.testing.assert_array_equal(result.step, jnp.zeros_like(weight))
+    np.testing.assert_array_equal(result.task_step, jnp.zeros_like(weight))
+    np.testing.assert_array_equal(result.isometry_step, jnp.zeros_like(weight))
     np.testing.assert_array_equal(result.new_state.m, state.m)
+    np.testing.assert_array_equal(result.new_state.v, state.v)
+    np.testing.assert_array_equal(result.new_state.t, state.t)
 
 
 def test_resource_accounting_names_state_and_gram() -> None:
