@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import MappingProxyType
 
 import pytest
 
@@ -11,6 +12,7 @@ from alberta_framework.security import (
     SecurityFeatureSchema,
     SecurityRolloutStep,
     ThroughputMeasurement,
+    security_rollout_step_to_oracle_experience,
     to_security_gym_action,
     validate_security_rollout,
 )
@@ -107,3 +109,84 @@ def test_validate_security_rollout_revalidates_mutated_records(
             [step],
             SecurityFeatureSchema(names=("first", "second")),
         )
+
+
+def test_rollout_step_deep_freezes_nested_policy_metadata() -> None:
+    """Nested lists and dicts inside policy_metadata must be immutable after construction."""
+    nested_list = ["initial"]
+    nested_dict = {"score": 1.0}
+    step = _legal_step(
+        policy_metadata={"tags": nested_list, "details": nested_dict},
+    )
+    nested_list.append("mutated")
+    nested_dict["score"] = float("nan")
+
+    assert type(step.policy_metadata) is MappingProxyType
+    assert type(step.policy_metadata["tags"]) is tuple
+    assert type(step.policy_metadata["details"]) is MappingProxyType
+    with pytest.raises(TypeError):
+        step.policy_metadata["details"]["score"] = float("inf")
+    assert step.to_dict()["policy_metadata"] == {
+        "tags": ["initial"],
+        "details": {"score": 1.0},
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("reward", True, "reward"),
+        ("reward", float("nan"), "reward"),
+        ("action", 0, "action"),
+        ("terminated", 1, "terminated"),
+        ("truncated", 0, "truncated"),
+        ("state", [0.0, 1.0], "state"),
+        ("next_state", (0.0, float("nan")), "next_state"),
+        (
+            "policy_metadata",
+            MappingProxyType({"nested": ["mutable"]}),
+            "immutable exact JSON values",
+        ),
+    ],
+)
+def test_rollout_public_consumers_reject_forged_fields(
+    field: str,
+    value: object,
+    error: str,
+) -> None:
+    """to_dict, validate_security_rollout, and oracle conversion must all reject forged steps."""
+    step = _legal_step()
+    object.__setattr__(step, field, value)
+
+    with pytest.raises(ValueError, match=error):
+        step.to_dict()
+    with pytest.raises(ValueError, match=error):
+        validate_security_rollout(
+            [step],
+            SecurityFeatureSchema(names=("first", "second")),
+        )
+    with pytest.raises(ValueError, match=error):
+        security_rollout_step_to_oracle_experience(step)
+
+
+def test_rollout_consumers_reject_forged_hostile_action_without_hooks() -> None:
+    class _HostileInt(int):
+        calls = 0
+
+        def __int__(self) -> int:  # type: ignore[override]
+            type(self).calls += 1
+            raise AssertionError("integer hook executed")
+
+        def __repr__(self) -> str:
+            type(self).calls += 1
+            raise AssertionError("representation hook executed")
+
+    step = _legal_step()
+    object.__setattr__(step, "action", _HostileInt(0))
+    _HostileInt.calls = 0
+    with pytest.raises(ValueError, match="action must be an exact SecurityAction"):
+        step.to_dict()
+    with pytest.raises(ValueError, match="action must be an exact SecurityAction"):
+        security_rollout_step_to_oracle_experience(step)
+    assert _HostileInt.calls == 0
+
