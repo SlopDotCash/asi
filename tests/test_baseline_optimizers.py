@@ -195,6 +195,42 @@ class TestAdaGain:
         chex.assert_trees_all_equal(result.weight_delta, expected)
         chex.assert_trees_all_equal(result.new_state.gradient_trace, state.gradient_trace)
 
+    @pytest.mark.parametrize("compiled", [False, True])
+    @pytest.mark.parametrize("trace_field", ["gradient_trace", "bias_gradient_trace"])
+    @pytest.mark.parametrize("poison_value", [jnp.inf, -jnp.inf])
+    def test_zero_meta_config_does_not_relax_nonzero_persisted_meta_step_size(
+        self,
+        compiled: bool,
+        trace_field: str,
+        poison_value: float,
+    ) -> None:
+        """A nonzero persisted meta_step_size still consumes and validates traces."""
+        optimizer = AdaGain(
+            initial_step_size=0.05,
+            meta_step_size=0.0,
+            forgetting_rate=1.0,
+        )
+        poison = (
+            jnp.full(2, poison_value, dtype=jnp.float32)
+            if trace_field == "gradient_trace"
+            else jnp.asarray(poison_value, dtype=jnp.float32)
+        )
+        state = optimizer.init(feature_dim=2).replace(
+            meta_step_size=jnp.asarray(0.5, dtype=jnp.float32),
+            **{trace_field: poison},
+        )
+        update = jax.jit(optimizer.update) if compiled else optimizer.update
+        result = update(
+            state,
+            jnp.asarray(1.0, dtype=jnp.float32),
+            jnp.asarray([0.5, -0.25], dtype=jnp.float32),
+        )
+
+        assert not bool(result.update_applied)
+        chex.assert_trees_all_equal(result.new_state, state)
+        chex.assert_trees_all_equal(result.weight_delta, jnp.zeros(2, dtype=jnp.float32))
+        chex.assert_trees_all_equal(result.bias_delta, jnp.asarray(0.0, dtype=jnp.float32))
+
 
 # =============================================================================
 # Adam
