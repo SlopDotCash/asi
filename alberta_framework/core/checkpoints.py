@@ -216,23 +216,50 @@ def _on_disk_metadata_path(path: Path) -> Path:
 
 
 def _preflight_on_disk_metadata(path: Path) -> None:
-    """Reject ambiguous or deep metadata JSON before Orbax ``json.loads``."""
+    """Reject ambiguous, symlinked, or deep metadata JSON before Orbax ``json.loads``."""
 
     meta_path = _on_disk_metadata_path(path)
+    meta_dir = meta_path.parent
+    meta_name = meta_path.name
     try:
-        path_metadata = os.lstat(meta_path)
+        dir_metadata = os.lstat(meta_dir)
     except FileNotFoundError:
         return
     except OSError as error:
-        raise ValueError("checkpoint metadata must be a readable regular file") from error
-    if not stat_module.S_ISREG(path_metadata.st_mode):
-        raise ValueError("checkpoint metadata must be a regular file")
+        raise ValueError("checkpoint metadata directory is not readable") from error
+    if stat_module.S_ISLNK(dir_metadata.st_mode) or not stat_module.S_ISDIR(
+        dir_metadata.st_mode
+    ):
+        raise ValueError("checkpoint metadata directory must be a regular directory")
 
+    dir_fd = -1
     descriptor = -1
     try:
+        dir_flags = (
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+        )
+        dir_fd = os.open(meta_dir, dir_flags)
+        opened_dir = os.fstat(dir_fd)
+        if (
+            not stat_module.S_ISDIR(opened_dir.st_mode)
+            or opened_dir.st_dev != dir_metadata.st_dev
+            or opened_dir.st_ino != dir_metadata.st_ino
+        ):
+            raise ValueError(
+                "checkpoint metadata directory must remain the same regular directory"
+            )
+
+        try:
+            path_metadata = os.stat(meta_name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat_module.S_ISREG(path_metadata.st_mode):
+            raise ValueError("checkpoint metadata must be a regular file")
+
         descriptor = os.open(
-            meta_path,
+            meta_name,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=dir_fd,
         )
         opened_metadata = os.fstat(descriptor)
         if (
@@ -248,6 +275,8 @@ def _preflight_on_disk_metadata(path: Path) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        if dir_fd >= 0:
+            os.close(dir_fd)
     if len(raw) > _JSON_MAX_BYTES:
         raise ValueError("checkpoint metadata exceeds the JSON byte limit")
     try:
