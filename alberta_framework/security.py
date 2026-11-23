@@ -440,20 +440,21 @@ class SecurityRolloutStep:
         object.__setattr__(self, "state", state)
         object.__setattr__(self, "reward", reward)
         object.__setattr__(self, "next_state", next_state)
-        object.__setattr__(self, "policy_metadata", MappingProxyType(metadata))
+        object.__setattr__(self, "policy_metadata", _freeze_json_mapping(metadata))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable transition mapping."""
+        validated = _require_canonical_rollout_step(self)
         payload = {
-            "state": list(self.state),
-            "action": int(self.action),
-            "action_name": self.action.name.lower(),
-            "reward": self.reward,
-            "next_state": list(self.next_state),
-            "terminated": self.terminated,
-            "truncated": self.truncated,
+            "state": list(validated.state),
+            "action": int(validated.action),
+            "action_name": validated.action.name.lower(),
+            "reward": validated.reward,
+            "next_state": list(validated.next_state),
+            "terminated": validated.terminated,
+            "truncated": validated.truncated,
             "policy_metadata": _copy_json_mapping(
-                self.policy_metadata, name="policy_metadata"
+                validated.policy_metadata, name="policy_metadata"
             ),
         }
         _require_rfc_json_mapping(payload, name="security rollout step")
@@ -597,23 +598,51 @@ class SecurityOracleExperience:
         return payload
 
 
+def _require_canonical_rollout_step(
+    step: SecurityRolloutStep,
+) -> SecurityRolloutStep:
+    if type(step.state) is not tuple or any(
+        type(value) is not float for value in step.state
+    ):
+        raise ValueError("state must contain canonical float values")
+    if type(step.next_state) is not tuple or any(
+        type(value) is not float for value in step.next_state
+    ):
+        raise ValueError("next_state must contain canonical float values")
+    if type(step.action) is not SecurityAction:
+        raise ValueError("action must be an exact SecurityAction")
+    if type(step.reward) is not float:
+        raise ValueError("reward must be a canonical float")
+    if type(step.terminated) is not bool:
+        raise ValueError("terminated must be an exact bool")
+    if type(step.truncated) is not bool:
+        raise ValueError("truncated must be an exact bool")
+    if type(step.policy_metadata) is not MappingProxyType:
+        raise ValueError("policy_metadata must be an immutable mapping")
+    _require_frozen_json_value(step.policy_metadata, name="policy_metadata")
+    return step._revalidated_copy()
+
+
 def security_rollout_step_to_oracle_experience(
     step: SecurityRolloutStep,
 ) -> SecurityOracleExperience:
     """Convert a rollout transition to a compact oracle-review record."""
-    policy_metadata = _copy_json_mapping(step.policy_metadata, name="policy_metadata")
+    if type(step) is not SecurityRolloutStep:
+        raise ValueError("step must be an exact SecurityRolloutStep")
+    validated = _require_canonical_rollout_step(step)
+    policy_metadata = _copy_json_mapping(validated.policy_metadata, name="policy_metadata")
     is_malicious = policy_metadata.get("is_malicious", False)
     if type(is_malicious) is not bool:
         raise ValueError("policy_metadata is_malicious must be an exact bool")
-    label = _security_outcome_label(action=step.action, is_malicious=is_malicious)
+    label = _security_outcome_label(action=validated.action, is_malicious=is_malicious)
     return SecurityOracleExperience(
-        state=step.state,
-        action=step.action,
-        reward=step.reward,
+        state=validated.state,
+        action=validated.action,
+        reward=validated.reward,
         outcome={
             "label": label,
-            "terminated": step.terminated,
-            "truncated": step.truncated,
+            "terminated": validated.terminated,
+            "truncated": validated.truncated,
         },
         policy_metadata=policy_metadata,
     )
@@ -770,7 +799,7 @@ def validate_security_rollout(
         if type(step) is not SecurityRolloutStep:
             raise ValueError(f"invalid rollout step {idx}: wrong record type")
         try:
-            validated = step._revalidated_copy()
+            validated = _require_canonical_rollout_step(step)
             schema.validate_observation(validated.state)
             schema.validate_observation(validated.next_state)
         except ValueError as exc:
