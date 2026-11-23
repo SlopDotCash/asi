@@ -507,9 +507,18 @@ class AdaGain(Optimizer[Any]):
         }
         previous_checked = state
         if self._forgetting_rate == 1.0 and self._meta_step_size == 0.0:
+            trace_unused = (state.forgetting_rate == 1.0) & (state.meta_step_size == 0.0)
             previous_checked = state.replace(  # type: ignore[attr-defined]
-                gradient_trace=jnp.zeros_like(state.gradient_trace),
-                bias_gradient_trace=jnp.zeros_like(state.bias_gradient_trace),
+                gradient_trace=jnp.where(
+                    trace_unused,
+                    jnp.zeros_like(state.gradient_trace),
+                    state.gradient_trace,
+                ),
+                bias_gradient_trace=jnp.where(
+                    trace_unused,
+                    jnp.zeros_like(state.bias_gradient_trace),
+                    state.bias_gradient_trace,
+                ),
             )
         update_applied = (
             floating_tree_is_finite(previous_checked)
