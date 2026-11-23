@@ -1124,3 +1124,100 @@ def test_streaming_batch_finite_weighted_variance_before_square(compiled, moment
     )
     assert bool(jnp.all(jnp.isfinite(result.normalized)))
 
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize(
+    ("normalizer", "observation_value"),
+    [
+        pytest.param(EMANormalizer(decay=0.99), 5e19, id="ema"),
+        pytest.param(WelfordNormalizer(), 3e19, id="welford"),
+        pytest.param(StreamingBatchNormalizer(momentum=0.99), 3e20, id="streaming-batch"),
+    ],
+)
+def test_rollback_on_candidate_variance_overflow_normalizes_against_retained_state(
+    compiled: bool,
+    normalizer: EMANormalizer | WelfordNormalizer | StreamingBatchNormalizer,
+    observation_value: float,
+) -> None:
+    """A rolled-back moment overflow must normalize with retained state, not rejected inf var."""
+    import jax
+
+    state = normalizer.update_only(normalizer.init(1), jnp.zeros(1, dtype=jnp.float32))
+    observation = jnp.asarray([observation_value], dtype=jnp.float32)
+    expected = normalizer.normalize_only(state, observation)
+    assert bool(jnp.all(jnp.isfinite(expected)))
+    assert float(expected[0]) > 1e18
+
+    update = normalizer.normalize_with_diagnostics
+    if compiled:
+        update = jax.jit(update)
+    result = update(state, observation)
+
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, state)
+    chex.assert_trees_all_equal(result.normalized, expected)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize(
+    "normalizer",
+    [
+        pytest.param(EMANormalizer(decay=0.99), id="ema"),
+        pytest.param(WelfordNormalizer(), id="welford"),
+        pytest.param(StreamingBatchNormalizer(momentum=1.0), id="streaming-batch"),
+    ],
+)
+def test_rollback_on_candidate_mean_and_var_overflow_matches_retained_normalize_only(
+    compiled: bool,
+    normalizer: EMANormalizer | WelfordNormalizer | StreamingBatchNormalizer,
+) -> None:
+    """When both candidate mean and variance overflow, rollback must not leak NaN."""
+    import jax
+
+    max_f32 = float(np.finfo(np.float32).max)
+    state = normalizer.update_only(normalizer.init(1), jnp.zeros(1, dtype=jnp.float32)).replace(
+        mean=jnp.asarray([-max_f32], dtype=jnp.float32),
+        var=jnp.asarray([1.0], dtype=jnp.float32),
+    )
+    observation = jnp.asarray([max_f32], dtype=jnp.float32)
+    expected = normalizer.normalize_only(state, observation)
+    assert bool(jnp.isposinf(expected[0]))
+
+    update = normalizer.normalize_with_diagnostics
+    if compiled:
+        update = jax.jit(update)
+    result = update(state, observation)
+
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, state)
+    assert not bool(jnp.any(jnp.isnan(result.normalized)))
+    chex.assert_trees_all_equal(result.normalized, expected)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_zero_decay_refused_update_with_nonfinite_state_returns_finite_zeros(
+    compiled: bool,
+) -> None:
+    """A zero-decay normalizer that cannot update must not normalize with poisoned moments."""
+    import jax
+
+    normalizer = EMANormalizer(decay=0.0)
+    max_u32 = np.uint32(0xFFFFFFFF)
+    state = normalizer.init(1).replace(
+        mean=jnp.asarray([jnp.inf], dtype=jnp.float32),
+        var=jnp.asarray([jnp.inf], dtype=jnp.float32),
+        sample_count=jnp.asarray(2**31 - 1, dtype=jnp.int32),
+        sample_count_words=jnp.asarray([max_u32, max_u32], dtype=jnp.uint32),
+    )
+    observation = jnp.asarray([1.0], dtype=jnp.float32)
+    update = normalizer.normalize_with_diagnostics
+    if compiled:
+        update = jax.jit(update)
+    result = update(state, observation)
+
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, state)
+    assert bool(jnp.all(jnp.isfinite(result.normalized)))
+    chex.assert_trees_all_equal(result.normalized, jnp.zeros(1, dtype=jnp.float32))
+
+
