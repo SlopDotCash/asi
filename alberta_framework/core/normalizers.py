@@ -654,10 +654,16 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
             lambda: candidate_state,
             lambda: state,
         )
-        normalized = jnp.where(
-            update_applied | (observation_valid & source_state_finite),
-            candidate_normalized,
+        raw_state_finite = _floating_tree_is_finite(state)
+        fallback_normalized = jnp.where(
+            observation_valid & raw_state_finite,
+            self.normalize_only(state, observation),
             jnp.zeros_like(candidate_normalized),
+        )
+        normalized = jnp.where(
+            update_applied,
+            candidate_normalized,
+            fallback_normalized,
         )
         return NormalizerUpdateResult(
             normalized=normalized,
@@ -793,10 +799,15 @@ class WelfordNormalizer(Normalizer[WelfordNormalizerState]):
             lambda: candidate_state,
             lambda: state,
         )
-        normalized = jnp.where(
-            update_applied | (observation_valid & source_state_finite),
-            candidate_normalized,
+        fallback_normalized = jnp.where(
+            observation_valid & source_state_finite,
+            self.normalize_only(state, observation),
             jnp.zeros_like(candidate_normalized),
+        )
+        normalized = jnp.where(
+            update_applied,
+            candidate_normalized,
+            fallback_normalized,
         )
         return NormalizerUpdateResult(
             normalized=normalized,
@@ -939,10 +950,16 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
             lambda: candidate_state,
             lambda: state,
         )
-        normalized = jnp.where(
-            update_applied | (observation_valid & source_state_finite),
-            candidate_normalized,
+        raw_state_finite = _floating_tree_is_finite(state)
+        fallback_normalized = jnp.where(
+            observation_valid & raw_state_finite,
+            self.normalize_only(state, observation),
             jnp.zeros_like(candidate_normalized),
+        )
+        normalized = jnp.where(
+            update_applied,
+            candidate_normalized,
+            fallback_normalized,
         )
         return NormalizerUpdateResult(
             normalized=normalized,
