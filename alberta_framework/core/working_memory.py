@@ -565,9 +565,48 @@ class WorkingMemoryFeaturizer:
     ) -> Array:
         if (not self._config.gated_update) or traces.shape[0] == 0 or value.size == 0:
             return jnp.asarray(1.0, dtype=jnp.float32)
-        surprise = _root_mean_square(value - traces[fast_index])
+        fast_trace = traces[fast_index]
+        diff = value - fast_trace
+        # Opposite finite endpoints can overflow ``value - fast_trace`` to inf,
+        # which turns ``_root_mean_square`` into NaN (inf / inf) and rolls back
+        # a valid update. Halving both operands keeps the difference finite and
+        # preserves ``(surprise - threshold) / temperature`` exactly.
+        diff_overflowed = (
+            ~jnp.all(jnp.isfinite(diff))
+            & jnp.all(jnp.isfinite(value))
+            & jnp.all(jnp.isfinite(fast_trace))
+        )
+        half = jnp.asarray(0.5, dtype=jnp.float32)
+        half_diff = half * value - half * fast_trace
+        safe_diff = jnp.where(diff_overflowed, half_diff, diff)
+        scaled_surprise = _root_mean_square(safe_diff)
+        scaled_threshold = jnp.where(diff_overflowed, half * threshold, threshold)
+        margin = scaled_surprise - scaled_threshold
         temperature = jnp.asarray(self._config.gate_temperature, dtype=jnp.float32)
-        return jax.nn.sigmoid((surprise - threshold) / temperature)
+        # XLA evaluates float32 division through its reciprocal, which flushes
+        # to zero when ``temperature > 1 / float32_min_normal``; scale via
+        # frexp/ldexp in that regime, keeping ordinary divisions bit-identical.
+        use_exponent_div = temperature > jnp.asarray(
+            1.0 / _FLOAT32_MIN_NORMAL,
+            dtype=jnp.float32,
+        )
+        temp_mant, temp_exp = jnp.frexp(temperature)
+        direct_logit = margin / temperature
+        scaled_logit = jnp.where(
+            use_exponent_div,
+            jnp.ldexp(margin, -temp_exp) / temp_mant,
+            direct_logit,
+        )
+        logit = jnp.where(
+            diff_overflowed,
+            jnp.where(
+                use_exponent_div,
+                jnp.ldexp(margin, 1 - temp_exp) / temp_mant,
+                jnp.asarray(2.0, dtype=jnp.float32) * direct_logit,
+            ),
+            scaled_logit,
+        )
+        return jax.nn.sigmoid(logit)
 
     @staticmethod
     def _update_trace_bank(
