@@ -753,43 +753,25 @@ def compute_cumulative_error(
     return cumulative
 
 
-def _pairwise_rolling_means(values: NDArray[np.float64], window_size: int) -> NDArray[np.float64]:
-    """Reduce each window with local scales, independent of other observations."""
-    leaf_count = 1 << (window_size - 1).bit_length()
-    scales = np.zeros(2 * leaf_count, dtype=np.float64)
-    sums = np.zeros(2 * leaf_count, dtype=np.float64)
+def _exact_rolling_means(values: NDArray[np.float64], window_size: int) -> NDArray[np.float64]:
+    """Accumulate binary64 values exactly and round only the returned mean."""
+    # Each finite binary64 value is an integer multiple of 2**-1074, including
+    # subnormals. The integer sum preserves cancellation and remains bounded
+    # by the binary64 exponent range plus the bit length of the window size.
+    unit_exponent = 1074
 
-    def set_leaf(node: int, value: float) -> None:
-        scales[node] = abs(value)
-        sums[node] = np.sign(value)
+    def units(value: np.float64) -> int:
+        numerator, denominator = float(value).as_integer_ratio()
+        return numerator << (unit_exponent - (denominator.bit_length() - 1))
 
-    def merge(node: int) -> None:
-        left, right = 2 * node, 2 * node + 1
-        scale = max(scales[left], scales[right])
-        scales[node] = scale
-        sums[node] = (
-            sums[left] * (scales[left] / scale)
-            + sums[right] * (scales[right] / scale)
-            if scale else 0.0
-        )
-
-    for index, value in enumerate(values[:window_size]):
-        set_leaf(leaf_count + index, float(value))
-    for node in range(leaf_count - 1, 0, -1):
-        merge(node)
-
+    total = sum(map(units, values[:window_size]))
+    divisor = window_size << unit_exponent
     means = np.empty(values.size - window_size + 1, dtype=np.float64)
-    means[0] = (sums[1] / window_size) * scales[1]
-    slot = 0
-    for output_index, incoming in enumerate(values[window_size:], start=1):
-        node = leaf_count + slot
-        set_leaf(node, float(incoming))
-        node //= 2
-        while node:
-            merge(node)
-            node //= 2
-        means[output_index] = (sums[1] / window_size) * scales[1]
-        slot = (slot + 1) % window_size
+    means[0] = total / divisor
+    pairs = zip(values[:-window_size], values[window_size:], strict=True)
+    for output_index, (outgoing, incoming) in enumerate(pairs, start=1):
+        total += units(incoming) - units(outgoing)
+        means[output_index] = total / divisor
     return means
 
 
@@ -829,10 +811,9 @@ def compute_running_mean(
 
     normalized = np.where(np.isfinite(values_arr), values_arr, 0.0)
     valid = np.isfinite(values_arr).astype(np.int64)
-    # Always reduce the current window. A per-element threshold cannot bound
-    # cancellation from a long prefix, even when each element exceeds epsilon.
-    # The ring tree costs O(n log(window_size)) time and O(window_size) storage.
-    running_mean = _pairwise_rolling_means(normalized, window_size)
+    # Maintain the current window in exact units so rounding in one window
+    # cannot erase a residual in the current or later windows.
+    running_mean = _exact_rolling_means(normalized, window_size)
     valid_cumsum = np.cumsum(np.insert(valid, 0, 0), dtype=np.int64)
     valid_counts = valid_cumsum[window_size:] - valid_cumsum[:-window_size]
     running_mean = np.where(valid_counts == window_size, running_mean, np.nan)
