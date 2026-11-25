@@ -72,6 +72,31 @@ def test_mann_whitney_mixed_integer_order_is_preserved() -> None:
     assert tied.effect_size == 0.0
 
 
+@pytest.mark.parametrize(
+    "dtype,integer,floating,expected_u",
+    [(np.int64, 2**53 + 1, float(2**53), 64.0),
+     (np.uint64, 2**64 - 1, float(2**64), 0.0)],
+)
+def test_mann_whitney_mixed_integer_float_groups_keep_order(
+    dtype, integer: int, floating: float, expected_u: float,
+) -> None:
+    a = np.full(8, integer, dtype=dtype)
+    b = np.full(8, floating, dtype=np.float64)
+    result = mann_whitney_comparison(a, b)
+    control = stats.mannwhitneyu(np.ones(8), np.zeros(8), alternative="two-sided")
+    assert result.statistic == expected_u
+    assert result.p_value == pytest.approx(control.pvalue)
+    assert result.significant
+    assert result.effect_size == (1.0 if expected_u else -1.0)
+
+
+def test_mann_whitney_mixed_integer_float_groups_keep_true_ties() -> None:
+    a = np.full(8, 2**53, dtype=np.int64)
+    b = np.full(8, float(2**53))
+    result = mann_whitney_comparison(a, b)
+    assert (result.statistic, result.p_value, result.effect_size) == (32.0, 1.0, 0.0)
+
+
 def test_integer_pooled_effect_preserves_constant_group_separation() -> None:
     baseline = np.full(4, 2**60, dtype=np.int64)
     shifted = np.full(4, 2**60 + 1, dtype=np.int64)

@@ -770,13 +770,19 @@ def mann_whitney_comparison(
         )
 
     rank_a, rank_b = a, b
-    if a.dtype.kind in "iu" and b.dtype.kind in "iu":
-        # Concatenating signed and unsigned integer arrays can itself narrow
-        # their observations to float64. Only their shared ordering is needed.
-        integer_values = sorted({int(value) for values in (a, b) for value in values})
-        order = {value: index for index, value in enumerate(integer_values)}
-        rank_a = np.asarray([float(order[int(value)]) for value in a])
-        rank_b = np.asarray([float(order[int(value)]) for value in b])
+    kinds = {a.dtype.kind, b.dtype.kind}
+    if kinds <= {"i", "u", "f"} and kinds & {"i", "u"}:
+        # Pooling a counter with a floating sample can round the counter into
+        # a false tie. Use exact values to derive the common ordinal scale.
+        def exact_values(sample: NDArray[np.float64]) -> list[int | Fraction]:
+            if sample.dtype.kind in "iu":
+                return [int(value) for value in sample]
+            return [Fraction(*value.as_integer_ratio()) for value in sample]
+
+        exact_a, exact_b = exact_values(a), exact_values(b)
+        order = {value: index for index, value in enumerate(sorted(set(exact_a) | set(exact_b)))}
+        rank_a = np.asarray([float(order[value]) for value in exact_a])
+        rank_b = np.asarray([float(order[value]) for value in exact_b])
 
     if np.all(rank_a == rank_a[0]) and np.all(rank_b == rank_a[0]):
         # Every cross-group pair is a tie.  The exact permutation null puts
