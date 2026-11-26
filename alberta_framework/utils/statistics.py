@@ -205,14 +205,24 @@ def _require_finite_values(values: NDArray[np.floating], *, name: str) -> None:
         raise ValueError(f"{name} must be finite")
 
 
-def _scaled_float64_values(
-    values: NDArray[np.floating], *, name: str, axis: int | None
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Scale finite inputs before reductions that would otherwise overflow."""
+def _finite_float64_values(values: NDArray[np.floating], *, name: str) -> NDArray[np.float64]:
     with np.errstate(over="ignore", invalid="ignore"):
         work = np.asarray(values, dtype=np.float64)
     if not np.isfinite(work).all():
         raise ValueError(f"{name} must be representable as finite float64 values")
+    return work
+
+
+def _scaled_float64_values(
+    values: NDArray[np.floating], *, name: str, axis: int | None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Scale finite inputs before reductions that would otherwise overflow."""
+    return _scale_for_reduction(_finite_float64_values(values, name=name), axis=axis)
+
+
+def _scale_for_reduction(
+    work: NDArray[np.float64], *, axis: int | None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     scales = np.max(np.abs(work), axis=axis, keepdims=True)
     divisors = np.where(scales == 0.0, 1.0, scales)
     return work / divisors, divisors
@@ -526,16 +536,31 @@ def cohens_d(
             )
         return integer_mean_difference / integer_pooled_std
 
-    # Compute each group's spread at its own bounded scale so a large constant
-    # group cannot erase the smaller group's variance. Cohen's d is unchanged
-    # when both means and standard deviations use the same positive units.
-    a, scale_a_array = _scaled_float64_values(a, name="values_a", axis=None)
-    b, scale_b_array = _scaled_float64_values(b, name="values_b", axis=None)
-    scale_a = float(scale_a_array.item())
-    scale_b = float(scale_b_array.item())
-    common_scale = max(scale_a, scale_b)
-    ratio_a = scale_a / common_scale
-    ratio_b = scale_b / common_scale
+    a = _finite_float64_values(a, name="values_a")
+    b = _finite_float64_values(b, name="values_b")
+    lower = min(float(np.min(a)), float(np.min(b)))
+    upper = max(float(np.max(a)), float(np.max(b)))
+    offset = 0.0
+    # Same-sign values within a factor of two can be subtracted exactly.
+    # Remove the common offset before scaling can round away their spread.
+    if 0.0 < lower and lower >= 0.5 * upper:
+        offset = lower
+    elif upper < 0.0 and upper <= 0.5 * lower:
+        offset = upper
+
+    if offset:
+        a, b = _common_binary_scaled(a - offset, b - offset)
+        ratio_a = ratio_b = 1.0
+    else:
+        # Separate scales keep a large constant group from erasing the
+        # smaller group's spread. Convert both reductions to common units.
+        a, scale_a_array = _scale_for_reduction(a, axis=None)
+        b, scale_b_array = _scale_for_reduction(b, axis=None)
+        scale_a = float(scale_a_array.item())
+        scale_b = float(scale_b_array.item())
+        common_scale = max(scale_a, scale_b)
+        ratio_a = scale_a / common_scale
+        ratio_b = scale_b / common_scale
     # Canonical reduction order keeps this unpaired statistic independent of
     # seed-row permutations (including paired callers that align their rows).
     a = np.sort(a)

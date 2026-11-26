@@ -1,4 +1,4 @@
-"""Effect sizes must not change when metric units change."""
+"""Effect sizes must be invariant to common changes of metric units and origin."""
 
 import warnings
 from decimal import Decimal, localcontext
@@ -20,6 +20,40 @@ def test_cohens_d_preserves_known_effect_across_metric_units(scale: float) -> No
         warnings.simplefilter("error")
         assert cohens_d(a, b) == pytest.approx(0.5)
         assert cohens_d(b, a) == pytest.approx(-0.5)
+
+
+@pytest.mark.parametrize("offset", [1e16, -1e16])
+@pytest.mark.parametrize(
+    ("residuals_a", "residuals_b", "expected"),
+    [
+        ([0.0, 2.0, 4.0], [2.0, 4.0, 6.0], -1.0),
+        ([0.0, 0.0, 2.0], [0.0, 2.0, 2.0], -1.0 / np.sqrt(3.0)),
+    ],
+)
+def test_cohens_d_preserves_effect_after_exact_translation(
+    offset: float, residuals_a: list[float], residuals_b: list[float], expected: float
+) -> None:
+    a = offset + np.asarray(residuals_a)
+    b = offset + np.asarray(residuals_b)
+    np.testing.assert_array_equal(a - offset, residuals_a)
+    np.testing.assert_array_equal(b - offset, residuals_b)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual = cohens_d(a, b)
+        assert actual == pytest.approx(expected, rel=1e-14, abs=0.0)
+        assert cohens_d(a[::-1], b[::-1]) == actual
+        assert cohens_d(b, a) == -actual
+
+
+@pytest.mark.parametrize("offset", [16 * np.nextafter(0.0, 1.0), 2.0**1023])
+def test_cohens_d_preserves_offset_effect_with_constant_group(offset: float) -> None:
+    step = np.spacing(offset)
+    a = np.full(3, offset)
+    b = offset + step * np.asarray([0.0, 1.0, 2.0])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert cohens_d(a, b) == pytest.approx(-np.sqrt(2.0), rel=1e-14, abs=0.0)
 
 
 @pytest.mark.parametrize("scale", [1.0e200, 1.0e-200])
