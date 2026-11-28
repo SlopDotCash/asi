@@ -4742,7 +4742,8 @@ class RLSHeadDiagonalState(RLSHeadState):
 class RLSHeadBlockState(RLSHeadState):
     """RLS carry with ``p`` storing one square root per covariance block.
 
-    A block's covariance is ``p[b] @ p[b].T``. Its factor is updated with
+    A block's covariance is ``p[b] @ p[b].T``. The projected arm uses one
+    block in the rank-limited feature subspace. Its factor is updated with
     a Joseph-form QR step, including excitation from every other block.
     """
 
@@ -5032,6 +5033,27 @@ def _block_rls_gain(roots: Array, phi: Array) -> tuple[Array, Array]:
     return gain, jnp.swapaxes(triangular, 1, 2)
 
 
+def _projected_rls_gain(roots: Array, phi: Array) -> tuple[Array, Array]:
+    """Square-root RLS on orthonormal pooled hidden features and a separate bias.
+
+    The full covariance is Q L L.T Q.T with disjoint unit-norm columns in Q.
+    Grouping by coordinate modulo r-1 makes the fixed basis implicit. The
+    square root L has r*r entries; neither an m*m matrix nor Q is stored.
+    """
+    groups = roots.shape[1] - 1
+    n_hidden = phi.shape[0] - 1
+    group_ids = jnp.arange(n_hidden) % groups
+    counts = n_hidden // groups + (jnp.arange(groups) < n_hidden % groups)
+    weights = jax.lax.rsqrt(counts.astype(phi.dtype))
+    scaled = phi[:-1] * weights[group_ids]
+    padding = (-n_hidden) % groups
+    pooled = jnp.pad(scaled, (0, padding)).reshape(-1, groups).sum(axis=0)
+    reduced = jnp.concatenate((pooled, phi[-1:]))
+    gain, new_roots = _block_rls_gain(roots, reduced)
+    lifted = jnp.concatenate((gain[group_ids] * weights[group_ids], gain[-1:]))
+    return lifted, new_roots
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -5209,11 +5231,18 @@ def _make_rls_head_learner(
         raise ValueError("rls_head_block must be zero or a positive integer")
     block_enabled = head_block > 0.0
     block_count = int(head_block)
-    structured_head = diagonal_enabled or block_enabled
+    projected_rank = hp.get("rls_projected_rank", 0.0)
+    if projected_rank != 0.0 and (
+        not math.isfinite(projected_rank) or projected_rank < 2
+        or not float(projected_rank).is_integer()
+    ):
+        raise ValueError("rls_projected_rank must be zero or an integer >= 2")
+    projected_enabled = projected_rank > 0.0
+    structured_head = diagonal_enabled or block_enabled or projected_enabled
     if structured_head:
-        if sum((sgd_head, head_diag == 1.0, head_gdiag == 1.0, block_enabled)) > 1 or (
-            hp.get("rls_head_rank", 0.0) != 0.0
-        ):
+        selectors = (sgd_head, head_diag == 1.0, head_gdiag == 1.0, block_enabled,
+                     projected_enabled)
+        if sum(selectors) > 1 or hp.get("rls_head_rank", 0.0) != 0.0:
             raise ValueError("RLS head selectors are mutually exclusive")
         if rls_lambda != 1.0 or ridge_init != 0.03 or cap_enabled:
             raise ValueError("structured RLS requires lambda 1, ridge 0.03, and no trace cap")
@@ -5224,7 +5253,7 @@ def _make_rls_head_learner(
         ):
             raise ValueError("structured RLS requires the plain fixed-step gated residual body")
     state_type = RLSHeadDiagonalState if diagonal_enabled else RLSHeadState
-    if block_enabled:
+    if block_enabled or projected_enabled:
         state_type = RLSHeadBlockState
 
     def normalize(
@@ -5303,6 +5332,9 @@ def _make_rls_head_learner(
         initial_p = jnp.eye(m, dtype=jnp.float32) / ridge_init
         if diagonal_enabled:
             initial_p = jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32)
+        if projected_enabled:
+            rank = min(int(projected_rank), m)
+            initial_p = jnp.eye(rank, dtype=jnp.float32)[None] / math.sqrt(ridge_init)
         if block_enabled:
             if block_count > m:
                 raise ValueError("rls_head_block must not exceed the head width")
@@ -5655,10 +5687,13 @@ def _make_rls_head_learner(
             if reset_enabled:
                 trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
                 new_p = jnp.where(trigger, jnp.full_like(new_p, 1.0 / ridge_init), new_p)
-        elif block_enabled:
+        elif block_enabled or projected_enabled:
             if not isinstance(state, RLSHeadBlockState):
                 raise TypeError("block RLS requires RLSHeadBlockState")
-            gain, new_p = _block_rls_gain(state.p, phi)
+            if projected_enabled:
+                gain, new_p = _projected_rls_gain(state.p, phi)
+            else:
+                gain, new_p = _block_rls_gain(state.p, phi)
             new_wout = state.wout + jnp.outer(gain, err)
             if reset_enabled:
                 width = new_p.shape[1]
@@ -9537,6 +9572,17 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("gdiag", "rls_head_gdiag", 1.0, "globally pooled diagonal"),
                 ("blockhead", "rls_head_block", 4.0, "global-innovation block"),
             )
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_projected8",
+            {
+                "rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_projected_rank": 8.0,
+            },
+            "Fixed rank-eight covariance on orthonormal pooled features and bias",
         ),
         # Historical screens retain their exact constants for shard replay.
         *(
