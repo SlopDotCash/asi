@@ -120,8 +120,12 @@ an old downdate's off-diagonal entries while retaining its diagonal can make the
 covariance indefinite. With ridge 0.03 and eight stored directions, an eleven-step
 nonnegative-feature witness gives innovation −680.828 before a square root. The
 historical accuracy comparison therefore cannot support its claimed conclusion
-about low-rank head capacity. A live low-rank control requires a covariance design
-that preserves positive semidefiniteness and a fresh matched experiment.
+about low-rank head capacity. A [fixed rank-eight subspace with a square-root
+covariance](../../outputs/ipmnist_screening/projected_rank8_matched/README.md)
+scored 0.783550 versus 0.928233 for its matched dense parent across three
+12-task development lives (mean paired change −0.144683, sample SD 0.019593).
+It missed the planned retention criterion on every seed. Adaptive rank-eight
+directions remain unmeasured.
 
 ## Artifact-schema boundary
 
