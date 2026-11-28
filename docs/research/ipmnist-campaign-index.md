@@ -105,7 +105,12 @@ The original `diaghead` and `gdiag` arm IDs are available for artifact replay
 with their bound source commits. New runs use the `diaghead_stable` and
 `gdiag_stable` suffixes. These controls update the diagonal covariance with
 positive terms and use scaled excitation to avoid float32 overflow. Both
-stable variants are unmeasured and require fresh matched runs.
+stable variants were rerun against their full-matrix parent and the current
+campaign lead on development seeds 0–2 (60 tasks of 5,000 examples). Both
+fell below the parent on every seed. Pooling beat independent denominators
+on one of three seeds, with mean paired accuracy difference −0.000197.
+The [matched screen and resource receipts](../../outputs/ipmnist_screening/stable_diagonal_matched/README.md)
+close this comparison at the development screening horizon.
 
 The archived `blockhead` ID uses block-local innovation denominators. Its
 new `blockhead_stable` control projects the dense update onto four covariance
