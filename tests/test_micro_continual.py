@@ -1673,6 +1673,13 @@ class TestShards:
         with pytest.raises(ValueError, match="environment must record"):
             load_micro_shard(path)
 
+    def test_one_seed_has_no_between_seed_standard_error(self, tmp_path: Path):
+        result = run_micro_arm(TINY, "sgd_raw", seed=0, hidden1=8, hidden2=6)
+        path = micro_shard_path(tmp_path, TINY.family, "sgd_raw", 0)
+        write_micro_shard(path, micro_shard_payload(result))
+        summary = merge_micro_shards([path], bayes_samples=1_000)
+        assert summary["results"][0]["average_online_accuracy_stderr"] is None
+
     def test_merge_ranks_and_pairs(self, tmp_path: Path):
         paths = []
         for arm in ("sgd_raw", "naive_bayes"):

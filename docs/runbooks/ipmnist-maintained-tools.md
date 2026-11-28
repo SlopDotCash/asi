@@ -100,3 +100,14 @@ The following files remain useful only as provenance for the runs beside them:
 
 Their machine-specific paths and historical statistical behavior are preserved
 intentionally. Contributor workflows must use the maintained package commands.
+
+
+## Reading between-seed uncertainty
+
+When inspecting a partial one-seed development merge, read the per-seed
+accuracy and paired difference directly. The iPMNIST screening and Micro
+Continual mergers emit JSON `null` for the between-seed standard error until
+there are at least two independent seeds. With at least two seeds, a numeric
+zero means the observed values were equal. Earlier one-seed summaries can
+contain a numeric zero for this unavailable estimate; check the seed count
+when reading those archived results.
