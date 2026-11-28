@@ -1,0 +1,174 @@
+{
+ "base_learner": "upgd_w",
+ "config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 12,
+  "task_length": 5000
+ },
+ "config_name": "rls_head_resid_identmap50_r_idet003_s0031640625_r02_projected8",
+ "created_unix": 1795852186.2650602,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "arm64",
+   "release": "27.2.0",
+   "system": "Darwin"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": "cpu",
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.13"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "hyperparameters": {
+  "fast_decay": 0.9,
+  "gate_scale": 1.0,
+  "head_resid": 1.0,
+  "ident_match2": 200.0,
+  "ident_match3": 2000.0,
+  "ident_match_at": 50.0,
+  "ident_reset_frac": 0.03,
+  "noise_std": 0.0,
+  "norm_decay": 0.99,
+  "norm_epsilon": 1e-08,
+  "rls_lambda": 1.0,
+  "rls_p_trace_cap": 0.0,
+  "rls_projected_rank": 8.0,
+  "rls_reset_frac": 0.05,
+  "rls_ridge_init": 0.03,
+  "shift_delta": 0.02,
+  "shift_k": 1.0,
+  "shift_refractory": 0.0,
+  "step_size": 0.0031640625,
+  "utility_decay": 0.9999,
+  "weight_decay": 0.01
+ },
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "per_task_accuracy": [
+  0.67559999,
+  0.81279999,
+  0.82979995,
+  0.83339995,
+  0.81559998,
+  0.82440001,
+  0.81599998,
+  0.82099998,
+  0.81,
+  0.81559998,
+  0.82199997,
+  0.79859996
+ ],
+ "per_task_loss": [
+  0.25911015,
+  0.18663646,
+  0.17358649,
+  0.16578859,
+  0.15757342,
+  0.1578225,
+  0.15599389,
+  0.15104166,
+  0.15329765,
+  0.15239535,
+  0.15187466,
+  0.14694047
+ ],
+ "per_task_plasticity": [
+  0.12179377,
+  0.15515867,
+  0.14849547,
+  0.14935675,
+  0.16739976,
+  0.16584779,
+  0.16162272,
+  0.16052146,
+  0.1619426,
+  0.17291056,
+  0.18466127,
+  0.20497343
+ ],
+ "schema": "alberta.ipmnist_screening.shard.v2",
+ "seed": 191171,
+ "source_provenance": {
+  "git_commit": "da095ff8c8bfcd5f20d3dcf7aab5b9bdce47521b",
+  "git_object_format": "sha1",
+  "git_tree": "9e1edb5da74f886e70329305a30be2a30a1c7fcd",
+  "relevant_source_file_count": 232,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "9b19387c1bbd271082f772eaaeabcfb2d117cb368f81f8b760c7484ed71cf327",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ },
+ "wall_clock_seconds": 38.48
+}
