@@ -88,6 +88,7 @@ from alberta_framework._seed_validation import require_jax_seed, require_unique_
 from alberta_framework._strict_json import load_strict_json_object
 from alberta_framework.benchmarks.ipmnist_screening import (
     ScreeningStepFn,
+    _between_seed_stderr,
     _finite_wall_clock_total,
     _make_naive_bayes_learner,
     _make_sgd_ema_norm_learner,
@@ -1478,11 +1479,7 @@ def merge_micro_shards(
                 "seeds": seeds,
                 "n_seeds": len(seeds),
                 "average_online_accuracy_mean": float(per_seed_avg.mean()),
-                "average_online_accuracy_stderr": (
-                    float(per_seed_avg.std(ddof=1) / math.sqrt(len(seeds)))
-                    if len(seeds) > 1
-                    else 0.0
-                ),
+                "average_online_accuracy_stderr": _between_seed_stderr(per_seed_avg),
                 "per_seed_average_online_accuracy": [
                     round(float(v), 6) for v in per_seed_avg
                 ],

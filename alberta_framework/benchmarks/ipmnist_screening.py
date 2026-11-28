@@ -13700,6 +13700,13 @@ def _require_registered_hyperparameters(
             )
 
 
+def _between_seed_stderr(values: np.ndarray) -> float | None:
+    """Estimate uncertainty across independent seeds when sample variance is defined."""
+    if len(values) < 2:
+        return None
+    return float(values.std(ddof=1) / math.sqrt(len(values)))
+
+
 def _late_window_slope(per_task_accuracy: np.ndarray, window: int) -> float:
     """OLS slope (accuracy per task) over the final ``window`` tasks."""
     tail = per_task_accuracy[-window:]
@@ -13886,11 +13893,7 @@ def merge_shards(
             "seeds": seeds,
             "n_seeds": len(seeds),
             "average_online_accuracy_mean": float(per_seed_avg.mean()),
-            "average_online_accuracy_stderr": (
-                float(per_seed_avg.std(ddof=1) / math.sqrt(len(seeds)))
-                if len(seeds) > 1
-                else 0.0
-            ),
+            "average_online_accuracy_stderr": _between_seed_stderr(per_seed_avg),
             "per_seed_average_online_accuracy": [round(float(v), 6) for v in per_seed_avg],
             "late_window_slope_mean": float(slopes.mean()),
             "per_seed_late_window_slope": [round(float(v), 8) for v in slopes],
@@ -13924,11 +13927,7 @@ def merge_shards(
                 "seeds": common,
                 "per_seed_diff": [round(float(v), 6) for v in diff],
                 "mean_diff": float(diff.mean()),
-                "stderr_diff": (
-                    float(diff.std(ddof=1) / math.sqrt(len(common)))
-                    if len(common) > 1
-                    else 0.0
-                ),
+                "stderr_diff": _between_seed_stderr(diff),
                 "all_seeds_improve": bool(np.all(diff > 0.0)),
                 "beats_control": bool(diff.mean() > 0.0),
                 # A one-seed paired mean has no spread, so it cannot authorize

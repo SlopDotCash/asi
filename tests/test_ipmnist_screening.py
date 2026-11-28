@@ -1803,7 +1803,8 @@ class TestShardsAndMerge:
 
         assert paired["seeds"] == [0]
         assert paired["mean_diff"] > CONFIRMATION_THRESHOLD
-        assert paired["stderr_diff"] == 0.0
+        assert paired["stderr_diff"] is None
+        assert all(row["average_online_accuracy_stderr"] is None for row in summary["results"])
         assert paired["all_seeds_improve"] is True
         assert paired["beats_control"] is True
         assert paired["confirmation_candidate"] is False
@@ -1823,6 +1824,8 @@ class TestShardsAndMerge:
         paired = result["paired_vs_control"]
 
         assert paired["seeds"] == [0, 1]
+        assert result["average_online_accuracy_stderr"] == 0.0
+        assert paired["stderr_diff"] == 0.0
         assert paired["mean_diff"] > CONFIRMATION_THRESHOLD
         assert paired["confirmation_candidate"] is True
 
