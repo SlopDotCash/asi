@@ -33,8 +33,13 @@ and separate resource receipts for each arm. A [fresh 200-task pair](../../outpu
 on seed 311011 also favored step 0.02, with mean accuracy 0.977295 versus
 0.973365 (+0.003930). Its four consecutive 50-task block gains were
 +0.008128, +0.003232, +0.002436, and +0.001924. The one-seed comparison
-establishes direction on that life. A matched multi-seed 200-task comparison
-against constant step 0.005625 remains open.
+establishes direction on that life. A [preregistered three-seed comparison at
+200 tasks](../../outputs/ipmnist_screening/constant_step_200task_matched/README.md)
+found mean paired accuracy gains of +0.004234, +0.004310 and +0.004132
+for step 0.02 on development seeds 311012–311014. The gain stayed positive
+in all four consecutive 50-task windows on each seed. This meets the planned
+criterion for retaining step 0.02 as the preferred development setting for
+this pair at this horizon. The comparison is permanently nonpromoting.
 
 The older cross-runner
 [`proxy_validation.json`](../../outputs/ipmnist_screening/proxy_validation.json)
