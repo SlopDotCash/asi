@@ -109,8 +109,10 @@ local same-runner development ranking, not a paper-level SOTA claim.
   CPR paper v1 and official repository commit
   `6fc2af34783159f5dda50c6915dda32c2d443604`. The registered `cpr_*` IPMNIST
   family is a documented supervised protocol port with matched hard-reset,
-  L2-Init, utility-free, and mechanism-off controls—not a source reproduction
-  or an IPMNIST result. C-CHAIN remains a candidate for a causal ablation.
+  L2-Init, utility-free, and mechanism-off controls. The five-seed corrected-clock
+  development comparison measured CPR at 0.855855. It beat mechanism-off and
+  lost to both L2-Init and utility-free. The recorded decision is inconclusive.
+  [Retained CPR audit](../../outputs/cpr_corrected_clock/2026-10-09-stable/README.md)
 - [Experience Replay Addresses Loss of Plasticity
   (2025)](https://arxiv.org/abs/2503.20018) argues that replay processed by a
   Transformer can preserve plasticity through in-context learning. ASI now
@@ -118,7 +120,10 @@ local same-runner development ranking, not a paper-level SOTA claim.
   mechanism-off, replay-gradient-only, label-attention-only, and combined.
   Its 32-example label-attention context is not the paper's Transformer, and
   arXiv v1 discloses no official implementation. Exact replay, query, memory,
-  and zero-pretraining costs are bound into every receipt; no run exists.
+  and zero-pretraining costs are bound into every receipt. In the three-seed,
+  60-task development grid, replay-gradient-only improved by 0.034452 over
+  mechanism-off. The combined arm fell by 0.005971 and label-attention-only
+  fell by 0.044731. [Paired results](../../outputs/ipmnist_screening/replay_frozen_retention/grid1-2026-10-03/SUMMARY.md)
 - [RanDumb](https://arxiv.org/abs/2402.08823),
   [RanPAC](https://arxiv.org/abs/2307.02251), and
   [PROL](https://arxiv.org/abs/2507.12305) motivate frozen random or pretrained
@@ -127,7 +132,10 @@ local same-runner development ranking, not a paper-level SOTA claim.
   `bfff841…`. RanPAC and PROL import no pretrained model and are explicitly
   mechanism proxies, not reproductions. A charged PROL mechanism-off arm is
   included; extractor, compatibility-ballast, and zero-pretraining costs are
-  exact. No comparison has been run.
+  exact. The same eight-arm, three-seed grid measured all four ceiling arms.
+  The PROL prompt proxy scored 0.519224 versus 0.494560 for its own off-arm.
+  These are raw-pixel development measurements.
+  [Protocol and costs](../../outputs/ipmnist_screening/replay_frozen_retention/grid1-2026-10-03/README.md)
 - [Intentional Updates](https://arxiv.org/abs/2604.19033v1) reports strong
   fully streaming reinforcement-learning results by solving for step sizes in
   prediction or policy units. ASI pins paper v1 and official code commit
@@ -245,8 +253,8 @@ not mean an agent adapter or comparison result exists.
 | [CORA](https://arxiv.org/abs/2110.10067) / [code](https://github.com/AGI-Labs/continual_rl) | Atari, Procgen, NetHack, and CHORES with continual evaluation, isolated forgetting, and zero-shot forward transfer. | Strong metric and baseline source; expensive and predominantly task-sequence based. The [qualification audit](cora-qualification.md) records the blocked external gates and bounded native analogue. |
 | [COOM](https://github.com/TTomilin/COOM) | Pixel-based Doom task sequences with average performance, forgetting, and forward transfer. | Useful robustness/representation lane after a smaller R3 control closes. |
 | [Continual Bench / FTL Online Agent](https://arxiv.org/abs/2507.09177) | Online shallow world model plus MPC across reward-defined continual tasks, with a regret result under stated assumptions. | Closest model-based competitor to ASI's FTL line; reproduce before extending the historically accepted narrow decision-fidelity artifact, and use the live evidence-status command for its current validity. |
-| [C-CHAIN](https://arxiv.org/abs/2506.00592) / [code](https://github.com/bluecontra/C-CHAIN) | Continual nonstationarity across Gym Control, ProcGen, DMC, and MinAtar. | Official arXiv v1 and code commit `2f8bedf…` are audited. The current ASI runner has a four-arm, nonpromoting IPMNIST adaptation with exact receipts but no run; official RL task/protocol reproduction remains open. |
-| Replay/frozen-feature controls | Replay/in-context adaptation plus RanDumb, RanPAC, and PROL-inspired ceilings. | Eight current-runner arms are registered with matched axes and strict nonpromoting receipts. Pretrained-paper claims remain incomparable until exact extractors, datasets, and their full costs are supplied. |
+| [C-CHAIN](https://arxiv.org/abs/2506.00592) / [code](https://github.com/bluecontra/C-CHAIN) | Continual nonstationarity across Gym Control, ProcGen, DMC, and MinAtar. | Official arXiv v1 and code commit `2f8bedf…` are audited. The [four-arm development screen](../../outputs/cchain_ipmnist/cheap_screen.v1/RESULTS.md) tested five seeds over two 500-example tasks. All three active configurations lost to mechanism-off. Official RL task reproduction remains open. |
+| Replay/frozen-feature controls | Replay/in-context adaptation plus RanDumb, RanPAC, and PROL-inspired ceilings. | The [eight-arm development grid](../../outputs/ipmnist_screening/replay_frozen_retention/grid1-2026-10-03/SUMMARY.md) measures three matched seeds across 60 tasks. Pretrained-paper claims remain incomparable until exact extractors, datasets, and their full costs are supplied. |
 | [TeLAPA](https://arxiv.org/abs/2604.15414v1) | Preserves per-task policy neighborhoods and maintains a shared learned trajectory latent for later retrieval and adaptation. | The [bounded qualification smoke](../runbooks/telapa-qualification.md) exercises only ASI's archive primitive in SwitchingTwoState. The disclosed anonymous code view lacks an established immutable revision, so paper parity fails closed. |
 
 Additional project sources:
@@ -314,9 +322,11 @@ and whether reported results can actually be regenerated.
    development path. Do not reuse a stored control mean.
 3. Complete a matched current-source Forager qualification and open-development
    campaign before deciding whether a fresh held-out protocol is warranted.
-4. Finish the nonpromoting reference-life scorecard only after its source
-   identity is stable; aggregate all 144 fresh-process shards and report a
-   baseline failure honestly if the strong controls do not qualify.
+4. Use the [completed 144-shard reference-life scorecard](../../outputs/reference_life_scorecard_development/run2-2026-10-09/README.md)
+   when designing the next matched control experiment. The frozen decision was
+   `valid_baseline_failure` because the RiverSwim controls did not qualify.
+   The [research roadmap](asi-roadmap.md#current-program-priorities) identifies
+   subsequent control-calibration work.
 5. Freeze a claim-specific protocol only after development selection. Use new,
    untouched seeds, strict validators, matched resource budgets, and the exact
    external comparator implementations. A development win cannot promote
