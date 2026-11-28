@@ -1,0 +1,186 @@
+{
+  "common_oracle_minus_random": 16938.571667417575,
+  "development_decision": "retain_both",
+  "manifests": {
+    "differential_sarsa_rbar0": "89ecc048a6845539ec6d6b81f4d1ca690ff3634e9341de766228cc7ae1c5ede0",
+    "privileged_oracle": "3bce77e9c998fa3395b882d29331b77e701329ee328066defd391c6f3558083c",
+    "random": "db976916e943a0c150c3963fd8bf7ecc7af460854b38884fb16fc03a215cde86",
+    "sarsa_q0": "b206a4eb96fbdf294e6104b2fa3254113209e1e3128827796a0c04faa57a8bb7"
+  },
+  "mean_normalized_return": {
+    "differential_sarsa_rbar0": 0.8879273862469524,
+    "sarsa_q0": 0.8898343750593273
+  },
+  "mean_paired_difference": 0.0019069888123748235,
+  "negative": 3,
+  "paired": [
+    {
+      "difference": -0.00554916918885889,
+      "high_end_visits": {
+        "differential_sarsa_rbar0": 15457,
+        "privileged_oracle": 17056,
+        "random": 52,
+        "sarsa_q0": 15349
+      },
+      "normalized": {
+        "differential_sarsa_rbar0": 0.8947696593502444,
+        "sarsa_q0": 0.8892204901613856
+      },
+      "rewards": {
+        "differential_sarsa_rbar0": 15211.494999988936,
+        "privileged_oracle": 17056.0,
+        "random": 55.37499925401062,
+        "sarsa_q0": 15117.499999988824
+      },
+      "seed": 612670
+    },
+    {
+      "difference": 0.010145778721934099,
+      "high_end_visits": {
+        "differential_sarsa_rbar0": 15391,
+        "privileged_oracle": 17093,
+        "random": 62,
+        "sarsa_q0": 15566
+      },
+      "normalized": {
+        "differential_sarsa_rbar0": 0.8892110442647914,
+        "sarsa_q0": 0.8993568229867255
+      },
+      "rewards": {
+        "differential_sarsa_rbar0": 15124.529999988154,
+        "privileged_oracle": 17092.0,
+        "random": 62.56499924976379,
+        "sarsa_q0": 15296.384999991395
+      },
+      "seed": 612671
+    },
+    {
+      "difference": -0.0010567597052275055,
+      "high_end_visits": {
+        "differential_sarsa_rbar0": 15466,
+        "privileged_oracle": 17114,
+        "random": 59,
+        "sarsa_q0": 15426
+      },
+      "normalized": {
+        "differential_sarsa_rbar0": 0.8923960825939024,
+        "sarsa_q0": 0.8913393228886748
+      },
+      "rewards": {
+        "differential_sarsa_rbar0": 15180.384999991395,
+        "privileged_oracle": 17113.0,
+        "random": 64.4699992518872,
+        "sarsa_q0": 15162.48499998916
+      },
+      "seed": 612672
+    },
+    {
+      "difference": 0.006193851645927773,
+      "high_end_visits": {
+        "differential_sarsa_rbar0": 15052,
+        "privileged_oracle": 16868,
+        "random": 23,
+        "sarsa_q0": 15163
+      },
+      "normalized": {
+        "differential_sarsa_rbar0": 0.8735284940945979,
+        "sarsa_q0": 0.8797223457405255
+      },
+      "rewards": {
+        "differential_sarsa_rbar0": 14839.589999986812,
+        "privileged_oracle": 16867.0,
+        "random": 43.26499923411757,
+        "sarsa_q0": 14944.504999988712
+      },
+      "seed": 612673
+    },
+    {
+      "difference": 0.001944674004875116,
+      "high_end_visits": {
+        "differential_sarsa_rbar0": 15250,
+        "privileged_oracle": 16810,
+        "random": 29,
+        "sarsa_q0": 15264
+      },
+      "normalized": {
+        "differential_sarsa_rbar0": 0.8827748463290905,
+        "sarsa_q0": 0.8847195203339657
+      },
+      "rewards": {
+        "differential_sarsa_rbar0": 15001.479999989271,
+        "privileged_oracle": 16809.0,
+        "random": 48.53499925043434,
+        "sarsa_q0": 15034.419999990612
+      },
+      "seed": 612674
+    },
+    {
+      "difference": -0.0002364426044016518,
+      "high_end_visits": {
+        "differential_sarsa_rbar0": 15486,
+        "privileged_oracle": 17042,
+        "random": 84,
+        "sarsa_q0": 15474
+      },
+      "normalized": {
+        "differential_sarsa_rbar0": 0.8948841908490882,
+        "sarsa_q0": 0.8946477482446865
+      },
+      "rewards": {
+        "differential_sarsa_rbar0": 15230.419999990612,
+        "privileged_oracle": 17041.0,
+        "random": 72.3599992543459,
+        "sarsa_q0": 15226.414999990724
+      },
+      "seed": 612675
+    }
+  ],
+  "positive": 3,
+  "raw_sha256": {
+    "differential_sarsa_rbar0-612670.json": "25353e79f24d79b7f377838333c0b0a571e237d13774ae7634b6f11ca7ac4bd1",
+    "differential_sarsa_rbar0-612671.json": "62d950811de7f728a486c535fd6b5d50d781e742840fe6f1079c59393da38f48",
+    "differential_sarsa_rbar0-612672.json": "9dafaf1e9192482743647b76ed6d1188555c73fe90397e8fd4d716aaa0055733",
+    "differential_sarsa_rbar0-612673.json": "6e65a498379ee12d4d1e744e68700272bfe76b40f430684c4a01bebf9652ab3b",
+    "differential_sarsa_rbar0-612674.json": "14f08fb41910ff233aa5f5b1169cbaa96dd7a5b83dbea26b379ca9b4b6e42933",
+    "differential_sarsa_rbar0-612675.json": "6a13b3158b314e023b2e085b9011232738e81ae0851f87730b4d64e475d9e4ef",
+    "privileged_oracle-612670.json": "d69f5776b398266c669c0f3d665ea9162ab637d979df7084ff908e88fee9bec5",
+    "privileged_oracle-612671.json": "fa55c4ae4b4db42d72377d77fab13eb4b4e81a4d85b0950baa6b39579885b677",
+    "privileged_oracle-612672.json": "b9cdb188af8e3b88521a4237f255e00038163aeda1b003f4b1195eee0f8bbf05",
+    "privileged_oracle-612673.json": "027f9219b7e1855c6868d824eb1b85b0f3938636b436401d03bdda8718f12362",
+    "privileged_oracle-612674.json": "31523dca355b7d9ba081af93de0a6e627c7a4b293facf7d9e34ed3e7f117b5a9",
+    "privileged_oracle-612675.json": "79f0f023354f697c71975775e7a971d47c4a033e1ea4b9cd13c9464919546d60",
+    "random-612670.json": "36add522073bc5edc03ea846ad8abbc6dbf8fb5d7bd8f2407420129c4faede00",
+    "random-612671.json": "de005ad877c92f6642cdc2f77b8ef5386b45059969f8b995009efec178f28eb4",
+    "random-612672.json": "def63b3030d1efe25c89f50c3f4f1ac3c4aaa2415fc42eb85bd315caaf36eb4b",
+    "random-612673.json": "be2503390b22d5f00a641756b3b55c67ae257cffb8824f75ee79c55cb6afc620",
+    "random-612674.json": "1879b9ad5ce92302e630940e5b9025c8b67ddfe11715b25d7409e2ca00953f58",
+    "random-612675.json": "294cdbfd21f7dd6945f1ddb7dc253adec2a49b8025a02cf11c764b72957156d3",
+    "sarsa_q0-612670.json": "570966009c68288a7bf2a6be373177c99819a7817acb741772399156b8720977",
+    "sarsa_q0-612671.json": "ff7bce1e25cd8030eae25869e3a1fde1a464bfb944c9cc23123b7f7c3c951589",
+    "sarsa_q0-612672.json": "7941a82cf91833dd5d4728791752871cc81978407db7eaaa70acac70f2c6bce3",
+    "sarsa_q0-612673.json": "6db0284ec71266fa7b9fea35ffea9036a701ad85a6c6d5688506d8b1eec5058f",
+    "sarsa_q0-612674.json": "e348f2d85f26b1135fd4701c739b1175f2aef5fc9745561cdfc271b783f3b4d8",
+    "sarsa_q0-612675.json": "032cf85e91e3621a9c9fff0a044639e7addb3214b7a157d39a8052b124fd41f9"
+  },
+  "run_source_commit": "06702c614899f6ae5417b77dc05b922e3dc766ab",
+  "runtime": {
+    "dependencies": {
+      "chex": "0.1.92",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "numpy": "2.5.1"
+    },
+    "python": "3.12.13"
+  },
+  "source_sha256": {
+    "alberta_framework/benchmarks/reference_life_scorecard.py": "29e63414e933afae66803837113c9b179e8e49d1dc77f0e5fdad19686d78c67c",
+    "alberta_framework/core/average_reward.py": "5e90201695e71b965c9a8cbfd22b65a0fc195db1f9e86fcd89491bfe96d29e30",
+    "alberta_framework/reference_life.py": "0b86f9f745ba1abe6562ed8c3790c78b883a0eb376569f2c85c439c86eadfb6c",
+    "alberta_framework/reference_life_controls.py": "cdb2b2e1f7376758de4a69a876c2e0a7bcc150acee06d97d07e8f7a0bc44016e",
+    "alberta_framework/streams/closed_loop.py": "c98135eafad74b7dad7ba6491781dabba407a9c4752b2bb5c0d45565b82774e3",
+    "outputs/reference_life_control_calibration/riverswim-diffsarsa-rbar0-2026-11-01/run.py": "7a0467b7148e4431f2dd7957e19d5d84f2bcc5231adcd20d04a52505a385b486",
+    "outputs/reference_life_control_calibration/riverswim-q0-full-2026-11-01/run.py": "41333e9f5c3e5177632434016c8af7edec7aaa8330998a18a2b4519814efe028"
+  },
+  "standard_error_of_paired_mean": 0.0022747063396891705,
+  "ties": 0
+}
